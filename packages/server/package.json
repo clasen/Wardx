@@ -1,0 +1,21 @@
+{
+  "name": "@wardx/server",
+  "version": "0.1.0",
+  "description": "Wardx ingest server for HTTP sync, Remote Config, and development sinks.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "bin": {
+    "wardx-server": "./src/cli.js"
+  },
+  "files": [
+    "src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

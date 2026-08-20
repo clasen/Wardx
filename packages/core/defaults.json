@@ -1,0 +1,14 @@
+{
+  "aggregateIntervalMs": 1000,
+  "syncIntervalMs": 15000,
+  "syncJitterMin": 0.85,
+  "syncJitterMax": 1.15,
+  "maxBufferedEvents": 5000,
+  "maxBufferedLogs": 2000,
+  "maxFrameBytes": 524288,
+  "maxSeriesPerMetric": 1000,
+  "maxDimensionKeys": 8,
+  "maxDimensionValueLength": 64,
+  "httpTimeoutMs": 10000,
+  "histogramBuckets": [10, 25, 50, 100, 250, 500, 1000]
+}

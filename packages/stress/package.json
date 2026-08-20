@@ -1,0 +1,15 @@
+{
+  "name": "@wardx/stress",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Wardx stress harness. This package is not published to npm.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "dependencies": {
+    "@wardx/core": "0.1.0",
+    "@wardx/server": "0.1.0",
+    "wardx": "0.1.0"
+  }
+}

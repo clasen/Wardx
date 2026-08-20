@@ -1,0 +1,9 @@
+{
+  "name": "@wardx/example-basic-node",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "wardx": "*"
+  }
+}

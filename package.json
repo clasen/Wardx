@@ -1,0 +1,18 @@
+{
+  "name": "wardx-monorepo",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "examples/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test packages/core/test/*.test.js packages/node/test/*.test.js packages/server/test/*.test.js",
+    "server": "node packages/server/src/cli.js config/development.json",
+    "stress": "node packages/stress/src/index.js",
+    "example": "node examples/basic-node/src/index.js"
+  }
+}

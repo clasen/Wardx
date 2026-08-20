@@ -1,0 +1,6 @@
+node_modules/
+*.ndjson
+.DS_Store
+coverage/
+*.log
+.env

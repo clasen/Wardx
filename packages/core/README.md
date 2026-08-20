@@ -1,0 +1,282 @@
+# @wardx/core
+
+`@wardx/core` is the runtime-agnostic engine of Wardx.
+
+The engine records metrics, events, and logs in memory. The engine also stores Remote Config and assigns experiment variants.
+
+The engine does not send HTTP. A runtime package, for example `wardx`, sends the frames.
+
+Node.js 20 or later is required.
+
+Install this package from npm when you write a custom runtime. If you use Node.js, install `wardx`. The `wardx` package depends on `@wardx/core`.
+
+## Install
+
+```bash
+npm install @wardx/core
+```
+
+```js
+import { WardxCore, assignVariant, loadSdkDefaults } from '@wardx/core';
+```
+
+## Design rules
+
+- A measure call changes local memory only.
+- A measure call does not send network data.
+- A measure call does not wait for a Promise.
+- If a buffer is full, the engine discards data. The engine does not block the application.
+- Counters in a frame are window deltas. Counters are not lifetime totals.
+
+## Settings
+
+`WardxCore` needs a settings object. Use `loadSdkDefaults()` and add the identity fields.
+
+| Key | Description |
+| --- | --- |
+| `endpoint` | Sync URL. The core does not use this key. Runtimes use this key. |
+| `projectKey` | Project credential. Runtimes send this key. If `privacySalt` is empty, the core uses this key as the salt. |
+| `project` | Project name. |
+| `appVersion` | Application version. |
+| `environment` | Environment name, for example `production`. |
+| `privacySalt` | Salt for the hashed subject. If you omit this key, the core uses `projectKey`. |
+| `aggregateIntervalMs` | Default `1000`. Interval to snapshot dirty data. |
+| `syncIntervalMs` | Default `15000`. Interval for the runtime sync. |
+| `maxBufferedEvents` | Default `5000`. |
+| `maxBufferedLogs` | Default `2000`. |
+| `maxFrameBytes` | Default `524288`. |
+| `maxSeriesPerMetric` | Default `1000`. |
+| `maxDimensionKeys` | Default `8`. |
+| `maxDimensionValueLength` | Default `64`. |
+| `histogramBuckets` | Default `[10, 25, 50, 100, 250, 500, 1000]`. |
+
+The defaults live in `defaults.json`. Do not omit a required key. The loader does not add a fallback for a missing key.
+
+## Use case 1: Record metrics in a custom runtime
+
+**When:** You write a runtime that is not Node.js, or you test the engine without HTTP.
+
+**Objective:** Record counters, gauges, histograms, and timers. Then make a frame.
+
+```js
+import { WardxCore, loadSdkDefaults } from '@wardx/core';
+
+const settings = {
+  ...loadSdkDefaults(),
+  endpoint: 'http://127.0.0.1:8787',
+  projectKey: 'dev_project_key',
+  project: 'demo',
+  appVersion: '0.1.0',
+  environment: 'development',
+  privacySalt: 'dev_project_key'
+};
+
+const core = new WardxCore(settings);
+
+core.counter('match.completed', { mode: 'ranked' }).inc();
+core.counter('coins.awarded').add(25);
+core.gauge('players.online').set(12921);
+core.histogram('request.duration').observe(42);
+
+const endTimer = core.timer('matchmaking.duration');
+endTimer({ result: 'success' });
+
+const fitted = core.snapshotFrame();
+const frames = core.takePendingFrames();
+```
+
+### Procedure
+
+1. Load the SDK defaults.
+2. Add the identity fields.
+3. Construct `WardxCore`.
+4. Call `counter`, `gauge`, `histogram`, or `timer`.
+5. Call `snapshotFrame` when you need a frame.
+6. Call `takePendingFrames` to get the pending frames.
+
+`counter(name, dims).inc()` adds `1`. `add(n)` adds a finite number `n`.
+
+`gauge(name, dims).set(value)` stores the last finite value and a timestamp.
+
+`histogram(name).observe(value)` records a finite value into buckets. You can set buckets:
+
+```js
+core.histogram('request.duration', { buckets: [10, 25, 50, 100] }).observe(42);
+```
+
+Do not change the buckets of an existing series. The engine throws an error.
+
+`timer(name, dims)` starts a timer. The returned function records the duration in milliseconds into a histogram. You can add dimensions when you stop the timer.
+
+If a series is above `maxSeriesPerMetric`, or a dimension is not valid, the engine returns a no-op object. The engine increments `wardx.internal.cardinality_dropped`.
+
+A dimension value must be a string, a number, or a boolean.
+
+## Use case 2: Record product events and logs
+
+**When:** You need discrete product events or structured logs in the same frame as metrics.
+
+**Objective:** Buffer events and logs until the next snapshot.
+
+```js
+core.event('purchase', { product: 'premium' });
+core.log.info('match_started', { mode: 'ranked', players: 4 });
+core.log.error('payment_failed', { code: 'timeout' });
+```
+
+Log levels: `debug`, `info`, `warn`, `error`.
+
+### Buffer limits
+
+- If the event buffer is full, the engine discards the new event.
+- If the log buffer is full, the engine replaces a log with a lower severity when possible.
+- If the engine cannot replace a log, the engine discards the new log.
+
+Dropped items increment `wardx.internal.events_dropped` or `wardx.internal.logs_dropped`.
+
+## Use case 3: Get Remote Config and assign an experiment
+
+**When:** The server sends a config snapshot. You need a value for a subject.
+
+**Objective:** Get a config value. If an experiment applies, get the variant value.
+
+```js
+core.applyConfig(13, {
+  values: {
+    'message.delayMs': 1000,
+    'chat.enabled': true
+  },
+  experiments: [
+    {
+      id: 'message-delay-v1',
+      enabled: true,
+      allocation: 1,
+      salt: '3ad8f9',
+      primaryMetric: 'message.sent',
+      variants: [
+        { key: 'control', weight: 50, values: { 'message.delayMs': 1000 } },
+        { key: 'fast', weight: 50, values: { 'message.delayMs': 400 } }
+      ]
+    }
+  ]
+});
+
+const fallback = 1000;
+const delay = core.configGet('message.delayMs', fallback, { subjectId: 'user-1' });
+core.experimentGoal('message.sent', { subjectId: 'user-1', value: 1 });
+```
+
+### Resolution order
+
+1. If the key is not in the snapshot, return `fallback`.
+2. If `subjectId` is missing, return the Remote Config value.
+3. If no enabled experiment contains the key, return the Remote Config value.
+4. If the subject is not in the allocation, return the Remote Config value.
+5. If the subject is in the allocation, return the variant value.
+
+The assignment is deterministic. The same `experimentId`, `subjectId`, and `salt` always give the same variant.
+
+The first resolve for a subject in a session emits event `experiment.exposure`. The payload contains a hashed subject. The payload does not contain the raw `subjectId`.
+
+`experimentGoal` emits event `experiment.goal`. You must supply `subjectId`. You can supply `value`.
+
+## Use case 4: Assign a variant without WardxCore
+
+**When:** You verify experiment math, or you assign a variant in a test.
+
+**Objective:** Use the same FNV-1a 32-bit function as the SDK.
+
+```js
+import { assignVariant, assignmentHash, hashToUnitInterval, subjectHash } from '@wardx/core';
+
+const experiment = {
+  id: 'message-delay-v1',
+  enabled: true,
+  allocation: 0.5,
+  salt: '3ad8f9',
+  variants: [
+    { key: 'control', weight: 50, values: { 'message.delayMs': 1000 } },
+    { key: 'fast', weight: 50, values: { 'message.delayMs': 400 } }
+  ]
+};
+
+const variant = assignVariant(experiment, 'user-1');
+const hash = assignmentHash(experiment.id, 'user-1', experiment.salt);
+const bucket = hashToUnitInterval(hash);
+const hashedSubject = subjectHash('dev_project_key', 'user-1');
+```
+
+Hash input:
+
+```text
+hash = fnv1a32(experimentId + ':' + subjectId + ':' + salt)
+bucket = hash / 2^32
+```
+
+If `bucket >= allocation`, `assignVariant` returns `null`.
+
+`subjectHash` returns 8 lowercase hex digits of `fnv1a32(privacySalt + ':' + subjectId)`.
+
+## Use case 5: Build a frame for a custom transport
+
+**When:** You send frames with your transport. You do not use the Node SDK.
+
+**Objective:** Snapshot dirty data, then take the pending frames.
+
+```js
+import { FrameBuilder, PROTOCOL_VERSION, SDK_NAME, PLATFORM } from '@wardx/core';
+
+core.counter('match.completed').inc();
+const fitted = core.snapshotIfDirty();
+if (fitted) {
+  const frames = core.takePendingFrames();
+  const envelope = {
+    protocol: PROTOCOL_VERSION,
+    project: settings.project,
+    sdk: { name: SDK_NAME, version: '0.1.0' },
+    client: {
+      instanceId: '01…',
+      sessionId: '01…',
+      appVersion: settings.appVersion,
+      environment: settings.environment,
+      platform: PLATFORM
+    },
+    configVersion: core.configStore.version,
+    frames
+  };
+}
+```
+
+`snapshotIfDirty` returns `null` when there is no new data.
+
+If a frame is larger than `maxFrameBytes`, `FrameBuilder.fitToMaxBytes` discards data in this order:
+
+1. Logs with the lowest severity.
+2. Events from the end of the buffer.
+3. Application histograms.
+4. Application gauges. Internal gauges stay.
+
+Internal series use the prefix `wardx.internal.`.
+
+## Exports
+
+| Export | Function |
+| --- | --- |
+| `WardxCore` | Engine. |
+| `ConfigStore` | Stores one Remote Config snapshot. |
+| `ExperimentResolver` | Assigns variants and records exposure. |
+| `assignVariant` | Assigns one variant. |
+| `fnv1a32`, `assignmentHash`, `hashToUnitInterval`, `subjectHash` | Hash helpers. |
+| `Counter`, `Gauge`, `Histogram`, `MetricsRegistry` | Metric types. |
+| `EventBuffer`, `LogBuffer` | In-memory buffers. |
+| `FrameBuilder` | Builds and trims frames. |
+| `resolveSettings`, `loadSdkDefaults`, `nextSyncDelayMs` | Settings helpers. |
+| `PROTOCOL_VERSION`, `SDK_NAME`, `PLATFORM`, `INTERNAL` | Protocol constants. |
+| `ulid` | Identifier helper. |
+
+## Related packages
+
+- Node.js SDK: `wardx`
+- Ingest server: `@wardx/server`
+
+The wire contract is protocol version 1. A runtime sends `POST /v1/sync` with JSON and gzip. The request header is `X-Wardx-Key`.

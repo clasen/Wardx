@@ -1,0 +1,47 @@
+{
+  "host": "127.0.0.1",
+  "port": 8787,
+  "projectKeys": {
+    "dev_project_key": "demo"
+  },
+  "adminKey": "dev_admin_key",
+  "sink": "memory",
+  "ndjsonPath": "wardx-dev.ndjson",
+  "maxRequestBytes": 2097152,
+  "aggregateRetentionMinutes": 60,
+  "memorySinkMaxEnvelopes": 10000,
+  "config": {
+    "version": 1,
+    "values": {
+      "matchmaking.timeoutMs": 5000,
+      "chat.enabled": true,
+      "rewards.multiplier": 1.2,
+      "message.delayMs": 1000
+    },
+    "experiments": [
+      {
+        "id": "message-delay-v1",
+        "enabled": true,
+        "allocation": 1,
+        "salt": "3ad8f9",
+        "primaryMetric": "message.sent",
+        "variants": [
+          {
+            "key": "control",
+            "weight": 50,
+            "values": {
+              "message.delayMs": 1000
+            }
+          },
+          {
+            "key": "fast",
+            "weight": 50,
+            "values": {
+              "message.delayMs": 400
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
