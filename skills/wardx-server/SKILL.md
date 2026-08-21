@@ -1,6 +1,6 @@
 ---
 name: wardx-server
-description: Operates the Wardx ingest control plane over MCP — catalog onboarding, Remote Config, experiments, 1-minute aggregates, and recent logs. Use when the user mentions Wardx, wardx-server, @wardx/server, Remote Config, experiments, ingest, telemetry, get_project_overview, set_config_value, upsert_experiment, analyze_experiment, POST /v1/sync, or MCP tools on the Wardx process. Also use when changing packages/server (ControlService, ingest, MCP tools, config schema). Do not use for writing SDK instrumentation (metrics, events, config.get) — that belongs to wardx-node.
+description: Operates the Wardx ingest control plane over MCP — catalog onboarding, Remote Config, experiments, 1-minute aggregates, and recent logs. Use when the user mentions Wardx, wardx-server, @wardx/server, Remote Config, experiments, ingest, telemetry, get_project_overview, set_config_value, upsert_experiment, analyze_experiment, POST /v1/sync, or MCP tools on the Wardx process. Also use when changing packages/server (ControlService, ingest, MCP tools, config schema). Do not use for writing SDK instrumentation (metrics, events, config.get) — that belongs to wardx.
 ---
 
 # Wardx server

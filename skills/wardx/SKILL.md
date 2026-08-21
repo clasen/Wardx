@@ -1,5 +1,5 @@
 ---
-name: wardx-node
+name: wardx
 description: Instruments Node.js with the Wardx SDK (wardx / createWardx) — counters, gauges, histograms, timers, events, logs, Remote Config, and experiment assignment. Use when the user mentions wardx, createWardx, config.get, experiment.goal, createConsoleTracer, packages/node, packages/core, @wardx/core, or asks to add telemetry, metrics, events, logs, or A/B assignment in application code. Also use when changing the Node SDK or the core engine. Do not use for MCP tools, catalog onboarding, ingest control, or POST /v1/sync from an agent — that belongs to wardx-server.
 ---
 
