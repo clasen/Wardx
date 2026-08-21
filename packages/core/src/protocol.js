@@ -32,6 +32,7 @@ export const REQUIRED_CREATE_KEYS = [
   'endpoint',
   'projectKey',
   'project',
+  'role',
   'appVersion',
   'environment'
 ];

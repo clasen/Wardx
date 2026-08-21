@@ -1,0 +1,81 @@
+{
+  "host": "127.0.0.1",
+  "port": 8787,
+  "projectKeys": {
+    "dev_project_key": "demo"
+  },
+  "sink": "null",
+  "maxRequestBytes": 2097152,
+  "aggregateRetentionMinutes": 60,
+  "aggregateMaxSeriesPerMetric": 1000,
+  "memorySinkMaxEnvelopes": 10000,
+  "recentClientsMax": 100,
+  "recentLogsMax": 200,
+  "projects": {
+    "demo": {
+      "version": 1,
+      "values": {
+        "matchmaking.timeoutMs": 5000,
+        "chat.enabled": true,
+        "rewards.multiplier": 1.2,
+        "message.delayMs": 1000
+      },
+      "keyRoles": {
+        "matchmaking.timeoutMs": ["game-server"],
+        "chat.enabled": ["client"],
+        "rewards.multiplier": ["*"],
+        "message.delayMs": ["client"]
+      },
+      "experiments": [
+        {
+          "id": "message-delay-v1",
+          "enabled": true,
+          "allocation": 1,
+          "salt": "3ad8f9",
+          "primaryMetric": "message.sent",
+          "roles": ["client"],
+          "variants": [
+            {
+              "key": "control",
+              "weight": 50,
+              "values": {
+                "message.delayMs": 1000
+              }
+            },
+            {
+              "key": "fast",
+              "weight": 50,
+              "values": {
+                "message.delayMs": 400
+              }
+            }
+          ]
+        }
+      ],
+      "catalog": {
+        "description": "Demo chat product. A player client and a match service share this project.",
+        "roles": {
+          "client": {
+            "description": "Player-facing client. Chat delay, purchases, messages sent."
+          },
+          "game-server": {
+            "description": "Match service. Search timeout and throughput."
+          }
+        },
+        "signals": {
+          "matchmaking.timeoutMs": "Milliseconds before a matchmaking search expires",
+          "chat.enabled": "Whether outbound chat is allowed",
+          "rewards.multiplier": "Multiplier applied to reward grants",
+          "message.delayMs": "Milliseconds to wait before sending a chat message",
+          "message.sent": "Chat messages that left the client after the delay",
+          "purchase": "Completed in-app purchase"
+        },
+        "experiments": {
+          "message-delay-v1": {
+            "hypothesis": "Shorter delay increases messages sent"
+          }
+        }
+      }
+    }
+  }
+}

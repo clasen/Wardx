@@ -1,6 +1,6 @@
 ---
 name: wardx
-description: Instruments Node.js with the Wardx SDK (wardx / createWardx) — counters, gauges, histograms, timers, events, logs, Remote Config, and experiment assignment. Use when the user mentions wardx, createWardx, config.get, experiment.goal, createConsoleTracer, packages/node, packages/core, @wardx/core, or asks to add telemetry, metrics, events, logs, or A/B assignment in application code. Also use when changing the Node SDK or the core engine. Do not use for MCP tools, catalog onboarding, ingest control, or POST /v1/sync from an agent — that belongs to wardx-server.
+description: Instruments Node.js with the Wardx SDK (wardx / createWardx) — counters, gauges, histograms, timers, events, logs, Remote Config, experiment assignment, and volume funnels. Use when the user mentions wardx, createWardx, config.get, experiment.goal, createConsoleTracer, packages/node, packages/core, @wardx/core, funnel, onboarding steps, or asks to add telemetry, metrics, events, logs, or A/B assignment in application code. Also use when changing the Node SDK or the core engine. Do not use for MCP tools, catalog onboarding, ingest control, or POST /v1/sync from an agent — that belongs to wardx-server.
 ---
 
 # Wardx Node SDK
@@ -12,7 +12,7 @@ description: Instruments Node.js with the Wardx SDK (wardx / createWardx) — co
 - Remote Config is always a local read of the last snapshot.
 - The SDK sends names. Descriptions live in the server catalog.
 
-Control plane (MCP, catalog, experiments as definitions, aggregates) is the **wardx-server** skill. This skill writes application instrumentation and SDK code.
+Control plane (MCP, catalog, experiments as definitions, aggregates) is the **wardx-server** skill. This skill writes application instrumentation and SDK code. C# / Unity instrumentation is `clients/csharp`, not this package.
 
 Package internals when editing `packages/node` or `packages/core`: [references/package.md](references/package.md).
 
@@ -38,6 +38,7 @@ Use the cheapest signal that still answers the question.
 | Distribution of a sample you already have | `histogram(name, …).observe(value)` |
 | Elapsed time you start and stop here | `timer(name, dims)` then the stop function |
 | One discrete product fact | `event(name, attrs)` plus a counter when you also need a rate |
+| Drop-off between named steps (volume funnel) | one `event` + one `counter` per step name. Not a unique-user path. |
 | Failure on a request path | `log.error(message, attrs)` plus a counter. A stack is an attr. |
 | Rare anomaly or purchase | `event` (not once per grant on a busy backend) |
 | Remote value / variant | `config.get(key, fallback, context)` |
@@ -48,6 +49,8 @@ A counter in a frame is a window delta, not a lifetime total. A gauge that is ne
 **Dimensions.** Small sets: `mode`, `route`, `code`, `source`, `result`. Values are string, number, or boolean. Never `userId`, email, or a unique id on a metric dimension. The SDK caps series per name (`maxSeriesPerMetric`); extra series become no-ops and increment `wardx.internal.cardinality_dropped`. Histogram `observe(value, attrs)` keeps attrs only for the window max (`exemplar`). A lookup key (`grantId`, `matchId`) belongs there, not on the series.
 
 **Backend vs client.** If one process serves many users, increment counters in process. Do not `event()` once per user action. Give that process its own `role` so MCP does not mix it with a player client.
+
+**Funnels.** Wardx compares how often each named step fired. It does not store a user journey. Give each step its own name (`onboarding.start` → `onboarding.profile` → `onboarding.done`). Emit the event and increment a counter of the same name. Put the breakdown (`channel`, `mode`) on the counter, not as the only discriminator of a shared `screen.view`. Event attrs do not split the server count. `sessionId` is envelope identity, not a join key. `experiment.goal` is one conversion, not an N-step funnel. Read the drop with `get_aggregates` (wardx-server). Do not invent Mixpanel-style unique-user sequences.
 
 **Economy.** Wardx is not a ledger. Wallet rows live in the application database. On the grant path: `coins.awarded` (`.add(amount)`), `coins.grants` (`.inc()`), `coins.award_size` histogram with exemplar. Emit `coins.anomaly` only when amount exceeds a Remote Config cap.
 
@@ -121,6 +124,18 @@ function handleMatchmaking(req, res) {
   }
 }
 ```
+
+**User says:** "Instrument the onboarding funnel."
+
+```js
+wardx.event('onboarding.start', { channel });
+wardx.counter('onboarding.start', { channel }).inc();
+wardx.event('onboarding.done');
+wardx.counter('onboarding.done').inc();
+wardx.experiment.goal('onboarding.done', { subjectId: userId });
+```
+
+One name per step. Compare those counts. Do not put `userId` on the counter. Do not promise unique-user sequences.
 
 **User says:** "A/B the message delay for a user."
 

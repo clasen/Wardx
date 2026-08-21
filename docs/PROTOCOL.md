@@ -1,6 +1,6 @@
 # Wardx Sync Protocol v1
 
-Wire contract for the Node SDK and ingest server. Future SDKs must emit and consume this envelope unchanged.
+Wire contract for Wardx SDKs and the ingest server. Every SDK must emit and consume this envelope unchanged. `sdk.name` / `client.platform` identify the runtime: `wardx-node` / `node`, `wardx-csharp` / `csharp`, `wardx-unity` / `unity`.
 
 ## Transport
 
@@ -23,6 +23,7 @@ Delivery is **at-most-once**. A failed sync discards the batch. There is no disk
   "client": {
     "instanceId": "01…",
     "sessionId": "01…",
+    "role": "client",
     "appVersion": "2.4.1",
     "environment": "production",
     "platform": "node"
@@ -31,6 +32,8 @@ Delivery is **at-most-once**. A failed sync discards the batch. There is no disk
   "frames": []
 }
 ```
+
+`client.role` is a non-empty name for this SDK instance inside the project: `unity`, `game-server`, `desktop`, `mobile`, and so on. It is not a closed list. `*` is reserved and rejected. Several roles may sync to the same project. They may emit similar metric names; the server keeps series separate by role.
 
 `frames` may be empty on bootstrap so the client can fetch Remote Config immediately.
 
@@ -63,7 +66,13 @@ Compact arrays for high-volume collections:
 }
 ```
 
-Counters are **window deltas**, not lifetime totals. Histogram observations above the last bound remain in `count` / `sum` / `min` / `max` and do not increment a bucket. Internal SDK series use the `wardx.internal.` prefix and are merged into the same arrays.
+The server counts `events` by name and `client.role`. Attrs on a product event are not series. `experiment.exposure` and `experiment.goal` are the exception: they roll up by experiment and variant. A volume funnel is therefore one distinct event name (and a counter of the same name) per step. See [ARCHITECTURE.md](ARCHITECTURE.md).
+
+Counters are **window deltas**, not lifetime totals. Histogram observations above the last bound remain in `count` / `sum` / `min` / `max` and do not increment a bucket.
+
+A histogram body may include optional `exemplar`: `{ "value": 80, "attrs": { "grantId": "g-80" } }`. It is the observation that set `max` in that window, with caller attrs. One exemplar per series per window. The server keeps the exemplar of the higher merged `max`. Clients omit the field when the max observation had no attrs.
+
+Internal SDK series use the `wardx.internal.` prefix and are merged into the same arrays.
 
 ## Response
 
@@ -87,7 +96,9 @@ Newer snapshot:
 }
 ```
 
-The server stores one serialized snapshot per version. A request only compares `configVersion`; it does not rebuild config JSON per client.
+The response `config` contains only keys and experiments visible to `client.role`. Each stored key has `keyRoles`: a list of role names, or `["*"]` for every role. Each stored experiment has `roles` with the same shape. Those lists stay on the server. MCP reads them. The wire snapshot does not include them.
+
+The server keeps one `configVersion` per project. It caches one JSON view per role and reuses it. It does not rebuild JSON per instance.
 
 ## Experiment assignment
 
@@ -121,11 +132,13 @@ Client operational values live in `packages/core/defaults.json`. Sync delay is `
 
 ## Server
 
-Ingest process: authenticate `X-Wardx-Key` → gunzip if needed → parse → validate → sink → 1-minute in-memory aggregation → compare config version → respond.
+Ingest process: authenticate `X-Wardx-Key` → map key to project → gunzip if needed → parse → validate → sink → 1-minute in-memory aggregation for that project → compare that project's config version → respond.
 
-Admin (separate credential `X-Wardx-Admin-Key`):
+HTTP:
 
-- `PUT /v1/admin/config`
-- `GET /v1/admin/config`
-- `GET /v1/admin/aggregates`
+- `POST /v1/sync`
 - `GET /health`
+
+Remote Config, experiments, aggregates, recent logs, and analysis are MCP tools on the ingest process. There is no admin HTTP API. Each project has its own snapshot, aggregator, recent-client ring, and recent-log ring. Aggregates, clients, and logs are tagged with the sender's role. MCP `get_project_overview` groups them by role.
+
+How the SDK HTTP sync and the MCP agent share that process: [ARCHITECTURE.md](ARCHITECTURE.md).

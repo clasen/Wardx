@@ -19,6 +19,7 @@ export async function testE({ clients, durationMs, syncIntervalMs }) {
         client: {
           instanceId: `client-${i}`,
           sessionId: `session-${i}`,
+          role: 'client',
           appVersion: '0.0.0',
           environment: 'stress',
           platform: 'node'

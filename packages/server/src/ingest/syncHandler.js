@@ -15,12 +15,17 @@ function projectForKey(config, key) {
   return config.projectKeys[key];
 }
 
-export function createSyncHandler({ config, configRepo, aggregator, sink }) {
+export function createSyncHandler({ config, registry, sink }) {
   return async function handleSync(req, res) {
     const key = req.headers['x-wardx-key'];
     const project = typeof key === 'string' ? projectForKey(config, key) : undefined;
     if (!project) {
       json(res, 401, { ok: false, error: 'unauthorized' });
+      return;
+    }
+    const store = registry.get(project);
+    if (!store) {
+      json(res, 400, { ok: false, error: 'unknown project' });
       return;
     }
     let raw;
@@ -60,56 +65,11 @@ export function createSyncHandler({ config, configRepo, aggregator, sink }) {
       return;
     }
     sink.ingest(body);
-    aggregator.ingest(body);
-    const includeConfig = body.configVersion !== configRepo.version;
-    json(res, 200, configRepo.buildResponse(includeConfig));
-  };
-}
-
-export function createAdminHandler({ config, configRepo }) {
-  return async function handleAdmin(req, res, url) {
-    const adminKey = req.headers['x-wardx-admin-key'];
-    if (adminKey !== config.adminKey) {
-      json(res, 401, { ok: false, error: 'unauthorized' });
-      return;
-    }
-    if (req.method === 'GET' && url.pathname === '/v1/admin/config') {
-      json(res, 200, {
-        ok: true,
-        version: configRepo.version,
-        values: configRepo.values,
-        experiments: configRepo.experiments
-      });
-      return;
-    }
-    if (req.method === 'PUT' && url.pathname === '/v1/admin/config') {
-      let raw;
-      try {
-        raw = await readBody(req, config.maxRequestBytes);
-      } catch (err) {
-        if (err instanceof PayloadTooLargeError) {
-          json(res, 413, { ok: false, error: 'payload too large' });
-          return;
-        }
-        throw err;
-      }
-      let snapshot;
-      try {
-        snapshot = JSON.parse(raw.toString('utf8'));
-      } catch {
-        json(res, 400, { ok: false, error: 'invalid json' });
-        return;
-      }
-      try {
-        configRepo.replace(snapshot);
-      } catch (err) {
-        json(res, 400, { ok: false, error: err.message });
-        return;
-      }
-      json(res, 200, { ok: true, version: configRepo.version });
-      return;
-    }
-    json(res, 404, { ok: false, error: 'not found' });
+    store.aggregator.ingest(body);
+    store.clients.touch(body.client);
+    store.logs.ingest(body);
+    const includeConfig = body.configVersion !== store.configRepo.version;
+    json(res, 200, store.configRepo.buildResponse(includeConfig, body.client.role));
   };
 }
 

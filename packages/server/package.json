@@ -1,7 +1,26 @@
 {
   "name": "@wardx/server",
-  "version": "0.1.0",
-  "description": "Wardx ingest server for HTTP sync, Remote Config, and development sinks.",
+  "version": "0.1.1",
+  "description": "Wardx ingest server for HTTP sync. Remote Config and experiments are controlled through MCP.",
+  "keywords": [
+    "wardx",
+    "telemetry",
+    "ingest",
+    "remote-config",
+    "experiments",
+    "mcp",
+    "observability"
+  ],
+  "author": "clasen <martin.clasen@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/clasen/Wardx.git",
+    "directory": "packages/server"
+  },
+  "homepage": "https://github.com/clasen/Wardx/tree/main/packages/server#readme",
+  "bugs": {
+    "url": "https://github.com/clasen/Wardx/issues"
+  },
   "type": "module",
   "engines": {
     "node": ">=20"
@@ -10,12 +29,15 @@
     ".": "./src/index.js"
   },
   "bin": {
-    "wardx-server": "./src/cli.js"
+    "wardx-server": "src/cli.js"
   },
   "files": [
     "src"
   ],
   "publishConfig": {
     "access": "public"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0"
   }
 }

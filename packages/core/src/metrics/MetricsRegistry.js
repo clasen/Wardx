@@ -97,7 +97,10 @@ export class MetricsRegistry {
   histogram(name, a, b) {
     const { buckets, dims } = parseHistogramArgs(a, b, this.defaultHistogramBuckets);
     const series = this._series(this.histogramsByName, Histogram, name, dims, (resolvedDims) => {
-      return new Histogram(name, resolvedDims, buckets);
+      return new Histogram(name, resolvedDims, buckets, {
+        maxDimensionKeys: this.maxDimensionKeys,
+        maxDimensionValueLength: this.maxDimensionValueLength
+      });
     });
     if (!series) return NOOP_HISTOGRAM;
     if (!boundsEqual(series.bounds, buckets)) {

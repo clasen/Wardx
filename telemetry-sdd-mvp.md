@@ -900,6 +900,11 @@ packages/
         ConfigRepository.js
       aggregation/
         FrameAggregator.js
+      control/
+        ControlService.js
+      mcp/
+        tools.js
+        stdio.js
       sinks/
         NullSink.js
         MemorySink.js
@@ -1246,13 +1251,7 @@ En browser/mobile esta key debe considerarse **pública al cliente** y no puede 
 
 ### Administración
 
-La API que modifica:
-
-- Remote Config;
-- experimentos;
-- versiones;
-
-utilizará credenciales separadas y no forma parte del SDK público.
+La modificación de Remote Config, experimentos y versiones ocurre por MCP en el mismo proceso que el ingest. No forma parte del SDK público ni de HTTP.
 
 ### Remote Config
 
@@ -1264,7 +1263,7 @@ Nunca almacenar secretos en Remote Config porque los valores terminan en aplicac
 
 No implementar todavía:
 
-- dashboard;
+- dashboard web;
 - base de datos productiva;
 - WebSockets;
 - streaming continuo;
@@ -1278,7 +1277,7 @@ No implementar todavía:
 - análisis automático de experimentos;
 - segmentación avanzada;
 - targeting geográfico;
-- administración visual de Remote Config;
+- administración visual de Remote Config (el control plane es MCP);
 - SDK C#;
 - SDK browser;
 - SDK Unity.

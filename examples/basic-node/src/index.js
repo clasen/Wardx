@@ -4,6 +4,7 @@ const wardx = createWardx({
   endpoint: 'http://127.0.0.1:8787',
   projectKey: 'dev_project_key',
   project: 'demo',
+  role: 'client',
   appVersion: '0.1.0',
   environment: 'development'
 });

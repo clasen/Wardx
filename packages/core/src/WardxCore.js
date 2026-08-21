@@ -5,11 +5,19 @@ import { ConfigStore } from './config/ConfigStore.js';
 import { ExperimentResolver } from './config/ExperimentResolver.js';
 import { FrameBuilder } from './frame/FrameBuilder.js';
 import { InternalMetrics } from './internal/InternalMetrics.js';
+import { NOOP_COUNTER } from './metrics/Counter.js';
+import { NOOP_GAUGE } from './metrics/Gauge.js';
+import { NOOP_HISTOGRAM } from './metrics/Histogram.js';
+import { startTimer } from './metrics/Timer.js';
+import { emit } from './trace/emit.js';
+import { wrapCounter, wrapGauge, wrapHistogram } from './trace/wrap.js';
 
 export class WardxCore {
   constructor(settings) {
     this.settings = settings;
     this.stopped = false;
+    this._tracer = settings.tracer ?? null;
+    this._wrappers = this._tracer ? new WeakMap() : null;
     this.internal = new InternalMetrics();
     this.metrics = new MetricsRegistry({
       maxSeriesPerMetric: settings.maxSeriesPerMetric,
@@ -41,27 +49,51 @@ export class WardxCore {
   }
 
   counter(name, dims) {
-    return this.metrics.counter(name, dims);
+    return this._wrap(this.metrics.counter(name, dims), NOOP_COUNTER, (series, noop) =>
+      wrapCounter(this._tracer, series, noop, name, dims)
+    );
   }
 
   gauge(name, dims) {
-    return this.metrics.gauge(name, dims);
+    return this._wrap(this.metrics.gauge(name, dims), NOOP_GAUGE, (series, noop) =>
+      wrapGauge(this._tracer, series, noop, name, dims)
+    );
   }
 
   histogram(name, a, b) {
-    return this.metrics.histogram(name, a, b);
+    return this._wrap(this.metrics.histogram(name, a, b), NOOP_HISTOGRAM, (series, noop) =>
+      wrapHistogram(this._tracer, series, noop, name)
+    );
   }
 
   timer(name, dims) {
-    return this.metrics.timer(name, dims);
+    if (this._tracer === null) return this.metrics.timer(name, dims);
+    return startTimer((duration, endDims) => {
+      const merged = endDims ? { ...(dims || {}), ...endDims } : dims;
+      this.histogram(name, merged).observe(duration);
+    });
   }
 
   event(name, attrs) {
-    if (!this.events.push(name, attrs)) this.internal.eventsDropped += 1;
+    const dropped = !this.events.push(name, attrs);
+    if (dropped) this.internal.eventsDropped += 1;
+    emit(this._tracer, 'event', { name, attrs: attrs ?? null, dropped });
   }
 
   _log(level, message, attrs) {
-    if (!this.logs.push(level, message, attrs)) this.internal.logsDropped += 1;
+    const dropped = !this.logs.push(level, message, attrs);
+    if (dropped) this.internal.logsDropped += 1;
+    emit(this._tracer, 'log', { level, message, attrs: attrs ?? null, dropped });
+  }
+
+  _wrap(series, noopSentinel, factory) {
+    if (this._tracer === null) return series;
+    if (series === noopSentinel) return factory(series, true);
+    let wrapped = this._wrappers.get(series);
+    if (wrapped) return wrapped;
+    wrapped = factory(series, false);
+    this._wrappers.set(series, wrapped);
+    return wrapped;
   }
 
   configGet(key, fallback, context) {
@@ -143,6 +175,18 @@ export class WardxCore {
     this.internal.logsDropped += fitted.droppedLogs;
     this.internal.eventsDropped += fitted.droppedEvents;
     this.pendingFrames.push(fitted.frame);
+    emit(this._tracer, 'frame', {
+      seq: fitted.frame.seq,
+      from: fitted.frame.from,
+      to: fitted.frame.to,
+      counters: fitted.frame.metrics.counters.length,
+      gauges: fitted.frame.metrics.gauges.length,
+      histograms: fitted.frame.metrics.histograms.length,
+      events: fitted.frame.events.length,
+      logs: fitted.frame.logs.length,
+      droppedLogs: fitted.droppedLogs,
+      droppedEvents: fitted.droppedEvents
+    });
     return fitted;
   }
 

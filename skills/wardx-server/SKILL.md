@@ -1,6 +1,6 @@
 ---
 name: wardx-server
-description: Operates the Wardx ingest control plane over MCP — catalog onboarding, Remote Config, experiments, 1-minute aggregates, and recent logs. Use when the user mentions Wardx, wardx-server, @wardx/server, Remote Config, experiments, ingest, telemetry, get_project_overview, set_config_value, upsert_experiment, analyze_experiment, POST /v1/sync, or MCP tools on the Wardx process. Also use when changing packages/server (ControlService, ingest, MCP tools, config schema). Do not use for writing SDK instrumentation (metrics, events, config.get) — that belongs to wardx.
+description: Operates the Wardx ingest control plane over MCP — catalog onboarding, Remote Config, experiments, 1-minute aggregates, recent logs, and volume-funnel reads. Use when the user mentions Wardx, wardx-server, @wardx/server, Remote Config, experiments, ingest, telemetry, funnel, get_project_overview, set_config_value, upsert_experiment, analyze_experiment, POST /v1/sync, or MCP tools on the Wardx process. Also use when changing packages/server (ControlService, ingest, MCP tools, config schema). Do not use for writing SDK instrumentation (metrics, events, config.get) — that belongs to wardx.
 ---
 
 # Wardx server
@@ -74,9 +74,10 @@ Assignment runs on the client, not the server. The server stores the definition 
 
 This is in-memory development aggregation, not a production query API.
 
-- `get_aggregates` — 1-minute windows with catalog legends. Optional `names`, `from`, `to`, `role`. Counters in a window are sums of window deltas. A gauge is the last value by timestamp. Extra series past `aggregateMaxSeriesPerMetric` increment `cardinalityDropped`.
+- `get_aggregates` — 1-minute windows with catalog legends. Optional `names`, `from`, `to`, `role`. Counters in a window are sums of window deltas. A gauge is the last value by timestamp. Events count by name and role; attrs are not series. Extra series past `aggregateMaxSeriesPerMetric` increment `cardinalityDropped`.
+- Volume funnel — compare step counter totals (or `eventNames`) for the same window and `role`. That is how often each step fired, not unique users and not ordered sequences. Do not invent a per-subject path. Point missing step names at the wardx skill.
 - `get_recent_logs` — newest-first ring (`recentLogsMax`). Filter with `level`, exact `message`, exact `attrs`, `role`, `limit`. Drill here after aggregates. A stack or provider code is just another attr.
-- `analyze_experiment` — definition, hypothesis, exposures and goals by variant, `primaryMetric` total.
+- `analyze_experiment` — definition, hypothesis, exposures and goals by variant, `primaryMetric` total. `experiment.goal` is one conversion, not an N-step funnel.
 
 Filter with `role` when comparing surfaces. Group answers by role. Prefer catalog descriptions over raw names. MCP does not read the envelope sink (`null` / `memory` / `ndjson`).
 
@@ -97,6 +98,12 @@ When the task is code in `packages/server`: keep HTTP as the client path only. C
 1. Overview first. Confirm `message.delayMs` exists and which roles receive it.
 2. `set_config_value` with `key`, `value: 400`, `roles: ["client"]`.
 3. Report the new `version`. Clients apply it on the next sync.
+
+**User says:** "How is the onboarding funnel?"
+
+1. Overview. Confirm the step names exist as outcomes.
+2. `get_aggregates` with those names and the client `role`. Compare counts start → next → done in the same window.
+3. If they expected unique-user sequences or time between steps, say Wardx does not store that.
 
 **User says:** "A/B test a shorter delay."
 

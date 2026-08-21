@@ -50,33 +50,10 @@ export async function testF({ durationMs, rate }) {
   let bumped = false;
   while (Date.now() - started < durationMs) {
     if (!bumped && Date.now() >= bumpAt) {
-      await new Promise((resolve, reject) => {
-        const payload = JSON.stringify({
-          version: 13,
-          values: { 'message.delayMs': 400 },
-          experiments: []
-        });
-        const req = http.request(
-          {
-            hostname: '127.0.0.1',
-            port: address.port,
-            path: '/v1/admin/config',
-            method: 'PUT',
-            agent,
-            headers: {
-              'content-type': 'application/json',
-              'content-length': Buffer.byteLength(payload),
-              'x-wardx-admin-key': 'admin-key'
-            }
-          },
-          (res) => {
-            res.resume();
-            res.on('end', resolve);
-          }
-        );
-        req.on('error', reject);
-        req.write(payload);
-        req.end();
+      server.wardx.control.replaceSnapshot('demo', {
+        values: { 'message.delayMs': 400 },
+        keyRoles: { 'message.delayMs': ['client'] },
+        experiments: []
       });
       bumped = true;
     }

@@ -1,7 +1,26 @@
 {
   "name": "wardx",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Node.js SDK for Wardx telemetry, Remote Config, and experiments.",
+  "keywords": [
+    "wardx",
+    "telemetry",
+    "metrics",
+    "remote-config",
+    "experiments",
+    "observability",
+    "nodejs"
+  ],
+  "author": "clasen <martin.clasen@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/clasen/Wardx.git",
+    "directory": "packages/node"
+  },
+  "homepage": "https://github.com/clasen/Wardx/tree/main/packages/node#readme",
+  "bugs": {
+    "url": "https://github.com/clasen/Wardx/issues"
+  },
   "type": "module",
   "engines": {
     "node": ">=20"
@@ -13,6 +32,6 @@
     "src"
   ],
   "dependencies": {
-    "@wardx/core": "0.1.0"
+    "@wardx/core": "0.1.1"
   }
 }

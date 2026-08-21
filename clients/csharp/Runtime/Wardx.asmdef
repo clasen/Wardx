@@ -1,0 +1,14 @@
+{
+  "name": "Wardx",
+  "rootNamespace": "Wardx",
+  "references": ["Wardx.Core"],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

@@ -1,4 +1,10 @@
 import { gzipSync } from 'node:zlib';
+import { toClientExperiment, toWireExperiment } from '../control/validateExperiment.js';
+import { experimentsForRole, validateKeyRoles, valuesForRole } from '../roles.js';
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
 
 export class ConfigRepository {
   constructor(initial) {
@@ -6,23 +12,55 @@ export class ConfigRepository {
   }
 
   replace(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+      throw new Error('config snapshot must be an object');
+    }
     if (typeof snapshot.version !== 'number' || !Number.isFinite(snapshot.version)) {
       throw new Error('config version must be a finite number');
     }
+    if (!snapshot.values || typeof snapshot.values !== 'object' || Array.isArray(snapshot.values)) {
+      throw new Error('config values must be an object');
+    }
+    if (!Array.isArray(snapshot.experiments)) {
+      throw new Error('config experiments must be an array');
+    }
+    validateKeyRoles(snapshot.values, snapshot.keyRoles, 'config snapshot');
     this.version = snapshot.version;
-    this.values = snapshot.values;
-    this.experiments = snapshot.experiments;
+    this.values = cloneJson(snapshot.values);
+    this.keyRoles = cloneJson(snapshot.keyRoles);
+    this.experiments = snapshot.experiments.map((experiment) => toClientExperiment(experiment));
     this.configJson = JSON.stringify({
-      values: snapshot.values,
-      experiments: snapshot.experiments
+      values: this.values,
+      experiments: this.experiments
     });
     this.configGzip = gzipSync(Buffer.from(this.configJson));
+    this.wireByRole = new Map();
   }
 
-  buildResponse(includeConfig) {
+  _wireJson(role) {
+    let json = this.wireByRole.get(role);
+    if (json !== undefined) return json;
+    json = JSON.stringify({
+      values: valuesForRole(this.values, this.keyRoles, role),
+      experiments: experimentsForRole(this.experiments, role).map(toWireExperiment)
+    });
+    this.wireByRole.set(role, json);
+    return json;
+  }
+
+  snapshot() {
+    return {
+      version: this.version,
+      values: cloneJson(this.values),
+      keyRoles: cloneJson(this.keyRoles),
+      experiments: cloneJson(this.experiments)
+    };
+  }
+
+  buildResponse(includeConfig, role) {
     const serverTime = Date.now();
     if (includeConfig) {
-      return `{"ok":true,"serverTime":${serverTime},"configVersion":${this.version},"config":${this.configJson}}`;
+      return `{"ok":true,"serverTime":${serverTime},"configVersion":${this.version},"config":${this._wireJson(role)}}`;
     }
     return `{"ok":true,"serverTime":${serverTime},"configVersion":${this.version}}`;
   }

@@ -1,23 +1,35 @@
 import { gzipSync } from 'node:zlib';
 import { PROTOCOL_VERSION } from '@wardx/core';
 
+export function keyRolesFor(values, roles = ['client']) {
+  const keyRoles = {};
+  for (const key of Object.keys(values)) keyRoles[key] = [...roles];
+  return keyRoles;
+}
+
 export function testServerConfig(overrides = {}) {
+  const values = {
+    'message.delayMs': 1000,
+    'chat.enabled': true
+  };
   return {
     host: '127.0.0.1',
     port: 0,
     projectKeys: { 'test-key': 'demo' },
-    adminKey: 'admin-key',
     sink: 'memory',
     maxRequestBytes: 2097152,
     aggregateRetentionMinutes: 60,
+    aggregateMaxSeriesPerMetric: 1000,
     memorySinkMaxEnvelopes: 1000,
-    config: {
-      version: 12,
-      values: {
-        'message.delayMs': 1000,
-        'chat.enabled': true
-      },
-      experiments: []
+    recentClientsMax: 50,
+    recentLogsMax: 100,
+    projects: {
+      demo: {
+        version: 12,
+        values,
+        keyRoles: keyRolesFor(values),
+        experiments: []
+      }
     },
     ...overrides
   };
@@ -29,6 +41,7 @@ export function gzipJson(object) {
 
 export function sampleEnvelope(overrides = {}) {
   const now = Date.now();
+  const { client, ...rest } = overrides;
   return {
     protocol: PROTOCOL_VERSION,
     project: 'demo',
@@ -36,9 +49,11 @@ export function sampleEnvelope(overrides = {}) {
     client: {
       instanceId: '01TESTINSTANCE000000000000',
       sessionId: '01TESTSESSION0000000000000',
+      role: 'client',
       appVersion: '0.0.0',
       environment: 'test',
-      platform: 'node'
+      platform: 'node',
+      ...client
     },
     configVersion: 0,
     frames: [
@@ -55,6 +70,6 @@ export function sampleEnvelope(overrides = {}) {
         logs: [[now - 700, 'error', 'payment_failed', { code: 'timeout' }]]
       }
     ],
-    ...overrides
+    ...rest
   };
 }

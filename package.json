@@ -12,7 +12,11 @@
   "scripts": {
     "test": "node --test packages/core/test/*.test.js packages/node/test/*.test.js packages/server/test/*.test.js",
     "server": "node packages/server/src/cli.js config/development.json",
+    "server:production": "node packages/server/src/cli.js config/production.json",
     "stress": "node packages/stress/src/index.js",
-    "example": "node examples/basic-node/src/index.js"
+    "example": "node examples/basic-node/src/index.js",
+    "example:pipeline": "node examples/pipeline/src/index.js",
+    "example:errors": "node examples/errors/src/index.js",
+    "test:csharp": "dotnet run --project clients/csharp/Tests/Wardx.Tests.csproj"
   }
 }

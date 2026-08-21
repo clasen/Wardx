@@ -115,6 +115,7 @@ export class WardxNode {
       client: {
         instanceId: this._instanceId,
         sessionId: this._sessionId,
+        role: this.settings.role,
         appVersion: this.settings.appVersion,
         environment: this.settings.environment,
         platform: PLATFORM
@@ -124,22 +125,60 @@ export class WardxNode {
     };
     const json = JSON.stringify(envelope);
     const compressed = gzipBuffer(json);
-    this._core.internal.bytesUncompressed += Buffer.byteLength(json);
-    this._core.internal.bytesCompressed += compressed.length;
+    const bytesUncompressed = Buffer.byteLength(json);
+    const bytesCompressed = compressed.length;
+    this._core.internal.bytesUncompressed += bytesUncompressed;
+    this._core.internal.bytesCompressed += bytesCompressed;
     const started = performance.now();
+    const phase = flags.bootstrap ? 'bootstrap' : flags.flush ? 'flush' : 'tick';
     try {
       const result = await this._transport.post(compressed);
       this._core.internal.lastSyncMs = performance.now() - started;
       if (!result.ok) {
         this._core.internal.framesFailed += Math.max(frames.length, 1);
+        this._traceSync({
+          phase,
+          frames: frames.length,
+          bytesUncompressed,
+          bytesCompressed,
+          ms: this._core.internal.lastSyncMs,
+          ok: false,
+          status: result.status
+        });
         return;
       }
       this._core.internal.framesSent += frames.length;
       this._applyResponse(result.json);
+      this._traceSync({
+        phase,
+        frames: frames.length,
+        bytesUncompressed,
+        bytesCompressed,
+        ms: this._core.internal.lastSyncMs,
+        ok: true,
+        status: result.status,
+        configVersion: this._core.configStore.version,
+        appliedConfig: Boolean(result.json && result.json.config)
+      });
     } catch {
       this._core.internal.lastSyncMs = performance.now() - started;
       this._core.internal.framesFailed += Math.max(frames.length, 1);
+      this._traceSync({
+        phase,
+        frames: frames.length,
+        bytesUncompressed,
+        bytesCompressed,
+        ms: this._core.internal.lastSyncMs,
+        ok: false
+      });
     }
+  }
+
+  _traceSync(record) {
+    const tracer = this.settings.tracer;
+    if (tracer == null) return;
+    const fn = tracer.sync;
+    if (typeof fn === 'function') fn.call(tracer, record);
   }
 
   _applyResponse(json) {

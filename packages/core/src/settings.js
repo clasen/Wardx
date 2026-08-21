@@ -51,6 +51,12 @@ export function resolveSettings(options) {
   requireKeys(options, REQUIRED_CREATE_KEYS, 'createWardx');
   const defaults = loadSdkDefaults();
   const settings = { ...defaults, ...options };
+  if (typeof settings.role !== 'string' || settings.role.length === 0) {
+    throw new Error('role must be a non-empty string');
+  }
+  if (settings.role === '*') {
+    throw new Error('role cannot be *');
+  }
   if (settings.privacySalt === undefined || settings.privacySalt === null || settings.privacySalt === '') {
     settings.privacySalt = settings.projectKey;
   }
@@ -67,6 +73,9 @@ export function resolveSettings(options) {
   assertNumberInRange(settings, 'syncJitterMax', 1, 2);
   if (settings.syncJitterMin > settings.syncJitterMax) {
     throw new Error('syncJitterMin must be <= syncJitterMax');
+  }
+  if (settings.tracer != null && (typeof settings.tracer !== 'object' || Array.isArray(settings.tracer))) {
+    throw new Error('tracer must be an object');
   }
   if (!Array.isArray(settings.histogramBuckets) || settings.histogramBuckets.length === 0) {
     throw new Error('histogramBuckets must be a non-empty array');

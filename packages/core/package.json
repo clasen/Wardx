@@ -1,7 +1,27 @@
 {
   "name": "@wardx/core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Runtime-agnostic Wardx engine for metrics, events, logs, Remote Config, and experiments.",
+  "keywords": [
+    "wardx",
+    "telemetry",
+    "metrics",
+    "events",
+    "logs",
+    "remote-config",
+    "experiments",
+    "observability"
+  ],
+  "author": "clasen <martin.clasen@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/clasen/Wardx.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/clasen/Wardx/tree/main/packages/core#readme",
+  "bugs": {
+    "url": "https://github.com/clasen/Wardx/issues"
+  },
   "type": "module",
   "engines": {
     "node": ">=20"

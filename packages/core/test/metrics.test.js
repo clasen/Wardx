@@ -101,6 +101,49 @@ test('histogram records count sum min max and buckets', () => {
     [25, 1],
     [50, 0]
   ]);
+  assert.equal(body.exemplar, undefined);
+});
+
+test('histogram keeps an exemplar for the window max', () => {
+  const metrics = registry();
+  const h = metrics.histogram('coins.award_size', { buckets: [10, 50, 100] });
+  h.observe(12, { grantId: 'g-small' });
+  h.observe(80, { grantId: 'g-max' });
+  h.observe(40, { grantId: 'g-mid' });
+  const snap = metrics.snapshotAndReset();
+  const body = snap.histograms[0][2];
+  assert.equal(body.max, 80);
+  assert.deepEqual(body.exemplar, { value: 80, attrs: { grantId: 'g-max' } });
+  h.observe(9, { grantId: 'next-window' });
+  const next = metrics.snapshotAndReset();
+  assert.deepEqual(next.histograms[0][2].exemplar, {
+    value: 9,
+    attrs: { grantId: 'next-window' }
+  });
+});
+
+test('histogram exemplar follows a new max and drops when the max has no attrs', () => {
+  const metrics = registry();
+  const h = metrics.histogram('coins.award_size', { buckets: [10, 50, 100] });
+  h.observe(20, { grantId: 'g-20' });
+  h.observe(20, { grantId: 'g-20-later' });
+  let body = metrics.snapshotAndReset().histograms[0][2];
+  assert.deepEqual(body.exemplar, { value: 20, attrs: { grantId: 'g-20-later' } });
+  h.observe(10, { grantId: 'g-10' });
+  h.observe(50);
+  body = metrics.snapshotAndReset().histograms[0][2];
+  assert.equal(body.max, 50);
+  assert.equal(body.exemplar, undefined);
+});
+
+test('histogram skips an over-limit exemplar and still records the sample', () => {
+  const metrics = registry({ maxDimensionValueLength: 4 });
+  const h = metrics.histogram('coins.award_size', { buckets: [10, 50] });
+  h.observe(40, { grantId: 'too-long' });
+  const body = metrics.snapshotAndReset().histograms[0][2];
+  assert.equal(body.max, 40);
+  assert.equal(body.count, 1);
+  assert.equal(body.exemplar, undefined);
 });
 
 test('timer observes duration into a histogram', async () => {

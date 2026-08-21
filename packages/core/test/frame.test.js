@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { FrameBuilder } from '../src/frame/FrameBuilder.js';
 import { WardxCore } from '../src/WardxCore.js';
 import { testSettings } from './helpers.js';
 
@@ -34,4 +35,64 @@ test('internal dropped counters are merged into the next frame without recursion
   const fitted = core.snapshotFrame();
   const dropped = fitted.frame.metrics.counters.find((row) => row[0] === 'wardx.internal.events_dropped');
   assert.equal(dropped[2], 1);
+});
+
+function bareFrame({ events = [], logs = [], histograms = [], gauges = [] }) {
+  return {
+    seq: 1,
+    from: 1,
+    to: 2,
+    metrics: { counters: [], gauges, histograms },
+    events,
+    logs
+  };
+}
+
+test('fitToMaxBytes keeps a frame that already fits', () => {
+  const frame = bareFrame({ events: [[1, 'a', null]] });
+  const fitted = FrameBuilder.fitToMaxBytes(frame, 4096);
+  assert.equal(fitted.droppedEvents, 0);
+  assert.equal(fitted.droppedLogs, 0);
+  assert.equal(fitted.frame.events.length, 1);
+  assert.ok(Buffer.byteLength(fitted.json, 'utf8') <= 4096);
+});
+
+test('fitToMaxBytes drops trailing events until the json fits', () => {
+  const events = [];
+  for (let i = 0; i < 200; i++) events.push([i, 'e', { pad: 'y'.repeat(80) }]);
+  const fitted = FrameBuilder.fitToMaxBytes(bareFrame({ events }), 4096);
+  assert.ok(fitted.droppedEvents > 0);
+  assert.equal(fitted.droppedEvents + fitted.frame.events.length, 200);
+  assert.equal(fitted.frame.events[0][0], 0);
+  assert.equal(fitted.frame.events.at(-1)[0], 200 - fitted.droppedEvents - 1);
+  assert.ok(Buffer.byteLength(fitted.json, 'utf8') <= 4096);
+});
+
+test('fitToMaxBytes drops debug logs before error logs', () => {
+  const logs = [
+    [1, 'error', 'keep-error', { pad: 'x'.repeat(40) }],
+    [2, 'debug', 'drop-debug', { pad: 'x'.repeat(40) }],
+    [3, 'error', 'keep-error-2', { pad: 'x'.repeat(40) }]
+  ];
+  const frame = bareFrame({ logs });
+  const full = Buffer.byteLength(JSON.stringify(frame), 'utf8');
+  const fitted = FrameBuilder.fitToMaxBytes(frame, full - 10);
+  assert.equal(fitted.droppedLogs, 1);
+  assert.deepEqual(
+    fitted.frame.logs.map((row) => row[2]),
+    ['keep-error', 'keep-error-2']
+  );
+  assert.ok(Buffer.byteLength(fitted.json, 'utf8') <= full - 10);
+});
+
+test('fitToMaxBytes trims 5000 events under a 32KB cap without dropping the prefix order', () => {
+  const events = [];
+  for (let i = 0; i < 5000; i++) events.push([i, 'e', { payload: 'y'.repeat(40), i }]);
+  const t0 = process.hrtime.bigint();
+  const fitted = FrameBuilder.fitToMaxBytes(bareFrame({ events }), 32768);
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  assert.ok(fitted.droppedEvents > 0);
+  assert.equal(fitted.droppedEvents + fitted.frame.events.length, 5000);
+  assert.ok(Buffer.byteLength(fitted.json, 'utf8') <= 32768);
+  assert.ok(ms < 250, `expected fit under 250ms, took ${ms.toFixed(1)}ms`);
 });

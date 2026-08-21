@@ -37,6 +37,7 @@ import { WardxCore, assignVariant, loadSdkDefaults } from '@wardx/core';
 | `endpoint` | Sync URL. The core does not use this key. Runtimes use this key. |
 | `projectKey` | Project credential. Runtimes send this key. If `privacySalt` is empty, the core uses this key as the salt. |
 | `project` | Project name. |
+| `role` | Runtime identity inside the project. Runtimes send this name. The core does not use this key. |
 | `appVersion` | Application version. |
 | `environment` | Environment name, for example `production`. |
 | `privacySalt` | Salt for the hashed subject. If you omit this key, the core uses `projectKey`. |
@@ -49,8 +50,9 @@ import { WardxCore, assignVariant, loadSdkDefaults } from '@wardx/core';
 | `maxDimensionKeys` | Default `8`. |
 | `maxDimensionValueLength` | Default `64`. |
 | `histogramBuckets` | Default `[10, 25, 50, 100, 250, 500, 1000]`. |
+| `tracer` | Optional. Duck-typed local hook with any of `measure`, `event`, `log`, `frame`. The core does not print. Runtimes may also call `sync`. |
 
-The defaults live in `defaults.json`. Do not omit a required key. The loader does not add a fallback for a missing key.
+The defaults live in `defaults.json`. Do not omit a required key. The loader does not add a fallback for a missing key. `tracer` is not a default key. Omit it to keep the measure path unchanged.
 
 ## Use case 1: Record metrics in a custom runtime
 
@@ -66,6 +68,7 @@ const settings = {
   endpoint: 'http://127.0.0.1:8787',
   projectKey: 'dev_project_key',
   project: 'demo',
+  role: 'client',
   appVersion: '0.1.0',
   environment: 'development',
   privacySalt: 'dev_project_key'
@@ -102,9 +105,10 @@ const frames = core.takePendingFrames();
 
 ```js
 core.histogram('request.duration', { buckets: [10, 25, 50, 100] }).observe(42);
+core.histogram('coins.award_size').observe(80, { grantId: 'g-80' });
 ```
 
-Do not change the buckets of an existing series. The engine throws an error.
+`observe(value, attrs)` keeps `attrs` only when `value` is the window max. The frame stores that pair as `exemplar`. Attrs use the same key and value limits as dimensions. Do not change the buckets of an existing series. The engine throws an error.
 
 `timer(name, dims)` starts a timer. The returned function records the duration in milliseconds into a histogram. You can add dimensions when you stop the timer.
 
@@ -133,6 +137,10 @@ Log levels: `debug`, `info`, `warn`, `error`.
 - If the engine cannot replace a log, the engine discards the new log.
 
 Dropped items increment `wardx.internal.events_dropped` or `wardx.internal.logs_dropped`.
+
+Use counters and histograms for rates and latency. Use events for rare product facts: a purchase, an experiment exposure or goal, a named screen. Use logs for failures. Do not put user ids on metric dimensions.
+
+A volume funnel is one event name and one counter per step. The engine does not join events by subject. See `docs/ARCHITECTURE.md`.
 
 ## Use case 3: Get Remote Config and assign an experiment
 
@@ -237,6 +245,7 @@ if (fitted) {
     client: {
       instanceId: '01…',
       sessionId: '01…',
+      role: settings.role,
       appVersion: settings.appVersion,
       environment: settings.environment,
       platform: PLATFORM

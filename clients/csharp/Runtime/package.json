@@ -1,0 +1,19 @@
+{
+  "name": "com.wardx.sdk",
+  "version": "0.1.1",
+  "displayName": "Wardx",
+  "description": "Wardx SDK for Unity and C#: metrics, events, logs, Remote Config, and experiments over POST /v1/sync.",
+  "unity": "2021.3",
+  "documentationUrl": "https://github.com/clasen/Wardx/tree/main/clients/csharp",
+  "keywords": [
+    "telemetry",
+    "metrics",
+    "remote-config",
+    "experiments",
+    "observability"
+  ],
+  "author": {
+    "name": "clasen",
+    "email": "martin.clasen@gmail.com"
+  }
+}

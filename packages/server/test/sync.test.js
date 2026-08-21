@@ -14,6 +14,14 @@ async function withServer(config, fn) {
   }
 }
 
+function syncHeaders(key = 'test-key') {
+  return {
+    'content-type': 'application/json',
+    'content-encoding': 'gzip',
+    'x-wardx-key': key
+  };
+}
+
 test('POST /v1/sync rejects missing project key', async () => {
   await withServer(testServerConfig(), async (_server, base) => {
     const res = await fetch(`${base}/v1/sync`, { method: 'POST', body: '{}' });
@@ -25,11 +33,7 @@ test('POST /v1/sync accepts gzip frames and returns config when versions differ'
   await withServer(testServerConfig(), async (server, base) => {
     const res = await fetch(`${base}/v1/sync`, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'content-encoding': 'gzip',
-        'x-wardx-key': 'test-key'
-      },
+      headers: syncHeaders(),
       body: gzipJson(sampleEnvelope())
     });
     assert.equal(res.status, 200);
@@ -45,11 +49,7 @@ test('POST /v1/sync omits config when versions match', async () => {
   await withServer(testServerConfig(), async (_server, base) => {
     const res = await fetch(`${base}/v1/sync`, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'content-encoding': 'gzip',
-        'x-wardx-key': 'test-key'
-      },
+      headers: syncHeaders(),
       body: gzipJson(sampleEnvelope({ configVersion: 12, frames: [] }))
     });
     const json = await res.json();
@@ -58,25 +58,13 @@ test('POST /v1/sync omits config when versions match', async () => {
   });
 });
 
-test('admin config replace bumps version for subsequent syncs', async () => {
-  await withServer(testServerConfig(), async (_server, base) => {
-    const put = await fetch(`${base}/v1/admin/config`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json', 'x-wardx-admin-key': 'admin-key' },
-      body: JSON.stringify({
-        version: 13,
-        values: { 'message.delayMs': 400 },
-        experiments: []
-      })
-    });
-    assert.equal(put.status, 200);
+test('ControlService setValue bumps version for subsequent syncs', async () => {
+  await withServer(testServerConfig(), async (server, base) => {
+    const result = server.wardx.control.setValue('demo', 'message.delayMs', 400, ['client']);
+    assert.equal(result.version, 13);
     const res = await fetch(`${base}/v1/sync`, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'content-encoding': 'gzip',
-        'x-wardx-key': 'test-key'
-      },
+      headers: syncHeaders(),
       body: gzipJson(sampleEnvelope({ configVersion: 12, frames: [] }))
     });
     const json = await res.json();
@@ -85,31 +73,87 @@ test('admin config replace bumps version for subsequent syncs', async () => {
   });
 });
 
-test('one-minute aggregator merges counters', async () => {
+test('one-minute aggregator merges counters per project', async () => {
   await withServer(testServerConfig(), async (server, base) => {
     await fetch(`${base}/v1/sync`, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'content-encoding': 'gzip',
-        'x-wardx-key': 'test-key'
-      },
+      headers: syncHeaders(),
       body: gzipJson(sampleEnvelope())
     });
     await fetch(`${base}/v1/sync`, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'content-encoding': 'gzip',
-        'x-wardx-key': 'test-key'
-      },
+      headers: syncHeaders(),
       body: gzipJson(sampleEnvelope())
     });
-    const windows = server.wardx.aggregator.snapshot();
+    const windows = server.wardx.control.aggregates('demo');
     const total = windows
       .flatMap((window) => window.counters)
       .filter((row) => row.name === 'match.completed')
       .reduce((sum, row) => sum + row.value, 0);
     assert.equal(total, 8);
+  });
+});
+
+test('telemetry and config are isolated per project', async () => {
+  const config = testServerConfig({
+    projectKeys: { 'test-key': 'demo', 'other-key': 'other' },
+    projects: {
+      demo: {
+        version: 12,
+        values: { 'message.delayMs': 1000 },
+        keyRoles: { 'message.delayMs': ['client'] },
+        experiments: []
+      },
+      other: {
+        version: 3,
+        values: { 'message.delayMs': 50 },
+        keyRoles: { 'message.delayMs': ['client'] },
+        experiments: []
+      }
+    }
+  });
+  await withServer(config, async (server, base) => {
+    await fetch(`${base}/v1/sync`, {
+      method: 'POST',
+      headers: syncHeaders('test-key'),
+      body: gzipJson(sampleEnvelope({ project: 'demo' }))
+    });
+    const otherSync = await fetch(`${base}/v1/sync`, {
+      method: 'POST',
+      headers: syncHeaders('other-key'),
+      body: gzipJson(sampleEnvelope({ project: 'other', configVersion: 3, frames: [] }))
+    });
+    const otherJson = await otherSync.json();
+    assert.equal(otherJson.configVersion, 3);
+    assert.equal(otherJson.config, undefined);
+    const demoWindows = server.wardx.control.aggregates('demo');
+    const otherWindows = server.wardx.control.aggregates('other');
+    assert.equal(
+      demoWindows.flatMap((window) => window.counters).some((row) => row.name === 'match.completed'),
+      true
+    );
+    assert.equal(otherWindows.length, 0);
+    assert.equal(server.wardx.control.getConfig('demo').values['message.delayMs'], 1000);
+    assert.equal(server.wardx.control.getConfig('other').values['message.delayMs'], 50);
+  });
+});
+
+test('POST /v1/sync rejects missing client.role', async () => {
+  await withServer(testServerConfig(), async (_server, base) => {
+    const res = await fetch(`${base}/v1/sync`, {
+      method: 'POST',
+      headers: syncHeaders(),
+      body: gzipJson(sampleEnvelope({ client: { role: '' }, frames: [] }))
+    });
+    assert.equal(res.status, 400);
+    const json = await res.json();
+    assert.equal(json.error, 'client.role is required');
+  });
+});
+
+test('GET /v1/admin/aggregates is gone', async () => {
+  await withServer(testServerConfig(), async (_server, base) => {
+    const res = await fetch(`${base}/v1/admin/aggregates`);
+    assert.equal(res.status, 404);
   });
 });

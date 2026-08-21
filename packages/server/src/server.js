@@ -1,8 +1,8 @@
 import http from 'node:http';
-import { FrameAggregator } from './aggregation/FrameAggregator.js';
-import { ConfigRepository } from './config/ConfigRepository.js';
-import { createAdminHandler, createSyncHandler, json } from './ingest/syncHandler.js';
+import { ControlService } from './control/ControlService.js';
+import { createSyncHandler, json } from './ingest/syncHandler.js';
 import { loadServerConfig, validateServerConfig } from './loadConfig.js';
+import { ProjectRegistry } from './projects/ProjectRegistry.js';
 import { MemorySink } from './sinks/MemorySink.js';
 import { NdjsonSink } from './sinks/NdjsonSink.js';
 import { NullSink } from './sinks/NullSink.js';
@@ -16,11 +16,10 @@ function createSink(config) {
 
 export function createIngestServer(configInput) {
   const config = validateServerConfig(configInput);
-  const configRepo = new ConfigRepository(config.config);
-  const aggregator = new FrameAggregator(config);
+  const registry = new ProjectRegistry(config);
   const sink = createSink(config);
-  const handleSync = createSyncHandler({ config, configRepo, aggregator, sink });
-  const handleAdmin = createAdminHandler({ config, configRepo });
+  const control = new ControlService({ config, registry });
+  const handleSync = createSyncHandler({ config, registry, sink });
 
   const server = http.createServer((req, res) => {
     const host = req.headers.host || `${config.host}:${config.port}`;
@@ -30,21 +29,8 @@ export function createIngestServer(configInput) {
         json(res, 200, { ok: true });
         return;
       }
-      if (req.method === 'GET' && url.pathname === '/v1/admin/aggregates') {
-        const adminKey = req.headers['x-wardx-admin-key'];
-        if (adminKey !== config.adminKey) {
-          json(res, 401, { ok: false, error: 'unauthorized' });
-          return;
-        }
-        json(res, 200, { ok: true, windows: aggregator.snapshot() });
-        return;
-      }
       if (url.pathname === '/v1/sync' && req.method === 'POST') {
         await handleSync(req, res);
-        return;
-      }
-      if (url.pathname.startsWith('/v1/admin/')) {
-        await handleAdmin(req, res, url);
         return;
       }
       json(res, 404, { ok: false, error: 'not found' });
@@ -54,7 +40,7 @@ export function createIngestServer(configInput) {
     });
   });
 
-  server.wardx = { config, configRepo, aggregator, sink };
+  server.wardx = { config, registry, control, sink };
   return server;
 }
 
@@ -75,4 +61,4 @@ export async function startServer(config) {
   return { server, address, config };
 }
 
-export { loadServerConfig, validateServerConfig };
+export { loadServerConfig, validateServerConfig, ControlService };

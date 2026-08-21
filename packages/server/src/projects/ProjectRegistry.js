@@ -1,0 +1,28 @@
+import { FrameAggregator } from '../aggregation/FrameAggregator.js';
+import { RecentClients } from '../clients/RecentClients.js';
+import { ConfigRepository } from '../config/ConfigRepository.js';
+import { normalizeCatalog } from '../control/catalog.js';
+import { RecentLogs } from '../logs/RecentLogs.js';
+
+export class ProjectRegistry {
+  constructor(config) {
+    this.byName = new Map();
+    for (const [name, snapshot] of Object.entries(config.projects)) {
+      this.byName.set(name, {
+        configRepo: new ConfigRepository(snapshot),
+        aggregator: new FrameAggregator(config),
+        clients: new RecentClients(config.recentClientsMax),
+        logs: new RecentLogs(config.recentLogsMax),
+        catalog: normalizeCatalog(snapshot.catalog)
+      });
+    }
+  }
+
+  get(name) {
+    return this.byName.get(name);
+  }
+
+  names() {
+    return [...this.byName.keys()].sort();
+  }
+}

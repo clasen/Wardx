@@ -10,6 +10,10 @@ export function validateEnvelope(body) {
   if (typeof body.client.instanceId !== 'string' || typeof body.client.sessionId !== 'string') {
     return 'client.instanceId and client.sessionId are required';
   }
+  if (typeof body.client.role !== 'string' || body.client.role.length === 0) {
+    return 'client.role is required';
+  }
+  if (body.client.role === '*') return 'client.role cannot be *';
   if (typeof body.configVersion !== 'number' || !Number.isFinite(body.configVersion)) {
     return 'configVersion must be a finite number';
   }
