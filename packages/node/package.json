@@ -1,6 +1,6 @@
 {
   "name": "wardx",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Node.js SDK for Wardx telemetry, Remote Config, and experiments.",
   "keywords": [
     "wardx",
@@ -32,6 +32,6 @@
     "src"
   ],
   "dependencies": {
-    "@wardx/core": "0.1.1"
+    "@wardx/core": "0.1.2"
   }
 }
