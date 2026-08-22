@@ -25,9 +25,9 @@ export const MCP_INSTRUCTIONS = [
   'Start with list_projects, then get_project_overview or read wardx://project/{name}. Overview knobs include roles. Overview.roles groups outcomes and clients by role name. path and git on a role are optional: path is a local checkout, git is a repository URL. Use them when present to edit that surface. Do not ask for them. Do not invent them.',
   'If onboarding.complete is true, skip questions and continue. If it is false, ask only about missingDescription, undescribedRoles, and the listed undescribed knobs and outcomes. Persist answers with set_project_description, set_role_description, and set_signal. Do not invent descriptions. Do not re-ask names that already have a description. Do not propose, enable, or interpret experiments until onboarding.complete is true.',
   'Knobs are existing Remote Config keys you may experiment on. Outcomes are metrics and events. Descriptions come from the project catalog.',
-  'After get_aggregates, drill into a sample log row with get_recent_logs. Filter either tool with role when comparing surfaces. The ring keeps recent logs of every level.',
+  'After get_aggregates, drill into a sample log row with get_recent_logs. A stack or provider code is an attr. Filter either tool with role when comparing surfaces. The ring keeps recent logs of every level. If that role has path or git, use that checkout to inspect or edit the source. Wardx does not change application code.',
   'Propose experiments with upsert_experiment. variant.values may only contain keys visible to experiment.roles. Optional hypothesis stays on the server; clients never receive it.',
-  'List and analyze previously proposed experiments with list_experiments and analyze_experiment.',
+  'List and analyze previously proposed experiments with list_experiments and analyze_experiment. For a quantitative goal such as session.duration, compare goalMean (goalSum / goals) by variant. primaryMetric.total is the fleet counter of that name, not a per-variant split.',
   'Do not store secrets in Remote Config. Names prefixed wardx.internal. are SDK internals.'
 ].join(' ');
 

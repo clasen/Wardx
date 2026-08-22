@@ -40,6 +40,7 @@ export class WardxCore {
     this.seq = 0;
     this.pendingFrames = [];
     this.windowStart = Date.now();
+    this._subjectId = null;
     this.log = {
       debug: (message, attrs) => this._log('debug', message, attrs),
       info: (message, attrs) => this._log('info', message, attrs),
@@ -96,30 +97,48 @@ export class WardxCore {
     return wrapped;
   }
 
+  identify(subjectId) {
+    if (subjectId === undefined || subjectId === null) {
+      this._subjectId = null;
+      return;
+    }
+    if (typeof subjectId !== 'string' || subjectId.length === 0) {
+      throw new Error('identify requires a non-empty subjectId');
+    }
+    this._subjectId = subjectId;
+  }
+
+  _subjectIdFrom(context) {
+    if (context && context.subjectId !== undefined && context.subjectId !== null) {
+      return context.subjectId;
+    }
+    return this._subjectId;
+  }
+
   configGet(key, fallback, context) {
     if (!this.configStore.has(key)) return fallback;
     const remote = this.configStore.getRaw(key);
-    if (!context || context.subjectId === undefined || context.subjectId === null) {
-      return remote;
-    }
+    const subjectId = this._subjectIdFrom(context);
+    if (subjectId === undefined || subjectId === null) return remote;
     return this.experiments.resolve(
       key,
       remote,
-      context.subjectId,
+      subjectId,
       this.configStore.experimentsByKey
     );
   }
 
   experimentGoal(name, context) {
-    if (!context || context.subjectId === undefined || context.subjectId === null) {
+    const subjectId = this._subjectIdFrom(context);
+    if (subjectId === undefined || subjectId === null) {
       throw new Error('experiment.goal requires subjectId');
     }
     if (typeof name !== 'string' || name.length === 0) {
       throw new Error('experiment.goal requires a metric name');
     }
-    const subject = this.experiments.hashSubject(context.subjectId);
+    const subject = this.experiments.hashSubject(subjectId);
     const experiments = this.experiments.relevantExperiments(
-      context.subjectId,
+      subjectId,
       this.configStore.experiments
     );
     const payload = {
@@ -127,7 +146,7 @@ export class WardxCore {
       subject,
       experiments
     };
-    if (context.value !== undefined) payload.value = context.value;
+    if (context && context.value !== undefined) payload.value = context.value;
     this.event('experiment.goal', payload);
   }
 

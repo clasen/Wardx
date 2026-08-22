@@ -43,7 +43,8 @@ The core does not send HTTP. A runtime (this Node package, or a future SDK) must
 - Histogram buckets are immutable per series. Changing them throws.
 - Invalid or over-cap dimensions return no-op series and increment `cardinalityDropped`. Do not throw on cardinality.
 - `config.get` never blocks on network. Missing key → caller fallback.
-- `experiment.goal` throws without `subjectId`. Exposure payload hashes the subject (`privacySalt` or `projectKey`). Raw `subjectId` does not go on the wire.
+- `identify(subjectId)` sets the instance default subject. `identify(null)` clears it. Per-call `{ subjectId }` overrides it. Process-wide: a `game-server` that serves many users must pass `subjectId` per call and must not `identify()`.
+- `experiment.goal` throws without a subject (`identify` or `{ subjectId }`). Exposure payload hashes the subject (`privacySalt` or `projectKey`). Raw `subjectId` does not go on the wire. Same `subjectId` + experiment `id` + `salt` → same variant; do not persist the group.
 - Tracer is duck-typed and optional. Hooks: core `measure`, `event`, `log`, `frame`; runtime also `sync`. Omit unused hooks. Tracer must not change frames, delivery, or config.
 - Envelope `sdk.name` is `wardx-node`. `client.platform` is `node`. `client.instanceId` / `sessionId` are one ULID each per process.
 - Sync delay is `syncIntervalMs * random(syncJitterMin, syncJitterMax)`, recomputed every cycle. Aggregate and sync timers are `unref()`'d.

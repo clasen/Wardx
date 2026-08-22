@@ -51,13 +51,15 @@ Resource `wardx://project/{name}` returns the same JSON as `get_project_overview
 
 Required: `id`, `enabled`, `allocation` ∈ [0, 1], `salt`, `roles`, `variants` (non-empty; weights sum to > 0). Optional: `primaryMetric`, `hypothesis`. `hypothesis` is stripped before the snapshot goes to clients.
 
+Keep `salt` when replacing the same `id`. Assignment is client-side and deterministic (`experimentId + subjectId + salt`). The server does not map users. Clients `identify()` or pass `subjectId` on `config.get` / `experiment.goal`; no subject and that read is Remote Config with no exposure.
+
 ## Telemetry (read-only)
 
 | Tool | Arguments | Returns |
 | --- | --- | --- |
 | `get_aggregates` | `project`, optional `names[]`, `from`, `to`, `role` | `{ windows }` with catalog legends on names |
 | `get_recent_logs` | `project`, optional `level` (`debug`\|`info`\|`warn`\|`error`), `message` (exact), `attrs` (exact match on listed keys), `role`, `limit` | `{ logs }` newest first |
-| `analyze_experiment` | `project`, `experimentId` | definition + hypothesis, `variants[]` with `exposures`/`goals`/`goalSum`, optional `primaryMetric` |
+| `analyze_experiment` | `project`, `experimentId` | definition + hypothesis, `variants[]` with `exposures`/`goals`/`goalSum`/`goalMean` (`goalSum / goals`), optional `primaryMetric` fleet total |
 
 Undescribed names include `{ undescribed: true }` instead of `{ description }`.
 

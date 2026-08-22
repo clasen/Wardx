@@ -139,7 +139,7 @@ Tools take a `project` name except `list_projects`. Read `wardx://project/{name}
 | `set_experiment_enabled` | Enable or disable an experiment. Bumps `configVersion`. |
 | `get_aggregates` | 1-minute windows with catalog legends. Optional `names`, `from`, `to`. |
 | `get_recent_logs` | Recent log rows, newest first. Optional `level`, `message`, `attrs`, `limit`. |
-| `analyze_experiment` | Definition, hypothesis, exposures, goals by variant, `primaryMetric` total. |
+| `analyze_experiment` | Definition, hypothesis, exposures, goals, `goalSum`, `goalMean` by variant, `primaryMetric` fleet total. |
 
 The SDK sends names with no descriptions. Meaning lives in the catalog. A predefined `catalog` in the config file can make `onboarding.complete` true on the first read. If it is false, the agent asks only about `missingDescription` and the listed undescribed knobs and outcomes, then writes answers with `set_project_description` and `set_signal`. It does not invent descriptions, does not re-ask names that already have a legend, and does not propose experiments until `onboarding.complete` is true.
 
@@ -313,6 +313,8 @@ server.wardx.control.upsertExperiment('demo', {
 
 The next client sync that sends an older `configVersion` receives `config` in the response. The Node.js SDK applies that snapshot in memory.
 
+Assignment runs on the client. The server does not map users to variants. The SDK uses `identify()` or a per-call `subjectId`. A read with no subject returns the Remote Config value and does not emit `experiment.exposure`. Keep the `salt` when replacing the same experiment `id`. Changing the salt redistributes the population.
+
 ## Use case 5: Read telemetry and analyze an experiment
 
 **When:** You inspect counters, events, clients, or an A/B test.
@@ -326,6 +328,8 @@ A volume funnel is that comparison: pass the step names in `names` and compare `
 `get_recent_logs` reads a per-project ring of recent log rows (`recentLogsMax`). It does not search history. Filter by `level`, `message`, and `attrs` (exact match on the listed keys). A stack or a provider code is just another attr.
 
 This is in-memory development aggregation. This is not a query API for production analytics.
+
+`analyze_experiment` rolls every `experiment.goal` for that experiment into `goals` and `goalSum`. `goalMean` is `goalSum / goals`. For a duration goal, pass the milliseconds as `value` once per ended session. Do not mix a duration `value` with a `value: 1` conversion on the same experiment. `primaryMetric.total` is the fleet counter of that name. It is not split by variant.
 
 ## Use case 6: Select a sink
 
@@ -350,6 +354,60 @@ const ndjsonSink = new NdjsonSink({ ndjsonPath: 'wardx-dev.ndjson' });
 ```
 
 `createIngestServer` constructs the sink from `config.sink`. You do not pass a sink object to `createIngestServer`.
+
+## Use case 7: Propose a difficulty experiment to increase session time
+
+**When:** An agent should hypothesise that changing level difficulty will increase play time.
+
+**Objective:** Use MCP. Do not call HTTP. The app must already emit session duration (see `wardx` use case 14) and read the difficulty keys with `config.get` (see `wardx` use case 15).
+
+```js
+server.wardx.control.upsertExperiment('demo', {
+  id: 'difficulty-v1',
+  enabled: true,
+  allocation: 1,
+  salt: '3ad8f9',
+  primaryMetric: 'session.time_ms',
+  roles: ['unity'],
+  hypothesis: 'Lower HP on level 3 increases session duration',
+  variants: [
+    { key: 'control', weight: 50, values: { 'level.3.enemyHp': 100 } },
+    { key: 'easy', weight: 50, values: { 'level.3.enemyHp': 70 } }
+  ]
+});
+```
+
+Equivalent MCP tool: `upsert_experiment`. Later `analyze_experiment` with that id.
+
+Read it this way:
+
+1. Overview first. Refuse until `onboarding.complete`. Confirm the knobs exist and which roles receive them.
+2. `get_aggregates` with `level.start`, `level.fail`, `level.complete`, and `session.time_ms`. The funnel is the difficulty signal. `session.time_ms` is fleet play time in the window.
+3. `analyze_experiment`: compare `goalMean` by variant. That mean is the `experiment.goal` value the SDK sent (session duration in ms). `primaryMetric.total` is fleet `session.time_ms`. It is not split by variant.
+4. If exposures stay at zero, the app is reading the knob with no subject.
+
+Wardx does not rewrite level files. The experiment changes Remote Config. Clients apply the snapshot on the next sync.
+
+## Use case 8: Drill an error so an agent can edit the role source
+
+**When:** A role is logging failures and you want an agent to open the file that threw.
+
+**Objective:** MCP returns the recent row. Wardx does not patch application source. The agent uses `path` or `git` on that role, plus its own file permissions.
+
+```js
+const rows = executeTool(server.wardx.control, 'get_recent_logs', {
+  project: 'demo',
+  level: 'error',
+  message: 'payment_failed',
+  limit: 5
+});
+```
+
+`rows.logs[].attrs.stack` is a string when the SDK sent one. Filter with `attrs: { code: 'timeout' }` for an exact match.
+
+If the role has `path` (a local checkout) or `git` (a repository URL), the agent inspects or edits that surface. Set those fields with `set_role_source` when the user supplies them, or ship them in the catalog. Do not invent them.
+
+The ring is recent only (`recentLogsMax`). It is not a history search.
 
 ## Exports
 

@@ -265,7 +265,7 @@ export const TOOL_DEFS = [
   {
     name: 'analyze_experiment',
     description:
-      'Previously proposed experiment plus exposure and goal counts by variant, primaryMetric total, and catalog legend.',
+      'Previously proposed experiment plus exposure and goal counts by variant, goalSum, goalMean (goalSum / goals), primaryMetric fleet total, and catalog legend. For a quantitative goal such as session.duration, compare goalMean by variant.',
     inputSchema: {
       type: 'object',
       properties: {

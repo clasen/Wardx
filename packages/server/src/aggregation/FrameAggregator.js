@@ -120,13 +120,22 @@ function filterByRole(rows, role) {
   return rows.filter((row) => row.role === role);
 }
 
+function withGoalMean(row) {
+  return {
+    ...row,
+    goalMean: row.goals > 0 ? row.goalSum / row.goals : 0
+  };
+}
+
 function serializeExperiments(map, names) {
   const out = [];
   for (const [id, byVariant] of map) {
     if (names && !names.has(id)) continue;
     const variants = [];
     for (const [key, stats] of byVariant) {
-      variants.push({ key, exposures: stats.exposures, goals: stats.goals, goalSum: stats.goalSum });
+      variants.push(
+        withGoalMean({ key, exposures: stats.exposures, goals: stats.goals, goalSum: stats.goalSum })
+      );
     }
     out.push({ id, variants });
   }
@@ -302,7 +311,7 @@ export class FrameAggregator {
         variants.set(key, row);
       }
     }
-    return [...variants.values()];
+    return [...variants.values()].map(withGoalMean);
   }
 
   counterTotal(name) {

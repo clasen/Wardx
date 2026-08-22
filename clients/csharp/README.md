@@ -58,9 +58,10 @@ Unity sends `sdk.name = wardx-unity` and `client.platform = unity`. A plain C# p
 | Elapsed time | `Timer(name, dims)` then `Stop()` |
 | Discrete product fact | `Event(name, attrs)` |
 | Volume funnel (drop-off between steps) | one `Event` + one `Counter` per step name |
-| Failure | `Log.Error(message, attrs)` |
-| Remote value / variant | `Config.Get(key, fallback, subjectId)` |
-| Experiment conversion | `Experiment.Goal(name, subjectId)` |
+| Failure | `Log.Error(message, attrs)` with a clipped `stack` or provider `code`. MCP returns the row; the agent edits source via the role `path`/`git`. |
+| Play-session length | App clock; on end `Histogram("session.duration")` + `Counter("session.time_ms").Add(ms)` + `Experiment.Goal("session.duration", value: ms)`. Not the SDK `sessionId`. |
+| Remote value / variant | `Config.Get(key, fallback)` after `Identify(userId)`, or `Config.Get(key, fallback, subjectId)` |
+| Experiment conversion | `Experiment.Goal(name)` after `Identify`, or `Experiment.Goal(name, subjectId)` |
 
 A counter in a frame is a window delta. Do not put a user id on a metric dimension. Histogram `Observe(value, attrs)` keeps attrs only for the window max (`exemplar`).
 
@@ -68,7 +69,7 @@ A counter in a frame is a window delta. Do not put a user id on a metric dimensi
 
 Wardx compares how often each named step fired. It does not reconstruct a per-user path.
 
-Give each step its own name. Emit the event and increment a counter of the same name. Read the drop in `get_aggregates`. Event attrs do not split that count. `Experiment.Goal` is one conversion, not an N-step funnel.
+Give each step its own name. Emit the event and increment a counter of the same name. Read the drop in `get_aggregates`. Event attrs do not split that count. `Experiment.Goal` is one conversion or one quantitative value, not an N-step funnel.
 
 ```csharp
 wardx.Event("onboarding.start", Dims.Of("channel", channel));
@@ -81,15 +82,45 @@ wardx.Experiment.Goal("onboarding.done", userId);
 
 See [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md).
 
-## Remote Config
+## Session duration
+
+A play session is an interval you own (app open to close, login to logout). The SDK `sessionId` identifies the envelope. It is not that clock.
 
 ```csharp
-var timeoutMs = wardx.Config.Get("matchmaking.timeoutMs", 5000);
-var delayMs = wardx.Config.Get("message.delayMs", 1000, userId);
-wardx.Experiment.Goal("message.sent", userId, 1);
+wardx.Identify(userId);
+var started = DateTime.UtcNow;
+var enemyHp = wardx.Config.Get("level.3.enemyHp", 100);
+
+// … play session …
+
+var durationMs = (DateTime.UtcNow - started).TotalMilliseconds;
+wardx.Histogram("session.duration", null, new double[] { 30000, 60000, 180000, 300000, 600000, 1200000, 1800000, 3600000 })
+    .Observe(durationMs);
+wardx.Counter("session.time_ms").Add(durationMs);
+wardx.Counter("session.ended").Inc();
+wardx.Experiment.Goal("session.duration", value: durationMs);
 ```
 
-Until a sync applies a snapshot, `Get` returns the fallback. Assignment is local and deterministic. Exposure is event `experiment.exposure` with a hashed subject.
+`get_aggregates` reads fleet `session.time_ms`. `analyze_experiment` compares `goalMean` by variant. Instrument `level.start` / `level.fail` / `level.complete` as a volume funnel. Do not also emit `Experiment.Goal` for those steps if the experiment goal is session duration. See the Node SDK use cases 14 and 15.
+
+## Remote Config and experiments
+
+`Identify(userId)` sets the default subject for this instance. Later `Config.Get` and `Experiment.Goal` use it. A per-call `subjectId` overrides it. `Identify(null)` clears it.
+
+Use `Identify` on a single-user process (Unity player, desktop). On a process that serves many users, pass `subjectId` on each call. Do not `Identify()` there: it is process-wide and would mix users. Use a stable account id, not the SDK `sessionId`.
+
+With no subject, `Get` returns Remote Config and that call is not in an experiment. `Experiment.Goal` without a subject throws.
+
+```csharp
+wardx.Identify(userId);
+var timeoutMs = wardx.Config.Get("matchmaking.timeoutMs", 5000);
+var delayMs = wardx.Config.Get("message.delayMs", 1000);
+wardx.Experiment.Goal("message.sent", value: 1);
+
+var otherDelayMs = wardx.Config.Get("message.delayMs", 1000, otherUserId);
+```
+
+Until a sync applies a snapshot, `Get` returns the fallback. Assignment is local and deterministic: the same `subjectId`, experiment `id`, and `salt` always map to the same variant. You do not persist the group. Changing the experiment `salt` redistributes the population. Exposure is event `experiment.exposure` with a hashed subject. The raw id does not go on the wire.
 
 ## Lifecycle
 

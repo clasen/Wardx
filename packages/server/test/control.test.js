@@ -118,6 +118,7 @@ test('aggregator rolls up experiment exposure and goals', async () => {
     assert.equal(fast.exposures, 1);
     assert.equal(fast.goals, 1);
     assert.equal(fast.goalSum, 1);
+    assert.equal(fast.goalMean, 1);
     assert.equal(analysis.primaryMetric.name, 'message.sent');
     assert.equal(analysis.primaryMetric.total, 4);
     const clients = server.wardx.control.recentClients('demo');

@@ -27,6 +27,7 @@ import { WardxCore, assignVariant, loadSdkDefaults } from '@wardx/core';
 - A measure call does not wait for a Promise.
 - If a buffer is full, the engine discards data. The engine does not block the application.
 - Counters in a frame are window deltas. Counters are not lifetime totals.
+- `identify(subjectId)` sets the default subject for this instance. A per-call `{ subjectId }` overrides it.
 
 ## Settings
 
@@ -125,7 +126,7 @@ A dimension value must be a string, a number, or a boolean.
 ```js
 core.event('purchase', { product: 'premium' });
 core.log.info('match_started', { mode: 'ranked', players: 4 });
-core.log.error('payment_failed', { code: 'timeout' });
+core.log.error('payment_failed', { code: 'timeout', stack: 'PaymentError: timeout' });
 ```
 
 Log levels: `debug`, `info`, `warn`, `error`.
@@ -138,7 +139,7 @@ Log levels: `debug`, `info`, `warn`, `error`.
 
 Dropped items increment `wardx.internal.events_dropped` or `wardx.internal.logs_dropped`.
 
-Use counters and histograms for rates and latency. Use events for rare product facts: a purchase, an experiment exposure or goal, a named screen. Use logs for failures. Do not put user ids on metric dimensions.
+Use counters and histograms for rates and latency. Use events for rare product facts: a purchase, an experiment exposure or goal, a named screen. Use logs for failures. Put a clipped `stack` or a provider `code` on the log attrs so MCP `get_recent_logs` can show an agent where to look. The engine does not edit source. Do not put user ids on metric dimensions.
 
 A volume funnel is one event name and one counter per step. The engine does not join events by subject. See `docs/ARCHITECTURE.md`.
 
@@ -147,6 +148,8 @@ A volume funnel is one event name and one counter per step. The engine does not 
 **When:** The server sends a config snapshot. You need a value for a subject.
 
 **Objective:** Get a config value. If an experiment applies, get the variant value.
+
+There is a default subject after `identify(subjectId)`. Pass `{ subjectId }` on a call to override it, or when one process serves many users. Use a stable account id, not `sessionId`. With no subject, `configGet` returns the Remote Config value and that call is not in the A/B test.
 
 ```js
 core.applyConfig(13, {
@@ -170,23 +173,26 @@ core.applyConfig(13, {
 });
 
 const fallback = 1000;
-const delay = core.configGet('message.delayMs', fallback, { subjectId: 'user-1' });
-core.experimentGoal('message.sent', { subjectId: 'user-1', value: 1 });
+const shared = core.configGet('message.delayMs', fallback);
+core.identify('user-1');
+const delay = core.configGet('message.delayMs', fallback);
+core.experimentGoal('message.sent', { value: 1 });
+const other = core.configGet('message.delayMs', fallback, { subjectId: 'user-2' });
 ```
+
+`shared` is always the snapshot value (`1000`). `delay` is `1000` or `400` for `user-1`. `other` is the variant for `user-2`. The same `subjectId`, experiment `id`, and `salt` always map to the same variant. You do not persist the group. Changing `salt` redistributes the population. `identify(null)` clears the default.
 
 ### Resolution order
 
 1. If the key is not in the snapshot, return `fallback`.
-2. If `subjectId` is missing, return the Remote Config value.
+2. If there is no subject (`identify` unset and no `{ subjectId }`), return the Remote Config value.
 3. If no enabled experiment contains the key, return the Remote Config value.
 4. If the subject is not in the allocation, return the Remote Config value.
 5. If the subject is in the allocation, return the variant value.
 
-The assignment is deterministic. The same `experimentId`, `subjectId`, and `salt` always give the same variant.
-
 The first resolve for a subject in a session emits event `experiment.exposure`. The payload contains a hashed subject. The payload does not contain the raw `subjectId`.
 
-`experimentGoal` emits event `experiment.goal`. You must supply `subjectId`. You can supply `value`.
+`experimentGoal` emits event `experiment.goal`. The subject comes from `identify()` or from `{ subjectId }` on that call. You can supply `value`. Use milliseconds for a session-duration goal. The server stores that number as `goalSum` and `goalMean` per variant. Without a subject, the call throws. One experiment should have one quantitative goal name.
 
 ## Use case 4: Assign a variant without WardxCore
 

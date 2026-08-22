@@ -42,6 +42,10 @@ export class WardxNode {
     this._enqueueSync({ bootstrap: true });
   }
 
+  identify(subjectId) {
+    this._core.identify(subjectId);
+  }
+
   counter(name, dims) {
     return this._core.counter(name, dims);
   }

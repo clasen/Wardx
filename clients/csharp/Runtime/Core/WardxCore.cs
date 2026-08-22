@@ -15,6 +15,7 @@ namespace Wardx
         int _seq;
         List<Frame> _pendingFrames = new List<Frame>();
         long _windowStart;
+        string _subjectId;
 
         public readonly InternalMetrics Internal = new InternalMetrics();
         public readonly ConfigStore ConfigStore = new ConfigStore();
@@ -85,12 +86,27 @@ namespace Wardx
             TracerEmit.Log(_tracer, new LogRecord { Level = level, Message = message, Attrs = attrs, Dropped = dropped });
         }
 
+        public void Identify(string subjectId)
+        {
+            if (subjectId != null && subjectId.Length == 0)
+            {
+                throw new ArgumentException("identify requires a non-empty subjectId");
+            }
+            _subjectId = subjectId;
+        }
+
+        string ResolveSubjectId(string subjectId)
+        {
+            return subjectId ?? _subjectId;
+        }
+
         public object ConfigGet(string key, object fallback, string subjectId = null)
         {
             if (!ConfigStore.Has(key)) return fallback;
             var remote = ConfigStore.GetRaw(key);
-            if (subjectId == null) return remote;
-            return _experiments.Resolve(key, remote, subjectId, ConfigStore.ExperimentsByKey);
+            var resolved = ResolveSubjectId(subjectId);
+            if (resolved == null) return remote;
+            return _experiments.Resolve(key, remote, resolved, ConfigStore.ExperimentsByKey);
         }
 
         public T ConfigGet<T>(string key, T fallback, string subjectId = null)
@@ -101,8 +117,9 @@ namespace Wardx
             return (T)Convert.ChangeType(value, typeof(T), System.Globalization.CultureInfo.InvariantCulture);
         }
 
-        public void ExperimentGoal(string name, string subjectId, object value = null)
+        public void ExperimentGoal(string name, string subjectId = null, object value = null)
         {
+            subjectId = ResolveSubjectId(subjectId);
             if (subjectId == null)
             {
                 throw new ArgumentException("experiment.goal requires subjectId");

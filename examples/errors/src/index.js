@@ -267,6 +267,7 @@ line('Read it this way:');
 line('  get_aggregates     → rates (counters, events, log count)');
 line('  get_recent_logs    → sample rows; this run drills payment_failed + stack');
 line('  catalog.signals    → legend the agent reads on those names');
+line('  role path / git    → checkout the agent opens to edit the file; Wardx does not change source');
 
 await wardx.shutdown();
 await new Promise((resolve, reject) => {

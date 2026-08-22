@@ -197,3 +197,49 @@ test('FrameAggregator drops a stale exemplar when a higher max has none', () => 
   assert.equal(body.max, 50);
   assert.equal(body.exemplar, undefined);
 });
+
+test('experiment.goal value rolls up to goalSum and goalMean per variant', () => {
+  const agg = aggregator();
+  const now = Date.now();
+  agg.ingest(
+    sampleEnvelope({
+      frames: [
+        {
+          seq: 1,
+          from: now,
+          to: now + 1,
+          metrics: { counters: [['session.time_ms', null, 180000]], gauges: [], histograms: [] },
+          events: [
+            [
+              now,
+              'experiment.goal',
+              {
+                metric: 'session.duration',
+                subject: 'abcd1234',
+                experiments: [{ experiment: 'difficulty-v1', variant: 'easy' }],
+                value: 120000
+              }
+            ],
+            [
+              now + 1,
+              'experiment.goal',
+              {
+                metric: 'session.duration',
+                subject: 'efgh5678',
+                experiments: [{ experiment: 'difficulty-v1', variant: 'easy' }],
+                value: 60000
+              }
+            ]
+          ],
+          logs: []
+        }
+      ]
+    })
+  );
+  const easy = agg.experimentStats('difficulty-v1').find((row) => row.key === 'easy');
+  assert.equal(easy.goals, 2);
+  assert.equal(easy.goalSum, 180000);
+  assert.equal(easy.goalMean, 90000);
+  const window = agg.snapshot()[0].experiments.find((row) => row.id === 'difficulty-v1');
+  assert.equal(window.variants[0].goalMean, 90000);
+});

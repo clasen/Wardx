@@ -80,6 +80,42 @@ namespace Wardx.Tests
             }
             AssertX.Equal(1, goals, "one goal");
 
+            var identified = new WardxCore(Fixtures.TestSettings());
+            identified.ApplyConfig(1, new Dictionary<string, object> { ["message.delayMs"] = 1000 }, new List<ExperimentDefinition> { experiment });
+            AssertX.Equal(1000, identified.ConfigGet<int>("message.delayMs", 7), "remote before identify");
+            identified.Identify("user-1");
+            var fromIdentify = identified.ConfigGet<int>("message.delayMs", 7);
+            var fromCall = identified.ConfigGet<int>("message.delayMs", 7, "user-1");
+            AssertX.Equal(fromCall, fromIdentify, "identify matches per-call subject");
+            AssertX.True(fromIdentify == 1000 || fromIdentify == 400, "identified variant or remote");
+            identified.ExperimentGoal("message.sent", null, 1);
+            var identifiedFrame = identified.SnapshotFrame();
+            var identifiedGoals = 0;
+            var identifiedExposures = 0;
+            foreach (var row in identifiedFrame.Frame.Events)
+            {
+                if (row.Name == "experiment.exposure") identifiedExposures++;
+                if (row.Name != "experiment.goal") continue;
+                identifiedGoals++;
+                AssertX.Equal("message.sent", (string)row.Attrs["metric"], "identified goal metric");
+            }
+            AssertX.Equal(1, identifiedExposures, "identify exposure");
+            AssertX.Equal(1, identifiedGoals, "identify goal");
+
+            identified.Identify("user-1");
+            var overrideValue = identified.ConfigGet<int>("message.delayMs", 7, "user-2");
+            AssertX.Equal(overrideValue, identified.ConfigGet<int>("message.delayMs", 7, "user-2"), "per-call overrides identify");
+            identified.Identify(null);
+            AssertX.Equal(1000, identified.ConfigGet<int>("message.delayMs", 7), "cleared identify is remote");
+            var goalThrew = false;
+            try { identified.ExperimentGoal("message.sent"); }
+            catch (System.ArgumentException) { goalThrew = true; }
+            AssertX.True(goalThrew, "goal without subject throws");
+            var emptyThrew = false;
+            try { identified.Identify(""); }
+            catch (System.ArgumentException) { emptyThrew = true; }
+            AssertX.True(emptyThrew, "empty identify throws");
+
             var hash = Hash.AssignmentHash(experiment.Id, "x", experiment.Salt);
             var unit = Hash.HashToUnitInterval(hash);
             AssertX.True(unit >= 0 && unit < 1, "unit interval");

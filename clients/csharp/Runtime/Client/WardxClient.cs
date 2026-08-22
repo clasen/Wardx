@@ -103,6 +103,11 @@ namespace Wardx
             lock (_gate) _core.Event(name, attrs);
         }
 
+        public void Identify(string subjectId)
+        {
+            lock (_gate) _core.Identify(subjectId);
+        }
+
         public Task FlushAsync()
         {
             return EnqueueSync(new SyncFlags { Flush = true });
@@ -470,7 +475,7 @@ namespace Wardx
             _client = client;
         }
 
-        public void Goal(string name, string subjectId, object value = null)
+        public void Goal(string name, string subjectId = null, object value = null)
         {
             _client.Goal(name, subjectId, value);
         }

@@ -68,7 +68,7 @@ Call `upsert_experiment` with:
 
 `set_experiment_enabled` toggles without rewriting variants. `list_experiments` and `analyze_experiment` read previously proposed definitions.
 
-Assignment runs on the client, not the server. The server stores the definition and rolls up `experiment.exposure` / `experiment.goal` in 1-minute windows.
+Assignment runs on the client, not the server. The server stores the definition and rolls up `experiment.exposure` / `experiment.goal` in 1-minute windows. Clients call `identify()` on a single-user process, or pass `{ subjectId }` per call on a multi-user process (wardx skill). A read with no subject returns Remote Config and does not expose. Keep the `salt` when replacing the same `id`; a new salt redistributes the population.
 
 ## Telemetry
 
@@ -77,7 +77,7 @@ This is in-memory development aggregation, not a production query API.
 - `get_aggregates` — 1-minute windows with catalog legends. Optional `names`, `from`, `to`, `role`. Counters in a window are sums of window deltas. A gauge is the last value by timestamp. Events count by name and role; attrs are not series. Extra series past `aggregateMaxSeriesPerMetric` increment `cardinalityDropped`.
 - Volume funnel — compare step counter totals (or `eventNames`) for the same window and `role`. That is how often each step fired, not unique users and not ordered sequences. Do not invent a per-subject path. Point missing step names at the wardx skill.
 - `get_recent_logs` — newest-first ring (`recentLogsMax`). Filter with `level`, exact `message`, exact `attrs`, `role`, `limit`. Drill here after aggregates. A stack or provider code is just another attr.
-- `analyze_experiment` — definition, hypothesis, exposures and goals by variant, `primaryMetric` total. `experiment.goal` is one conversion, not an N-step funnel.
+- `analyze_experiment` — definition, hypothesis, exposures, goals, `goalSum`, `goalMean` (`goalSum / goals`) by variant, `primaryMetric` fleet total. For a quantitative goal such as `session.duration`, compare `goalMean`. `experiment.goal` is one conversion or one value, not an N-step funnel. One experiment should have one quantitative goal name. `primaryMetric.total` is not split by variant.
 
 Filter with `role` when comparing surfaces. Group answers by role. Prefer catalog descriptions over raw names. MCP does not read the envelope sink (`null` / `memory` / `ndjson`).
 
@@ -110,6 +110,20 @@ When the task is code in `packages/server`: keep HTTP as the client path only. C
 1. Overview. Refuse until `onboarding.complete`.
 2. Propose over listed knobs only. Include `hypothesis` and `primaryMetric`.
 3. `upsert_experiment`. Later `analyze_experiment` once traffic exists.
+4. If exposures stay at zero, the app is reading the knob with no subject. Point them at the wardx skill: `identify()` on a single-user process, or `{ subjectId }` on each `config.get` / `experiment.goal` on a multi-user process.
+
+**User says:** "Levels feel too hard. Run an A/B to increase session time."
+
+1. Overview. Refuse until `onboarding.complete`. Confirm difficulty knobs exist (`level.*.enemyHp` or similar) and that `session.time_ms` / `session.duration` are outcomes. Missing names → wardx skill use cases 14 and 15.
+2. `get_aggregates` on `level.start`, `level.fail`, `level.complete`, `session.time_ms`. Funnel counts are the difficulty signal. `session.time_ms` is fleet play time.
+3. `upsert_experiment` on those knobs. `hypothesis` such as "Lower HP on level 3 increases session duration". `primaryMetric: 'session.time_ms'`.
+4. Later `analyze_experiment`: compare `goalMean` by variant (session duration in ms). Do not treat `primaryMetric.total` as a per-variant mean.
+
+**User says:** "There are errors — go fix the file."
+
+1. `get_aggregates` for the error counter. Then `get_recent_logs` with `level: 'error'` and the message. Read `attrs.stack` / `attrs.code`.
+2. If that role has `path` or `git`, open that checkout and edit with your file tools. Wardx does not change application code.
+3. If `path` and `git` are empty, say so. Do not invent a path. `set_role_source` only when the user supplies one.
 
 ## Troubleshooting
 
@@ -135,3 +149,5 @@ In this repo: `npx wardx-server ./config/development.json` (or `npm run server` 
 **Tool `isError` with a message.** That string is the contract error. Fix the arguments; do not retry the same payload.
 
 **Empty aggregates / logs.** Nothing has synced yet, or retention elapsed (`aggregateRetentionMinutes`). The log ring is not a history search.
+
+**Experiment has no exposures.** The definition reached clients, but those processes are reading the knob with no subject. On a single-user process they should `identify()`. On a `game-server` they should pass `{ subjectId }` per call.

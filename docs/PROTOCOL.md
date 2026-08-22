@@ -118,13 +118,16 @@ Otherwise variants are chosen from cumulative `weight / totalWeight * allocation
 ## Config resolution
 
 ```text
+identify(subjectId)               # instance default; identify(null) clears
 config.get(key, fallback, context)
   missing remote key              -> fallback
-  no subjectId                    -> remote value
+  no subject (identify unset, no context.subjectId) -> remote value
   key not in an enabled experiment -> remote value
   subject not allocated           -> remote value
   allocated                       -> variant value + async exposure
 ```
+
+A per-call `context.subjectId` overrides `identify()`. `identify()` is process-wide. A process that serves many users must pass `subjectId` on each call.
 
 ## Intervals
 

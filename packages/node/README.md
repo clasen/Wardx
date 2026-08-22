@@ -26,6 +26,7 @@ To receive frames, run an ingest server. Install `@wardx/server` and start it wi
 - The application has priority over telemetry.
 - Remote Config is always read from local memory.
 - The SDK sends names only. Descriptions live in the server catalog: ship them in the config file, or fill them during MCP onboarding.
+- `identify(subjectId)` sets the default subject for this instance. A per-call `{ subjectId }` overrides it. A process that serves many users must pass `subjectId` on each call and must not `identify()`.
 
 **WARNING:** The SDK does not write a disk queue. The SDK does not retry the same frames.
 
@@ -344,16 +345,28 @@ If histogram max stays at the legal cap and `coins.awarded` tracks completed mat
 
 **Objective:** Read the local snapshot. Do not wait for the network on the hot path.
 
+A call with no subject returns the shared Remote Config value for that role. To vary per person, set a subject with `identify()`, or pass `{ subjectId }` on that call. Use a stable account id (`user.id`, `playerId`). Do not use `sessionId`. The SDK already creates a `sessionId` for the envelope. That id is not a join key and must not be the experiment subject.
+
 ```js
 const timeoutMs = wardx.config.get('matchmaking.timeoutMs', 5000);
 const chatEnabled = wardx.config.get('chat.enabled', false);
-const delayMs = wardx.config.get('message.delayMs', 1000, { subjectId: req.userId });
+
+// Single-user process (desktop, one logged-in client)
+wardx.identify(user.id);
+const delayMs = wardx.config.get('message.delayMs', 1000);
+
+// Many users in one process (game-server). Do not identify().
+const otherDelayMs = wardx.config.get('message.delayMs', 1000, { subjectId: req.userId });
 ```
+
+`identify(null)` clears the default. After that, `config.get` without `{ subjectId }` is shared Remote Config again. A per-call `{ subjectId }` overrides `identify()`.
+
+If there is no identified subject and you omit `{ subjectId }`, that call is not in an experiment.
 
 ### Resolution order
 
 1. If the key is not in the snapshot, return the fallback.
-2. If `subjectId` is missing, return the Remote Config value.
+2. If there is no subject (`identify` unset and no `{ subjectId }`), return the Remote Config value.
 3. If an experiment applies to the subject, return the variant value.
 
 The SDK updates the snapshot when a sync response contains a newer `configVersion`. Until that sync, `config.get` returns the fallback or the last snapshot.
@@ -364,12 +377,21 @@ The SDK updates the snapshot when a sync response contains a newer `configVersio
 
 **Objective:** Get the variant value. Then record `experiment.goal`.
 
-The ingest server config can define experiment `message-delay-v1` on key `message.delayMs`. See `@wardx/server`.
+The ingest server config can define experiment `message-delay-v1` on key `message.delayMs`. See `@wardx/server`. Variants live on the server. The app still reads the same key.
+
+On a client with one user, call `identify` once after login. Later `config.get` and `experiment.goal` use that subject. On a server that handles many users, pass `{ subjectId }` on every call. Do not `identify()` there: it is process-wide and would mix users.
 
 ```js
+wardx.identify(userId);
+const delayMs = wardx.config.get('message.delayMs', 1000);
+setTimeout(() => {
+  deliver(text);
+  wardx.counter('message.sent').inc();
+  wardx.experiment.goal('message.sent', { value: 1 });
+}, delayMs);
+
 function sendMessage(wardx, userId, text) {
   const delayMs = wardx.config.get('message.delayMs', 1000, { subjectId: userId });
-
   setTimeout(() => {
     deliver(text);
     wardx.counter('message.sent').inc();
@@ -378,7 +400,9 @@ function sendMessage(wardx, userId, text) {
 }
 ```
 
-The first `config.get` with a `subjectId` in a session can emit event `experiment.exposure`. The payload contains:
+The assignment is local and deterministic. The same `subjectId`, experiment `id`, and `salt` always map to the same variant. You do not persist the group. You do not ask the server which group the user is in. Changing the experiment `salt` redistributes the population. Keep the salt when you replace the same experiment `id`.
+
+The first `config.get` that has a subject in a session can emit event `experiment.exposure`. The payload contains:
 
 - `experiment`
 - `variant`
@@ -386,9 +410,7 @@ The first `config.get` with a `subjectId` in a session can emit event `experimen
 
 The payload does not contain the raw `subjectId`.
 
-`experiment.goal` requires `subjectId`. The event includes the known assignments for that subject.
-
-The assignment is local and deterministic. The same subject, experiment, and salt always get the same variant.
+`experiment.goal` needs a subject: from `identify()` or from `{ subjectId }` on that call. The event includes the known assignments for that subject. Without a subject, the call throws.
 
 ## Use case 11: Continue when the ingest server is down
 
@@ -467,6 +489,125 @@ A tracer is a duck-typed object. Implement any of `measure`, `event`, `log`, `fr
 
 The tracer runs on the measure path. Use it in development. Remove `tracer` before production. It does not change frames, delivery, or Remote Config.
 
+## Use case 14: Measure play-session duration
+
+**When:** You want to maximize how long people play, or how much time the fleet spent in a window.
+
+**Objective:** Record a play-session clock in the application. Do not use the SDK `sessionId`.
+
+A play session is an interval you own: app open to close, login to logout, or match start to leave. The SDK `sessionId` identifies the envelope. It is not that clock. Wardx does not join events by subject, so it cannot compute duration after the fact.
+
+Two signals:
+
+1. **Ended session (distribution + A/B).** When the session ends, observe the elapsed milliseconds. Emit one `experiment.goal` with that value so `analyze_experiment` can split by variant.
+2. **Fleet play time (accumulated).** Add the same milliseconds to `session.time_ms`. `get_aggregates` then shows how much time the fleet played in that minute. Optional: add a heartbeat while the session is open so a crash still counts the minutes already played.
+
+```js
+const SESSION_BUCKETS = [30_000, 60_000, 180_000, 300_000, 600_000, 1_200_000, 1_800_000, 3_600_000];
+
+function onPlaySessionStart(wardx, userId) {
+  wardx.identify(userId);
+  return { startedAt: Date.now() };
+}
+
+function onPlaySessionEnd(wardx, session) {
+  const durationMs = Date.now() - session.startedAt;
+  wardx.histogram('session.duration', { buckets: SESSION_BUCKETS }).observe(durationMs);
+  wardx.counter('session.time_ms').add(durationMs);
+  wardx.counter('session.ended').inc();
+  wardx.experiment.goal('session.duration', { value: durationMs });
+}
+
+function onPlayHeartbeat(wardx, elapsedMs) {
+  wardx.counter('session.time_ms').add(elapsedMs);
+}
+```
+
+On a process that serves many users, skip `identify()` and pass `{ subjectId }` on `experiment.goal`.
+
+### Procedure
+
+1. Start a local clock when the play session starts. Do not use `sessionId`.
+2. When it ends, observe `session.duration` with minute-scale buckets. Default histogram buckets are for short durations in milliseconds.
+3. Add the same number to `session.time_ms`. Increment `session.ended`.
+4. Call `experiment.goal('session.duration', { value: durationMs })` with a subject. Emit that goal once per ended session. `analyze_experiment` then has `goalSum` and `goalMean` per variant. Mean session ms is `goalSum / goals`.
+5. From MCP, read `session.time_ms` in `get_aggregates` for fleet minutes. Compare variants with `analyze_experiment`, not with a counter dimension.
+
+Do not put `userId` on the histogram. Do not emit `experiment.goal` on every heartbeat: that would count many goals for one session. The heartbeat only adds to `session.time_ms`.
+
+If you only increment `session.time_ms` and never emit the goal, MCP can still see fleet play time. It cannot compare variants. One experiment should have one quantitative `experiment.goal` name. Mixing a duration value with a `value: 1` conversion on the same experiment corrupts `goalMean`.
+
+## Use case 15: A/B test level difficulty to increase session time
+
+**When:** You suspect a level is too hard or too easy, and you want longer sessions.
+
+**Objective:** Put the difficulty knobs in Remote Config. Measure starts, fails, and completes. Experiment on those knobs. Use session duration from use case 14 as the goal.
+
+The keys must already exist in Remote Config. The game reads them with `config.get`. Variants may only change those keys.
+
+```js
+function onLevelStart(wardx, userId, levelId) {
+  const enemyHp = wardx.config.get(`level.${levelId}.enemyHp`, 100, { subjectId: userId });
+  wardx.event('level.start', { level: levelId });
+  wardx.counter('level.start', { level: levelId }).inc();
+  return enemyHp;
+}
+
+function onLevelFail(wardx, levelId) {
+  wardx.event('level.fail', { level: levelId });
+  wardx.counter('level.fail', { level: levelId }).inc();
+}
+
+function onLevelComplete(wardx, levelId) {
+  wardx.event('level.complete', { level: levelId });
+  wardx.counter('level.complete', { level: levelId }).inc();
+}
+```
+
+`level` is a small set of ids. Do not put a unique run id on the counter.
+
+The volume funnel `level.start` → `level.fail` / `level.complete` is the difficulty signal. A high fail-to-start ratio means the level is hard. That comparison is counts in one window, not unique players. Keep `level.complete` as a counter. Do not also emit `experiment.goal` for it if the experiment goal is `session.duration`.
+
+Call `experiment.goal('session.duration', { value: durationMs })` when the play session ends (use case 14).
+
+From MCP, after onboarding: `upsert_experiment` on the existing keys (`level.3.enemyHp`, …) with a hypothesis such as "Lower HP on level 3 increases session duration", `primaryMetric: 'session.time_ms'`, and variants that only change those keys. Later `analyze_experiment`: compare `goalMean` for the duration goal. Compare the funnel counts with `get_aggregates`. See `@wardx/server` use case 7.
+
+## Use case 16: Surface an error so an agent can open the source
+
+**When:** A server or client fails and you want an agent to see enough to patch the file.
+
+**Objective:** Count the failure. Log the error with a stack or a provider code. Wardx does not edit source. MCP returns the row. The agent uses `path` or `git` on that role, plus its own file permissions, to change the code.
+
+```js
+function handleCheckout(req, res, wardx) {
+  try {
+    charge(req.body);
+    wardx.counter('payment.ok').inc();
+  } catch (err) {
+    wardx.counter('payment.error', { code: err.code || 'unknown' }).inc();
+    wardx.log.error('payment_failed', {
+      name: err.name,
+      code: err.code || 'unknown',
+      stack: clipStack(err)
+    });
+    res.statusCode = 500;
+    res.end();
+  }
+}
+
+function clipStack(err, max = 4096) {
+  const stack = err instanceof Error ? err.stack : String(err);
+  if (!stack) return null;
+  return stack.length <= max ? stack : stack.slice(0, max);
+}
+```
+
+`stack` is an attr string. Do not send the Error object.
+
+From MCP: `get_aggregates` for the rate, then `get_recent_logs` with `level: 'error'` and the message. If the role has `path` or `git` in the catalog, the agent opens that checkout and edits there. If those fields are empty, Wardx has no source hint. Do not invent a path.
+
+The log ring is recent only (`recentLogsMax`). It is not a history search. See `@wardx/server` use case 8.
+
 ## API
 
 | Call | Description |
@@ -479,8 +620,9 @@ The tracer runs on the measure path. Use it in development. Remove `tracer` befo
 | `timer(name, dims)` | Starts a timer. The returned function records milliseconds. |
 | `event(name, attrs)` | Buffers a product event. |
 | `log.debug\|info\|warn\|error(message, attrs)` | Buffers a structured log. |
-| `config.get(key, fallback, context)` | Reads Remote Config. `context.subjectId` enables experiments. |
-| `experiment.goal(name, context)` | Emits `experiment.goal`. `context.subjectId` is required. |
+| `identify(subjectId)` | Sets the default subject for this instance. `identify(null)` clears it. Process-wide: do not use on a game-server that serves many users. |
+| `config.get(key, fallback, context)` | Reads Remote Config. Uses `identify()` or `{ subjectId }`. A per-call `{ subjectId }` overrides `identify()`. Omit both for the shared value. |
+| `experiment.goal(name, context)` | Emits `experiment.goal`. Needs a subject from `identify()` or `{ subjectId }`. Optional `value` for a quantitative goal such as session duration. |
 | `flush()` | Sends pending frames now. Returns a Promise. |
 | `shutdown()` | Stops timers, sends pending frames, and closes the HTTP agent. |
 

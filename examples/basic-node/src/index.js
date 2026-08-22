@@ -19,8 +19,9 @@ end({ result: 'success' });
 
 await wardx.flush();
 
-const delay = wardx.config.get('message.delayMs', 1000, { subjectId: 'demo-user' });
-wardx.experiment.goal('message.sent', { subjectId: 'demo-user' });
+wardx.identify('demo-user');
+const delay = wardx.config.get('message.delayMs', 1000);
+wardx.experiment.goal('message.sent');
 
 await wardx.flush();
 await wardx.shutdown();
