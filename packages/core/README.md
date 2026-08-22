@@ -20,6 +20,13 @@ npm install @wardx/core
 import { WardxCore, assignVariant, loadSdkDefaults } from '@wardx/core';
 ```
 
+> [!NOTE]
+> **Agent skill.** Teach the agent the Node SDK (this engine lives inside it) with the [Skills CLI](https://skills.sh):
+>
+> ```bash
+> npx skills add https://github.com/clasen/Wardx --skill wardx
+> ```
+
 ## Design rules
 
 - A measure call changes local memory only.

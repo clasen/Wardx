@@ -12,7 +12,7 @@ description: Instruments Node.js with the Wardx SDK (wardx / createWardx) — co
 - Remote Config is always a local read of the last snapshot.
 - The SDK sends names. Descriptions live in the server catalog.
 
-Control plane (MCP, catalog, experiments as definitions, aggregates) is the **wardx-server** skill. This skill writes application instrumentation and SDK code. C# / Unity instrumentation is `clients/csharp`, not this package.
+Control plane (MCP, catalog, experiments as definitions, aggregates) is the **wardx-server** skill. This skill writes Node.js instrumentation and SDK code. Unity is the **wardx-unity** skill. A plain C# / .NET process is the **wardx-csharp** skill.
 
 Package internals when editing `packages/node` or `packages/core`: [references/package.md](references/package.md).
 

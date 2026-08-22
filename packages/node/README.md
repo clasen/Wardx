@@ -53,6 +53,13 @@ import { createWardx } from 'wardx';
 
 To receive frames, run an ingest server. Install `@wardx/server` and start it with a config file.
 
+> [!NOTE]
+> **Agent skill.** Teach the agent this Node SDK with the [Skills CLI](https://skills.sh):
+>
+> ```bash
+> npx skills add https://github.com/clasen/Wardx --skill wardx
+> ```
+
 ## Design rules
 
 - A measure call does not send network data.

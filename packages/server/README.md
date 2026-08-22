@@ -57,6 +57,13 @@ import { createIngestServer, listen, startServer, loadServerConfig } from '@ward
 
 The CLI name is `wardx-server`.
 
+> [!NOTE]
+> **Agent skill.** Teach the agent this server with the [Skills CLI](https://skills.sh):
+>
+> ```bash
+> npx skills add https://github.com/clasen/Wardx --skill wardx-server
+> ```
+
 ## Config file
 
 Pass the JSON file path as the CLI argument. The loader does not add a fallback for a missing path.

@@ -45,9 +45,29 @@ Unity 2021.3 or later, or .NET Standard 2.1.
 
 ## Install
 
-**Unity.** Package Manager → Add package from disk → `clients/csharp/Runtime/package.json`.
+**Unity.** Package Manager → Add package from git URL:
+
+```
+https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime
+```
+
+Pin a release with `#v0.1.5`. In `Packages/manifest.json`:
+
+```json
+"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.1.5"
+```
+
+**Unity (this checkout).** Package Manager → Add package from disk → `clients/csharp/Runtime/package.json`.
 
 **C# / .NET.** Reference `clients/csharp/Runtime/Wardx.csproj`.
+
+> [!NOTE]
+> **Agent skills.** Teach the agent this SDK with the [Skills CLI](https://skills.sh):
+>
+> ```bash
+> npx skills add https://github.com/clasen/Wardx --skill wardx-unity
+> npx skills add https://github.com/clasen/Wardx --skill wardx-csharp
+> ```
 
 ## Start
 
