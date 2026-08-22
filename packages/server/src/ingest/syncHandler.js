@@ -1,4 +1,5 @@
 import { gunzipSync } from 'node:zlib';
+import { persistExperimentStats } from '../control/persist.js';
 import { PayloadTooLargeError, readBody } from './readBody.js';
 import { validateEnvelope } from './validate.js';
 
@@ -65,7 +66,7 @@ export function createSyncHandler({ config, registry, sink }) {
       return;
     }
     sink.ingest(body);
-    store.aggregator.ingest(body);
+    if (store.aggregator.ingest(body)) persistExperimentStats(config, registry);
     store.clients.touch(body.client);
     store.logs.ingest(body);
     const includeConfig = body.configVersion !== store.configRepo.version;

@@ -27,6 +27,39 @@ export function validateExperiment(experiment) {
       throw new Error('experiment.primaryMetric must be a non-empty string');
     }
   }
+  if (experiment.goalKind !== undefined) {
+    if (experiment.goalKind !== 'conversion' && experiment.goalKind !== 'mean') {
+      throw new Error('experiment.goalKind must be conversion or mean');
+    }
+  }
+  if (experiment.control !== undefined) {
+    if (typeof experiment.control !== 'string' || experiment.control.length === 0) {
+      throw new Error('experiment.control must be a non-empty string');
+    }
+  }
+  if (experiment.minExposures !== undefined) {
+    if (!Number.isInteger(experiment.minExposures) || experiment.minExposures < 1) {
+      throw new Error('experiment.minExposures must be an integer >= 1');
+    }
+  }
+  if (experiment.confidence !== undefined) {
+    if (
+      typeof experiment.confidence !== 'number' ||
+      !Number.isFinite(experiment.confidence) ||
+      experiment.confidence <= 0 ||
+      experiment.confidence >= 1
+    ) {
+      throw new Error('experiment.confidence must be a number in (0, 1)');
+    }
+  }
+  if (experiment.shippedVariant !== undefined) {
+    if (typeof experiment.shippedVariant !== 'string' || experiment.shippedVariant.length === 0) {
+      throw new Error('experiment.shippedVariant must be a non-empty string');
+    }
+  }
+  if (experiment.goalKind === 'mean' && experiment.minExposures !== undefined && experiment.minExposures < 2) {
+    throw new Error('experiment.minExposures must be >= 2 when goalKind is mean');
+  }
   if (!Array.isArray(experiment.variants) || experiment.variants.length === 0) {
     throw new Error('experiment.variants must be a non-empty array');
   }
@@ -54,6 +87,12 @@ export function validateExperiment(experiment) {
   if (totalWeight <= 0) {
     throw new Error('experiment variant weights must sum to > 0');
   }
+  if (experiment.control !== undefined && !keys.has(experiment.control)) {
+    throw new Error(`experiment.control must be a variant key`);
+  }
+  if (experiment.shippedVariant !== undefined && !keys.has(experiment.shippedVariant)) {
+    throw new Error(`experiment.shippedVariant must be a variant key`);
+  }
 }
 
 export function toClientExperiment(experiment) {
@@ -70,12 +109,22 @@ export function toClientExperiment(experiment) {
     }))
   };
   if (experiment.primaryMetric !== undefined) out.primaryMetric = experiment.primaryMetric;
+  if (experiment.goalKind !== undefined) out.goalKind = experiment.goalKind;
+  if (experiment.control !== undefined) out.control = experiment.control;
+  if (experiment.minExposures !== undefined) out.minExposures = experiment.minExposures;
+  if (experiment.confidence !== undefined) out.confidence = experiment.confidence;
+  if (experiment.shippedVariant !== undefined) out.shippedVariant = experiment.shippedVariant;
   return out;
 }
 
 export function toWireExperiment(experiment) {
   const out = toClientExperiment(experiment);
   delete out.roles;
+  delete out.goalKind;
+  delete out.control;
+  delete out.minExposures;
+  delete out.confidence;
+  delete out.shippedVariant;
   return out;
 }
 

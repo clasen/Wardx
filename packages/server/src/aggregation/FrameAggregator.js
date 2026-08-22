@@ -64,21 +64,28 @@ function mergeHistogram(existing, incoming) {
   return existing;
 }
 
-function experimentSlot(window, experimentId, variantKey) {
-  let byVariant = window.experiments.get(experimentId);
+function experimentSlot(map, experimentId, variantKey) {
+  let byVariant = map.get(experimentId);
   if (!byVariant) {
     byVariant = new Map();
-    window.experiments.set(experimentId, byVariant);
+    map.set(experimentId, byVariant);
   }
   let row = byVariant.get(variantKey);
   if (!row) {
-    row = { exposures: 0, goals: 0, goalSum: 0 };
+    row = { exposures: 0, goals: 0, goalSum: 0, goalSumSq: 0 };
     byVariant.set(variantKey, row);
   }
   return row;
 }
 
-function ingestExperimentEvents(window, events, role) {
+function addGoal(slot, value) {
+  slot.goals += 1;
+  slot.goalSum += value;
+  slot.goalSumSq += value * value;
+}
+
+function ingestExperimentEvents(window, lifetime, events, role) {
+  let changed = false;
   for (const row of events) {
     const name = row[1];
     const key = eventKey(role, name);
@@ -88,7 +95,9 @@ function ingestExperimentEvents(window, events, role) {
     const attrs = row[2] && typeof row[2] === 'object' ? row[2] : {};
     if (name === 'experiment.exposure') {
       if (typeof attrs.experiment === 'string' && typeof attrs.variant === 'string') {
-        experimentSlot(window, attrs.experiment, attrs.variant).exposures += 1;
+        experimentSlot(window.experiments, attrs.experiment, attrs.variant).exposures += 1;
+        experimentSlot(lifetime, attrs.experiment, attrs.variant).exposures += 1;
+        changed = true;
       }
       continue;
     }
@@ -97,11 +106,12 @@ function ingestExperimentEvents(window, events, role) {
     const value = typeof attrs.value === 'number' && Number.isFinite(attrs.value) ? attrs.value : 1;
     for (const item of assignments) {
       if (!item || typeof item.experiment !== 'string' || typeof item.variant !== 'string') continue;
-      const slot = experimentSlot(window, item.experiment, item.variant);
-      slot.goals += 1;
-      slot.goalSum += value;
+      addGoal(experimentSlot(window.experiments, item.experiment, item.variant), value);
+      addGoal(experimentSlot(lifetime, item.experiment, item.variant), value);
+      changed = true;
     }
   }
+  return changed;
 }
 
 function nameSet(names) {
@@ -120,10 +130,11 @@ function filterByRole(rows, role) {
   return rows.filter((row) => row.role === role);
 }
 
-function withGoalMean(row) {
+function withDerived(row) {
   return {
     ...row,
-    goalMean: row.goals > 0 ? row.goalSum / row.goals : 0
+    goalMean: row.goals > 0 ? row.goalSum / row.goals : 0,
+    rate: row.exposures > 0 ? row.goals / row.exposures : 0
   };
 }
 
@@ -134,7 +145,13 @@ function serializeExperiments(map, names) {
     const variants = [];
     for (const [key, stats] of byVariant) {
       variants.push(
-        withGoalMean({ key, exposures: stats.exposures, goals: stats.goals, goalSum: stats.goalSum })
+        withDerived({
+          key,
+          exposures: stats.exposures,
+          goals: stats.goals,
+          goalSum: stats.goalSum,
+          goalSumSq: stats.goalSumSq
+        })
       );
     }
     out.push({ id, variants });
@@ -181,6 +198,44 @@ export class FrameAggregator {
     this.retentionMs = aggregateRetentionMinutes * 60000;
     this.maxSeriesPerMetric = aggregateMaxSeriesPerMetric;
     this.windows = new Map();
+    this.lifetime = new Map();
+  }
+
+  lifetimeSnapshot() {
+    const experiments = {};
+    for (const [id, byVariant] of this.lifetime) {
+      const variants = {};
+      for (const [key, stats] of byVariant) {
+        variants[key] = {
+          exposures: stats.exposures,
+          goals: stats.goals,
+          goalSum: stats.goalSum,
+          goalSumSq: stats.goalSumSq
+        };
+      }
+      experiments[id] = variants;
+    }
+    return experiments;
+  }
+
+  replaceLifetime(experiments) {
+    this.lifetime = new Map();
+    if (experiments === undefined || experiments === null) return;
+    if (typeof experiments !== 'object' || Array.isArray(experiments)) {
+      throw new Error('experiment lifetime must be an object');
+    }
+    for (const [id, variants] of Object.entries(experiments)) {
+      const byVariant = new Map();
+      for (const [key, stats] of Object.entries(variants)) {
+        byVariant.set(key, {
+          exposures: stats.exposures,
+          goals: stats.goals,
+          goalSum: stats.goalSum,
+          goalSumSq: stats.goalSumSq
+        });
+      }
+      this.lifetime.set(id, byVariant);
+    }
   }
 
   ingest(envelope) {
@@ -189,6 +244,7 @@ export class FrameAggregator {
       throw new Error('client.role must be a non-empty string');
     }
     const max = this.maxSeriesPerMetric;
+    let lifetimeChanged = false;
     for (const frame of envelope.frames) {
       const minute = minuteFloor(frame.from);
       let window = this.windows.get(minute);
@@ -207,7 +263,7 @@ export class FrameAggregator {
       stats.frames += 1;
       stats.events += frame.events.length;
       stats.logs += frame.logs.length;
-      ingestExperimentEvents(window, frame.events, role);
+      if (ingestExperimentEvents(window, this.lifetime, frame.events, role)) lifetimeChanged = true;
       for (const [name, dims, value] of frame.metrics.counters) {
         const key = seriesKey(role, name, dims);
         const capKey = eventKey(role, name);
@@ -251,6 +307,7 @@ export class FrameAggregator {
       }
     }
     this._prune();
+    return lifetimeChanged;
   }
 
   _prune() {
@@ -299,19 +356,21 @@ export class FrameAggregator {
   }
 
   experimentStats(experimentId) {
-    const variants = new Map();
-    for (const window of this.windows.values()) {
-      const byVariant = window.experiments.get(experimentId);
-      if (!byVariant) continue;
-      for (const [key, stats] of byVariant) {
-        const row = variants.get(key) || { key, exposures: 0, goals: 0, goalSum: 0 };
-        row.exposures += stats.exposures;
-        row.goals += stats.goals;
-        row.goalSum += stats.goalSum;
-        variants.set(key, row);
-      }
+    const byVariant = this.lifetime.get(experimentId);
+    if (!byVariant) return [];
+    const out = [];
+    for (const [key, stats] of byVariant) {
+      out.push(
+        withDerived({
+          key,
+          exposures: stats.exposures,
+          goals: stats.goals,
+          goalSum: stats.goalSum,
+          goalSumSq: stats.goalSumSq
+        })
+      );
     }
-    return [...variants.values()].map(withGoalMean);
+    return out;
   }
 
   counterTotal(name) {
@@ -353,6 +412,45 @@ export class FrameAggregator {
       }
     }
     const ranked = [...totals.values()].sort((a, b) => b.count - a.count);
+    if (limit === undefined || limit === null) return ranked;
+    return ranked.slice(0, limit);
+  }
+
+  topHistograms(limit) {
+    const totals = new Map();
+    for (const window of this.windows.values()) {
+      for (const row of window.histograms.values()) {
+        const key = seriesKey(row.role, row.name, row.dims);
+        const incoming = row.body;
+        const prev = totals.get(key);
+        if (!prev) {
+          const peak = {
+            name: row.name,
+            dims: row.dims,
+            role: row.role,
+            count: incoming.count,
+            sum: incoming.sum,
+            min: incoming.min,
+            max: incoming.max
+          };
+          const exemplar = copyExemplar(incoming.exemplar);
+          if (exemplar) peak.exemplar = exemplar;
+          totals.set(key, peak);
+          continue;
+        }
+        prev.count += incoming.count;
+        prev.sum += incoming.sum;
+        if (incoming.min < prev.min) prev.min = incoming.min;
+        if (incoming.max > prev.max) {
+          prev.max = incoming.max;
+          applyExemplar(prev, incoming);
+        } else if (incoming.max === prev.max) {
+          const exemplar = copyExemplar(incoming.exemplar);
+          if (exemplar) prev.exemplar = exemplar;
+        }
+      }
+    }
+    const ranked = [...totals.values()].sort((a, b) => b.max - a.max || b.count - a.count);
     if (limit === undefined || limit === null) return ranked;
     return ranked.slice(0, limit);
   }

@@ -198,6 +198,73 @@ test('FrameAggregator drops a stale exemplar when a higher max has none', () => 
   assert.equal(body.exemplar, undefined);
 });
 
+test('topHistograms ranks by max and keeps the exemplar of that max', () => {
+  const agg = aggregator(4);
+  const now = Date.now();
+  agg.ingest(
+    envelopeWithHistograms(
+      [
+        [
+          'coins.award_size',
+          { source: 'match' },
+          {
+            count: 2,
+            sum: 30,
+            min: 10,
+            max: 20,
+            buckets: [[50, 2]],
+            exemplar: { value: 20, attrs: { grantId: 'g-20' } }
+          }
+        ],
+        [
+          'coins.award_size',
+          { source: 'daily' },
+          {
+            count: 4,
+            sum: 40,
+            min: 10,
+            max: 10,
+            buckets: [[50, 4]]
+          }
+        ]
+      ],
+      now
+    )
+  );
+  agg.ingest(
+    envelopeWithHistograms(
+      [
+        [
+          'coins.award_size',
+          { source: 'match' },
+          {
+            count: 1,
+            sum: 80,
+            min: 80,
+            max: 80,
+            buckets: [[50, 0]],
+            exemplar: { value: 80, attrs: { grantId: 'g-80', reason: 'bonus' } }
+          }
+        ]
+      ],
+      now + 60000
+    )
+  );
+  const peaks = agg.topHistograms();
+  assert.equal(peaks.length, 2);
+  assert.equal(peaks[0].name, 'coins.award_size');
+  assert.deepEqual(peaks[0].dims, { source: 'match' });
+  assert.equal(peaks[0].count, 3);
+  assert.equal(peaks[0].sum, 110);
+  assert.equal(peaks[0].min, 10);
+  assert.equal(peaks[0].max, 80);
+  assert.deepEqual(peaks[0].exemplar, { value: 80, attrs: { grantId: 'g-80', reason: 'bonus' } });
+  assert.equal(peaks[1].max, 10);
+  assert.equal(peaks[1].exemplar, undefined);
+  assert.equal(agg.topHistograms(1).length, 1);
+  assert.equal(agg.topHistograms(1)[0].max, 80);
+});
+
 test('experiment.goal value rolls up to goalSum and goalMean per variant', () => {
   const agg = aggregator();
   const now = Date.now();
@@ -239,7 +306,43 @@ test('experiment.goal value rolls up to goalSum and goalMean per variant', () =>
   const easy = agg.experimentStats('difficulty-v1').find((row) => row.key === 'easy');
   assert.equal(easy.goals, 2);
   assert.equal(easy.goalSum, 180000);
+  assert.equal(easy.goalSumSq, 120000 * 120000 + 60000 * 60000);
   assert.equal(easy.goalMean, 90000);
+  assert.equal(easy.rate, 0);
   const window = agg.snapshot()[0].experiments.find((row) => row.id === 'difficulty-v1');
   assert.equal(window.variants[0].goalMean, 90000);
+});
+
+test('experiment lifetime stats survive window prune', () => {
+  const agg = new FrameAggregator({
+    aggregateRetentionMinutes: 1,
+    aggregateMaxSeriesPerMetric: 10
+  });
+  const now = Date.now() - 120000;
+  agg.ingest(
+    sampleEnvelope({
+      frames: [
+        {
+          seq: 1,
+          from: now,
+          to: now + 1,
+          metrics: { counters: [], gauges: [], histograms: [] },
+          events: [
+            [now, 'experiment.exposure', { experiment: 'delay', variant: 'fast' }],
+            [
+              now,
+              'experiment.goal',
+              { experiments: [{ experiment: 'delay', variant: 'fast' }], value: 1 }
+            ]
+          ],
+          logs: []
+        }
+      ]
+    })
+  );
+  assert.equal(agg.snapshot().length, 0);
+  const fast = agg.experimentStats('delay').find((row) => row.key === 'fast');
+  assert.equal(fast.exposures, 1);
+  assert.equal(fast.goals, 1);
+  assert.equal(fast.goalSum, 1);
 });

@@ -1,6 +1,6 @@
 ---
 name: wardx-server
-description: Operates the Wardx ingest control plane over MCP — catalog onboarding, Remote Config, experiments, 1-minute aggregates, recent logs, and volume-funnel reads. Use when the user mentions Wardx, wardx-server, @wardx/server, Remote Config, experiments, ingest, telemetry, funnel, get_project_overview, set_config_value, upsert_experiment, analyze_experiment, POST /v1/sync, or MCP tools on the Wardx process. Also use when changing packages/server (ControlService, ingest, MCP tools, config schema). Do not use for writing SDK instrumentation (metrics, events, config.get) — that belongs to wardx.
+description: Operates the Wardx ingest control plane over MCP — catalog onboarding, Remote Config, experiments, 1-minute aggregates, recent logs, volume-funnel reads, and economy-jump investigation (histogram max vs a Remote Config cap). Use when the user mentions Wardx, wardx-server, @wardx/server, Remote Config, experiments, ingest, telemetry, funnel, fraud, economy leak, get_project_overview, set_config_value, upsert_experiment, analyze_experiment, POST /v1/sync, or MCP tools on the Wardx process. Also use when changing packages/server (ControlService, ingest, MCP tools, config schema). Do not use for writing SDK instrumentation (metrics, events, config.get) — that belongs to wardx.
 ---
 
 # Wardx server
@@ -65,19 +65,21 @@ Call `upsert_experiment` with:
 - `id`, `enabled`, `allocation` (0–1), `salt` (new random hex when creating; keep the salt when replacing the same id), `roles`, `variants` (`key`, `weight` ≥ 0 summing to > 0, `values`)
 - optional `primaryMetric` (an existing outcome name)
 - optional `hypothesis` — stays on the server; clients never receive it
+- for a closable test: `goalKind` (`conversion` or `mean`), `control` (a variant key), `minExposures` (integer ≥ 1; ≥ 2 when `mean`), `confidence` (number in (0, 1)). No implicit defaults. These fields never go to clients.
 
-`set_experiment_enabled` toggles without rewriting variants. `list_experiments` and `analyze_experiment` read previously proposed definitions.
+`set_experiment_enabled` toggles without rewriting variants. It does not ship a winner. `list_experiments` and `analyze_experiment` read previously proposed definitions. `ship_experiment` copies the winning `variant.values` into Remote Config and sets `enabled` false. Call it only when `decision.status` is `winner` (or the experiment is already shipped). Omit `variant` to ship `leadingVariant`.
 
-Assignment runs on the client, not the server. The server stores the definition and rolls up `experiment.exposure` / `experiment.goal` in 1-minute windows. Clients call `identify()` on a single-user process, or pass `{ subjectId }` per call on a multi-user process (wardx skill). A read with no subject returns Remote Config and does not expose. Keep the `salt` when replacing the same `id`; a new salt redistributes the population.
+Assignment runs on the client, not the server. The server stores the definition and rolls up `experiment.exposure` / `experiment.goal` into lifetime totals (they survive the 1-minute window retention). When the process loaded a config file, those totals persist to `<configPath>.experiment-stats.json` and reload after a restart. Clients call `identify()` on a single-user process, or pass `{ subjectId }` per call on a multi-user process (wardx skill). A read with no subject returns Remote Config and does not expose. Keep the `salt` when replacing the same `id`; a new salt redistributes the population. Do not change variant weights to "roll out" a winner — that remaps existing subjects. Ship instead.
 
 ## Telemetry
 
 This is in-memory development aggregation, not a production query API.
 
-- `get_aggregates` — 1-minute windows with catalog legends. Optional `names`, `from`, `to`, `role`. Counters in a window are sums of window deltas. A gauge is the last value by timestamp. Events count by name and role; attrs are not series. Extra series past `aggregateMaxSeriesPerMetric` increment `cardinalityDropped`.
+- `get_aggregates` — 1-minute windows with catalog legends. Optional `names`, `from`, `to`, `role`. Counters in a window are sums of window deltas. A gauge is the last value by timestamp. Events count by name and role; attrs are not series. Histogram `max` and `exemplar` are the window peak (a lookup key, not a player). Extra series past `aggregateMaxSeriesPerMetric` increment `cardinalityDropped`.
 - Volume funnel — compare step counter totals (or `eventNames`) for the same window and `role`. That is how often each step fired, not unique users and not ordered sequences. Do not invent a per-subject path. Point missing step names at the wardx skill.
+- Economy jump — overview histogram outcomes are ranked by `max`. Compare that `max` to a numeric cap knob (`economy.maxAward` or similar). Then `get_aggregates` on the amount, count, and size names, and `get_recent_logs` with the anomaly message or `exemplar.attrs` (`grantId`, `source`, `reason`). Fleet signal, not a player to punish. The wallet row is in the application database. Missing names → wardx skill use case 8.
 - `get_recent_logs` — newest-first ring (`recentLogsMax`). Filter with `level`, exact `message`, exact `attrs`, `role`, `limit`. Drill here after aggregates. A stack or provider code is just another attr.
-- `analyze_experiment` — definition, hypothesis, exposures, goals, `goalSum`, `goalMean` (`goalSum / goals`) by variant, `primaryMetric` fleet total. For a quantitative goal such as `session.duration`, compare `goalMean`. `experiment.goal` is one conversion or one value, not an N-step funnel. One experiment should have one quantitative goal name. `primaryMetric.total` is not split by variant.
+- `analyze_experiment` — definition, hypothesis, lifetime `exposures` / `goals` / `goalSum` / `goalSumSq` / `goalMean` / `rate` by variant, `primaryMetric` fleet total, and `decision`. `rate` is `goals / exposures`. For `goalKind: mean` compare `goalMean`. For `goalKind: conversion` compare `rate` — `goalMean` is 1 when every goal sends `value: 1`. `decision.status` is `collecting`, `winner`, `no_difference`, `cannot_decide`, or `shipped`. Do not call a variant the winner unless status is `winner` or `shipped`. `experiment.goal` is one conversion or one value, not an N-step funnel. One experiment should have one quantitative goal name. `primaryMetric.total` is not split by variant.
 
 Filter with `role` when comparing surfaces. Group answers by role. Prefer catalog descriptions over raw names. MCP does not read the envelope sink (`null` / `memory` / `ndjson`).
 
@@ -108,22 +110,30 @@ When the task is code in `packages/server`: keep HTTP as the client path only. C
 **User says:** "A/B test a shorter delay."
 
 1. Overview. Refuse until `onboarding.complete`.
-2. Propose over listed knobs only. Include `hypothesis` and `primaryMetric`.
-3. `upsert_experiment`. Later `analyze_experiment` once traffic exists.
+2. Propose over listed knobs only. Include `hypothesis`, `primaryMetric`, `goalKind: 'conversion'`, `control`, `minExposures`, and `confidence`.
+3. `upsert_experiment`. Later `analyze_experiment` once traffic exists. Follow `decision.status`. Ship with `ship_experiment` only when status is `winner`.
 4. If exposures stay at zero, the app is reading the knob with no subject. Point them at the wardx skill: `identify()` on a single-user process, or `{ subjectId }` on each `config.get` / `experiment.goal` on a multi-user process.
 
 **User says:** "Levels feel too hard. Run an A/B to increase session time."
 
 1. Overview. Refuse until `onboarding.complete`. Confirm difficulty knobs exist (`level.*.enemyHp` or similar) and that `session.time_ms` / `session.duration` are outcomes. Missing names → wardx skill use cases 14 and 15.
 2. `get_aggregates` on `level.start`, `level.fail`, `level.complete`, `session.time_ms`. Funnel counts are the difficulty signal. `session.time_ms` is fleet play time.
-3. `upsert_experiment` on those knobs. `hypothesis` such as "Lower HP on level 3 increases session duration". `primaryMetric: 'session.time_ms'`.
-4. Later `analyze_experiment`: compare `goalMean` by variant (session duration in ms). Do not treat `primaryMetric.total` as a per-variant mean.
+3. `upsert_experiment` on those knobs. `hypothesis` such as "Lower HP on level 3 increases session duration". `primaryMetric: 'session.time_ms'`. `goalKind: 'mean'`, `control`, `minExposures`, `confidence`.
+4. Later `analyze_experiment`: follow `decision`. Compare `goalMean` for the duration goal. Do not treat `primaryMetric.total` as a per-variant mean. `ship_experiment` when `decision.status` is `winner`.
 
 **User says:** "There are errors — go fix the file."
 
 1. `get_aggregates` for the error counter. Then `get_recent_logs` with `level: 'error'` and the message. Read `attrs.stack` / `attrs.code`.
 2. If that role has `path` or `git`, open that checkout and edit with your file tools. Wardx does not change application code.
 3. If `path` and `git` are empty, say so. Do not invent a path. `set_role_source` only when the user supplies one.
+
+**User says:** "Points are jumping / is the economy leaking / is there fraud?"
+
+1. Overview. Find the cap knob (`economy.maxAward` or similar). Find histogram outcomes (`coins.award_size` or similar): `max` vs that cap, `exemplar.attrs` (`grantId`, `source`, `reason`). Note `*.anomaly` events.
+2. `get_aggregates` with the amount counter, grant counter, size histogram, and anomaly event. Mean grant is amount / grants. Upper buckets and `max` are the jump.
+3. `get_recent_logs` with the anomaly message (`coins_anomaly`) or `attrs` from the exemplar (`grantId`, `source`).
+4. If that role has `path` or `git`, open that checkout and search the grant path (`source`, `reason`). Wardx does not change application code. The wallet row is in the game database.
+5. Do not treat this as a player to punish. The question is whether a grant path exceeds the cap. Missing names → wardx skill use case 8.
 
 ## Troubleshooting
 

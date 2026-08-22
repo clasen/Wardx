@@ -6,6 +6,41 @@ The SDK records logs, events, and metrics. The SDK also gets Remote Config and a
 
 A measure call changes local memory only. The SDK sends frames on a timer. The SDK uses HTTP `POST /v1/sync` with JSON and gzip.
 
+```text
+                         AGENT
+                  arisa.sh / Codex / Claude
+                             │
+                    MCP stdio
+                    tools + wardx://project/{name}
+                             ▼
+┌───────────────────────────────────────────────────┐
+│              wardx-server (one process)           │
+│              N isolated projects                  │
+│                                                   │
+│   MCP ──► ControlService                          │
+│              ├── Remote Config snapshot            │
+│              ├── Experiment definitions            │
+│              ├── Aggregates                       │
+│              ├── Recent logs                      │
+│              └── Catalog                          │
+│                                                   │
+│   HTTP POST /v1/sync                              │
+│        ├── envelope store (config.sink)            │
+│        │     null | memory | ndjson               │
+│        └── per-project ingest                     │
+│              aggregator, recent logs, clients     │
+│              config reply filtered by client.role   │
+└─────────────────────────▲─────────────────────────┘
+                          │
+             frames up / that role's config down
+          ┌───────────────┴───────────────┐
+          ▼                               ▼
+   Node SDK                          C# / Unity SDK
+   wardx / @wardx/core               clients/csharp
+   role: game-server                 role: mobile
+   metrics / config.get               same /v1/sync
+```
+
 ## Install
 
 ```bash
@@ -333,7 +368,7 @@ function grantCoins(wardx, grant) {
 2. On the grant path, add the amount to `coins.awarded` and increment `coins.grants`. The dimension is `source`, not a user id.
 3. Observe the amount in `coins.award_size` with a lookup key (`grantId`). The histogram keeps those attrs only for the window max, as `exemplar`. Histogram `max` and the upper buckets are the inconsistency signal. The exemplar is the row to open in the database.
 4. Read `economy.maxAward` from Remote Config. Emit `coins.anomaly` only when a grant exceeds that bound. That event is rare.
-5. From MCP, compare `coins.awarded / coins.grants` (mean grant) and `coins.award_size` max against `economy.maxAward`. If max is high, read `exemplar.attrs.grantId`.
+5. From MCP, the overview ranks histogram outcomes by `max` and includes the exemplar. Compare that max and `coins.awarded / coins.grants` (mean grant) against `economy.maxAward`. If max is high, read `exemplar.attrs.grantId`, then `get_recent_logs` with `coins_anomaly` or that `grantId`. If the role has `path` or `git`, search that checkout for `source` / `reason`. See `@wardx/server` use case 9.
 
 Do not put `userId` on a counter or histogram dimension. The SDK and the server cap series. A unique id per player creates a series per player and then drops. An exemplar is one sample per series per window, so a lookup key there does not explode cardinality. Do not `event()` once per grant on a backend that serves many users. Use an event only for the anomaly.
 
@@ -530,8 +565,8 @@ On a process that serves many users, skip `identify()` and pass `{ subjectId }` 
 1. Start a local clock when the play session starts. Do not use `sessionId`.
 2. When it ends, observe `session.duration` with minute-scale buckets. Default histogram buckets are for short durations in milliseconds.
 3. Add the same number to `session.time_ms`. Increment `session.ended`.
-4. Call `experiment.goal('session.duration', { value: durationMs })` with a subject. Emit that goal once per ended session. `analyze_experiment` then has `goalSum` and `goalMean` per variant. Mean session ms is `goalSum / goals`.
-5. From MCP, read `session.time_ms` in `get_aggregates` for fleet minutes. Compare variants with `analyze_experiment`, not with a counter dimension.
+4. Call `experiment.goal('session.duration', { value: durationMs })` with a subject. Emit that goal once per ended session. `analyze_experiment` then has `goalSum`, `goalMean`, and a `decision` per variant. Mean session ms is `goalSum / goals`.
+5. From MCP, read `session.time_ms` in `get_aggregates` for fleet minutes. Compare variants with `analyze_experiment`, not with a counter dimension. Ship a winner with `ship_experiment`.
 
 Do not put `userId` on the histogram. Do not emit `experiment.goal` on every heartbeat: that would count many goals for one session. The heartbeat only adds to `session.time_ms`.
 
@@ -570,7 +605,7 @@ The volume funnel `level.start` → `level.fail` / `level.complete` is the diffi
 
 Call `experiment.goal('session.duration', { value: durationMs })` when the play session ends (use case 14).
 
-From MCP, after onboarding: `upsert_experiment` on the existing keys (`level.3.enemyHp`, …) with a hypothesis such as "Lower HP on level 3 increases session duration", `primaryMetric: 'session.time_ms'`, and variants that only change those keys. Later `analyze_experiment`: compare `goalMean` for the duration goal. Compare the funnel counts with `get_aggregates`. See `@wardx/server` use case 7.
+From MCP, after onboarding: `upsert_experiment` on the existing keys (`level.3.enemyHp`, …) with a hypothesis such as "Lower HP on level 3 increases session duration", `primaryMetric: 'session.time_ms'`, `goalKind: 'mean'`, `control`, `minExposures`, `confidence`, and variants that only change those keys. Later `analyze_experiment`: follow `decision` and compare `goalMean` for the duration goal. `ship_experiment` when status is `winner`. Compare the funnel counts with `get_aggregates`. See `@wardx/server` use case 7.
 
 ## Use case 16: Surface an error so an agent can open the source
 

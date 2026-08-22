@@ -28,12 +28,16 @@ export const TOOL_DEFS = [
   {
     name: 'get_project_overview',
     description:
-      'Project description, onboarding gaps, Remote Config knobs (each with the roles that receive them), telemetry and clients grouped by role, and previously proposed experiments. Each role may include optional path (local checkout) and git (repository URL). A predefined catalog can make onboarding.complete true. If it is false, ask only about the listed gaps and persist with set_project_description / set_role_description / set_signal before proposing experiments.',
+      'Project description, onboarding gaps, Remote Config knobs (each with the roles that receive them), telemetry and clients grouped by role, and previously proposed experiments. Outcomes include counters, events, and histogram peaks (max + exemplar of the window max). Each role may include optional path (local checkout) and git (repository URL). A predefined catalog can make onboarding.complete true. If it is false, ask only about the listed gaps and persist with set_project_description / set_role_description / set_signal before proposing experiments.',
     inputSchema: {
       type: 'object',
       properties: {
         project: PROJECT,
-        limit: { type: 'integer', minimum: 1, description: 'Maximum counters and events to return, highest first.' }
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          description: 'Maximum counters, events, and histograms to return per kind, highest first.'
+        }
       },
       required: ['project'],
       additionalProperties: false
@@ -171,7 +175,7 @@ export const TOOL_DEFS = [
   {
     name: 'upsert_experiment',
     description:
-      'Propose or replace an experiment. experiment.roles lists which client roles assign it. variant.values may only contain Remote Config keys visible to those roles. Optional hypothesis stays on the server. Bumps configVersion.',
+      'Propose or replace an experiment. experiment.roles lists which client roles assign it. variant.values may only contain Remote Config keys visible to those roles. Optional hypothesis stays on the server. For a closable test set goalKind, control, minExposures, and confidence. Bumps configVersion.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -186,6 +190,24 @@ export const TOOL_DEFS = [
             roles: ROLES,
             primaryMetric: { type: 'string', minLength: 1 },
             hypothesis: { type: 'string', minLength: 1 },
+            goalKind: {
+              type: 'string',
+              enum: ['conversion', 'mean'],
+              description: 'conversion compares goals/exposures. mean compares goalMean. Required to ship.'
+            },
+            control: { type: 'string', minLength: 1, description: 'Baseline variant key. Required to ship.' },
+            minExposures: {
+              type: 'integer',
+              minimum: 1,
+              description:
+                'Minimum exposures (conversion) or goals (mean) per variant before a winner can be declared. No implicit default.'
+            },
+            confidence: {
+              type: 'number',
+              exclusiveMinimum: 0,
+              exclusiveMaximum: 1,
+              description: 'Confidence for the lift interval, exclusive of 0 and 1. Required to ship.'
+            },
             variants: {
               type: 'array',
               minItems: 1,
@@ -211,7 +233,8 @@ export const TOOL_DEFS = [
   },
   {
     name: 'set_experiment_enabled',
-    description: 'Enable or disable an experiment. Bumps configVersion.',
+    description:
+      'Enable or disable an experiment without rewriting variants. Does not copy a winner into Remote Config. Use ship_experiment to close a test. Bumps configVersion.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -220,6 +243,21 @@ export const TOOL_DEFS = [
         enabled: { type: 'boolean' }
       },
       required: ['project', 'id', 'enabled'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'ship_experiment',
+    description:
+      'Close a test: copy the winning variant values into Remote Config and disable the experiment. Refuses unless analyze_experiment decision.status is winner (or already shipped that variant). Omit variant to ship decision.leadingVariant. Bumps configVersion.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: PROJECT,
+        experimentId: { type: 'string', minLength: 1 },
+        variant: { type: 'string', minLength: 1, description: 'Must be the winning variant. Omit to ship leadingVariant.' }
+      },
+      required: ['project', 'experimentId'],
       additionalProperties: false
     }
   },
@@ -265,7 +303,7 @@ export const TOOL_DEFS = [
   {
     name: 'analyze_experiment',
     description:
-      'Previously proposed experiment plus exposure and goal counts by variant, goalSum, goalMean (goalSum / goals), primaryMetric fleet total, and catalog legend. For a quantitative goal such as session.duration, compare goalMean by variant.',
+      'Experiment definition, lifetime exposure/goal stats by variant (goalSum, goalSumSq, goalMean, rate), primaryMetric fleet total, and decision. decision.status is collecting, winner, no_difference, cannot_decide, or shipped. Do not call a variant the winner unless status is winner or shipped. For conversion compare rate (goals/exposures). For mean compare goalMean. primaryMetric.total is not split by variant.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -327,6 +365,8 @@ export function executeTool(control, name, args = {}) {
       };
     case 'analyze_experiment':
       return control.analyzeExperiment(args.project, args.experimentId);
+    case 'ship_experiment':
+      return control.shipExperiment(args.project, args.experimentId, args.variant);
     default:
       throw new Error(`unknown tool: ${name}`);
   }

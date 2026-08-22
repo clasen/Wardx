@@ -6,6 +6,41 @@ The server receives `POST /v1/sync`. The server authenticates the project key. T
 
 HTTP is only the client path. Control, analysis, and visualization use MCP tools on the same process. There is no admin HTTP API.
 
+```text
+                         AGENT
+                  arisa.sh / Codex / Claude
+                             │
+                    MCP stdio
+                    tools + wardx://project/{name}
+                             ▼
+┌───────────────────────────────────────────────────┐
+│              wardx-server (one process)           │
+│              N isolated projects                  │
+│                                                   │
+│   MCP ──► ControlService                          │
+│              ├── Remote Config snapshot            │
+│              ├── Experiment definitions            │
+│              ├── Aggregates                       │
+│              ├── Recent logs                      │
+│              └── Catalog                          │
+│                                                   │
+│   HTTP POST /v1/sync                              │
+│        ├── envelope store (config.sink)            │
+│        │     null | memory | ndjson               │
+│        └── per-project ingest                     │
+│              aggregator, recent logs, clients     │
+│              config reply filtered by client.role   │
+└─────────────────────────▲─────────────────────────┘
+                          │
+             frames up / that role's config down
+          ┌───────────────┴───────────────┐
+          ▼                               ▼
+   Node SDK                          C# / Unity SDK
+   wardx / @wardx/core               clients/csharp
+   role: game-server                 role: mobile
+   metrics / config.get               same /v1/sync
+```
+
 Node.js 20 or later is required.
 
 Install this package from npm. The published package does not include a config file. You must supply a JSON config file.
@@ -125,7 +160,7 @@ Tools take a `project` name except `list_projects`. Read `wardx://project/{name}
 | Tool | Role |
 | --- | --- |
 | `list_projects` | Project names on this server. |
-| `get_project_overview` | Description, onboarding gaps, Remote Config knobs, telemetry outcomes, previously proposed experiments, recent clients. |
+| `get_project_overview` | Description, onboarding gaps, Remote Config knobs, telemetry outcomes (counters, events, histogram peaks with exemplar), previously proposed experiments, recent clients. |
 | `set_project_description` | MCP-only product description. Does not bump `configVersion`. |
 | `set_role_description` | MCP-only description of one client role. Does not bump `configVersion`. |
 | `set_role_source` | Optional MCP-only `path` and/or `git` for one client role. Does not bump `configVersion`. |
@@ -135,17 +170,18 @@ Tools take a `project` name except `list_projects`. Read `wardx://project/{name}
 | `set_config_value` | Set one key and the roles that receive it. Bumps `configVersion`. |
 | `delete_config_value` | Delete one key. Bumps `configVersion`. |
 | `list_experiments` | Previously proposed experiments, with hypothesis when set. |
-| `upsert_experiment` | Propose or replace an experiment over existing Remote Config keys. Optional `hypothesis` stays on the server. Bumps `configVersion`. |
-| `set_experiment_enabled` | Enable or disable an experiment. Bumps `configVersion`. |
+| `upsert_experiment` | Propose or replace an experiment over existing Remote Config keys. Optional `hypothesis` and close-policy fields stay on the server. Bumps `configVersion`. |
+| `set_experiment_enabled` | Enable or disable an experiment. Does not ship a winner. Bumps `configVersion`. |
+| `ship_experiment` | Copy the winning variant into Remote Config and disable the experiment. Refuses unless `analyze_experiment` says `winner`. Bumps `configVersion`. |
 | `get_aggregates` | 1-minute windows with catalog legends. Optional `names`, `from`, `to`. |
 | `get_recent_logs` | Recent log rows, newest first. Optional `level`, `message`, `attrs`, `limit`. |
-| `analyze_experiment` | Definition, hypothesis, exposures, goals, `goalSum`, `goalMean` by variant, `primaryMetric` fleet total. |
+| `analyze_experiment` | Definition, hypothesis, lifetime exposures/goals/`goalMean`/`rate` by variant, `decision`, `primaryMetric` fleet total. |
 
 The SDK sends names with no descriptions. Meaning lives in the catalog. A predefined `catalog` in the config file can make `onboarding.complete` true on the first read. If it is false, the agent asks only about `missingDescription` and the listed undescribed knobs and outcomes, then writes answers with `set_project_description` and `set_signal`. It does not invent descriptions, does not re-ask names that already have a legend, and does not propose experiments until `onboarding.complete` is true.
 
 After that, an agent reads the overview, proposes experiments on the listed knobs, and can later list or analyze those proposals. `variant.values` may only contain keys that already exist in Remote Config.
 
-If the process loaded a config file, mutations rewrite that file so they survive a restart. Catalog edits persist without incrementing `version`. Config and experiment edits increment `version`. Clients compare the number only.
+If the process loaded a config file, mutations rewrite that file so they survive a restart. Catalog edits persist without incrementing `version`. Config and experiment edits increment `version`. Clients compare the number only. Experiment lifetime totals persist next to that file as `<configPath>.experiment-stats.json`. That sidecar is not Remote Config and does not bump `configVersion`.
 
 ## Use case 1: Start the ingest server from npm
 
@@ -304,6 +340,10 @@ server.wardx.control.upsertExperiment('demo', {
   primaryMetric: 'message.sent',
   roles: ['client'],
   hypothesis: 'Shorter delay increases messages sent',
+  goalKind: 'conversion',
+  control: 'control',
+  minExposures: 50,
+  confidence: 0.95,
   variants: [
     { key: 'control', weight: 50, values: { 'message.delayMs': 1000 } },
     { key: 'fast', weight: 50, values: { 'message.delayMs': 400 } }
@@ -321,7 +361,7 @@ Assignment runs on the client. The server does not map users to variants. The SD
 
 **Objective:** Use MCP tools `get_aggregates`, `get_recent_logs`, `get_project_overview`, and `analyze_experiment`. Start from the overview so knobs and outcomes have catalog legends.
 
-The aggregator merges frames by minute per project. The aggregator keeps windows for `aggregateRetentionMinutes`. Counters in a window are sums of window deltas. A gauge in a window is the last value by timestamp. Events count by name and role. Event attrs are not series. `experiment.exposure` and `experiment.goal` roll up by experiment and variant. Each metric name keeps at most `aggregateMaxSeriesPerMetric` distinct dimension sets per window. Extra series increment `cardinalityDropped` on that window.
+The aggregator merges frames by minute per project. The aggregator keeps windows for `aggregateRetentionMinutes`. Counters in a window are sums of window deltas. A gauge in a window is the last value by timestamp. Events count by name and role. Event attrs are not series. Histogram `max` is the peak observation; `exemplar` is the attrs of that peak. Overview histogram outcomes are ranked by `max`. `experiment.exposure` and `experiment.goal` roll up by experiment and variant in each window and also into lifetime totals used by `analyze_experiment`. Those lifetime totals survive window retention. When the process loaded a config file, they also persist to `<configPath>.experiment-stats.json` and reload on the next start. Each metric name keeps at most `aggregateMaxSeriesPerMetric` distinct dimension sets per window. Extra series increment `cardinalityDropped` on that window.
 
 A volume funnel is that comparison: pass the step names in `names` and compare `counters` (or `eventNames`) in one window and `role`. That is how often each step fired. The aggregator does not store sequences, unique subjects, or time between steps. Production `sink: "null"` discards envelopes after ingest, so there is no later join on `sessionId`. Instrument the steps in the SDK. See `wardx` use case 7.
 
@@ -329,7 +369,9 @@ A volume funnel is that comparison: pass the step names in `names` and compare `
 
 This is in-memory development aggregation. This is not a query API for production analytics.
 
-`analyze_experiment` rolls every `experiment.goal` for that experiment into `goals` and `goalSum`. `goalMean` is `goalSum / goals`. For a duration goal, pass the milliseconds as `value` once per ended session. Do not mix a duration `value` with a `value: 1` conversion on the same experiment. `primaryMetric.total` is the fleet counter of that name. It is not split by variant.
+`analyze_experiment` rolls every `experiment.goal` for that experiment into lifetime `goals` and `goalSum`. `goalMean` is `goalSum / goals`. `rate` is `goals / exposures`. For a duration goal, pass the milliseconds as `value` once per ended session. Do not mix a duration `value` with a `value: 1` conversion on the same experiment. `primaryMetric.total` is the fleet counter of that name. It is not split by variant.
+
+To close a test, set `goalKind`, `control`, `minExposures`, and `confidence` on the experiment. `decision.status` is `collecting`, `winner`, `no_difference`, `cannot_decide`, or `shipped`. `ship_experiment` copies the winning variant into Remote Config and disables the experiment. It refuses until status is `winner`. There is no implicit sample size or confidence.
 
 ## Use case 6: Select a sink
 
@@ -370,6 +412,10 @@ server.wardx.control.upsertExperiment('demo', {
   primaryMetric: 'session.time_ms',
   roles: ['unity'],
   hypothesis: 'Lower HP on level 3 increases session duration',
+  goalKind: 'mean',
+  control: 'control',
+  minExposures: 40,
+  confidence: 0.95,
   variants: [
     { key: 'control', weight: 50, values: { 'level.3.enemyHp': 100 } },
     { key: 'easy', weight: 50, values: { 'level.3.enemyHp': 70 } }
@@ -377,14 +423,14 @@ server.wardx.control.upsertExperiment('demo', {
 });
 ```
 
-Equivalent MCP tool: `upsert_experiment`. Later `analyze_experiment` with that id.
+Equivalent MCP tool: `upsert_experiment`. Later `analyze_experiment` with that id. `ship_experiment` when `decision.status` is `winner`.
 
 Read it this way:
 
 1. Overview first. Refuse until `onboarding.complete`. Confirm the knobs exist and which roles receive them.
 2. `get_aggregates` with `level.start`, `level.fail`, `level.complete`, and `session.time_ms`. The funnel is the difficulty signal. `session.time_ms` is fleet play time in the window.
-3. `analyze_experiment`: compare `goalMean` by variant. That mean is the `experiment.goal` value the SDK sent (session duration in ms). `primaryMetric.total` is fleet `session.time_ms`. It is not split by variant.
-4. If exposures stay at zero, the app is reading the knob with no subject.
+3. `analyze_experiment`: follow `decision`. Compare `goalMean` by variant. That mean is the `experiment.goal` value the SDK sent (session duration in ms). `primaryMetric.total` is fleet `session.time_ms`. It is not split by variant.
+4. `ship_experiment` when status is `winner`. If exposures stay at zero, the app is reading the knob with no subject.
 
 Wardx does not rewrite level files. The experiment changes Remote Config. Clients apply the snapshot on the next sync.
 
@@ -408,6 +454,36 @@ const rows = executeTool(server.wardx.control, 'get_recent_logs', {
 If the role has `path` (a local checkout) or `git` (a repository URL), the agent inspects or edits that surface. Set those fields with `set_role_source` when the user supplies them, or ship them in the catalog. Do not invent them.
 
 The ring is recent only (`recentLogsMax`). It is not a history search.
+
+## Use case 9: See whether a grant path jumped the cap
+
+**When:** Points, coins, or XP look larger than the legal award. You want to know if a grant path is leaking, not which player to punish.
+
+**Objective:** Compare histogram `max` to a Remote Config cap. Use the exemplar and a matching log row to open the grant path. Wardx does not identify a player.
+
+The app must already emit the economy signals (see `wardx` use case 8): `coins.awarded`, `coins.grants`, `coins.award_size` with an exemplar, `coins.anomaly` plus `log.warn('coins_anomaly', …)` when a grant exceeds `economy.maxAward`.
+
+```js
+const overview = executeTool(server.wardx.control, 'get_project_overview', { project: 'demo' });
+const cap = overview.knobs.find((row) => row.key === 'economy.maxAward');
+const peak = overview.roles['game-server'].outcomes.find(
+  (row) => row.kind === 'histogram' && row.name === 'coins.award_size'
+);
+const rows = executeTool(server.wardx.control, 'get_recent_logs', {
+  project: 'demo',
+  message: 'coins_anomaly',
+  attrs: { grantId: peak.exemplar.attrs.grantId }
+});
+```
+
+Read it this way:
+
+1. Overview first. Histogram outcomes are ranked by `max` and include `exemplar` when the peak had attrs. Compare `max` to the cap knob.
+2. `get_aggregates` with `coins.awarded`, `coins.grants`, `coins.award_size`, and `coins.anomaly`. Mean grant is awarded / grants. Upper buckets and `max` are the jump.
+3. `get_recent_logs` with `coins_anomaly` or the exemplar attrs (`grantId`, `source`, `reason`).
+4. If that role has `path` or `git`, search that checkout for the grant path. Wardx does not change application code. The wallet row is in the game database.
+
+Do not put a user id on a metric. The exemplar is one sample per series per window.
 
 ## Exports
 

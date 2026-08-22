@@ -6,6 +6,41 @@ A measure call changes local memory only. Delivery is at-most-once. A failed syn
 
 **WARNING:** The SDK does not write a disk queue. The SDK does not retry the same frames.
 
+```text
+                         AGENT
+                  arisa.sh / Codex / Claude
+                             │
+                    MCP stdio
+                    tools + wardx://project/{name}
+                             ▼
+┌───────────────────────────────────────────────────┐
+│              wardx-server (one process)           │
+│              N isolated projects                  │
+│                                                   │
+│   MCP ──► ControlService                          │
+│              ├── Remote Config snapshot            │
+│              ├── Experiment definitions            │
+│              ├── Aggregates                       │
+│              ├── Recent logs                      │
+│              └── Catalog                          │
+│                                                   │
+│   HTTP POST /v1/sync                              │
+│        ├── envelope store (config.sink)            │
+│        │     null | memory | ndjson               │
+│        └── per-project ingest                     │
+│              aggregator, recent logs, clients     │
+│              config reply filtered by client.role   │
+└─────────────────────────▲─────────────────────────┘
+                          │
+             frames up / that role's config down
+          ┌───────────────┴───────────────┐
+          ▼                               ▼
+   Node SDK                          C# / Unity SDK
+   wardx / @wardx/core               clients/csharp
+   role: game-server                 role: mobile
+   metrics / config.get               same /v1/sync
+```
+
 Unity 2021.3 or later, or .NET Standard 2.1.
 
 ## Install
@@ -101,7 +136,7 @@ wardx.Counter("session.ended").Inc();
 wardx.Experiment.Goal("session.duration", value: durationMs);
 ```
 
-`get_aggregates` reads fleet `session.time_ms`. `analyze_experiment` compares `goalMean` by variant. Instrument `level.start` / `level.fail` / `level.complete` as a volume funnel. Do not also emit `Experiment.Goal` for those steps if the experiment goal is session duration. See the Node SDK use cases 14 and 15.
+`get_aggregates` reads fleet `session.time_ms`. `analyze_experiment` compares `goalMean` by variant and returns a `decision`. Close a winner with `ship_experiment`. Instrument `level.start` / `level.fail` / `level.complete` as a volume funnel. Do not also emit `Experiment.Goal` for those steps if the experiment goal is session duration. See the Node SDK use cases 14 and 15.
 
 ## Remote Config and experiments
 

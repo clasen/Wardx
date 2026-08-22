@@ -1,4 +1,5 @@
 import { annotateSignal, annotateWindows, attachHypothesis, buildOnboarding, ensureRoleEntry, presentRole } from './catalog.js';
+import { decideExperiment } from './experimentDecision.js';
 import { persistServerConfig } from './persist.js';
 import { assertRole, assertRoles } from '../roles.js';
 import { assertExperimentKeysExist, toClientExperiment, validateExperiment } from './validateExperiment.js';
@@ -135,6 +136,7 @@ export class ControlService {
       }
     }
     const client = toClientExperiment(experiment);
+    delete client.shippedVariant;
     const store = this.requireStore(project);
     const current = store.configRepo.snapshot();
     assertExperimentKeysExist(client, current.values, current.keyRoles);
@@ -198,7 +200,8 @@ export class ControlService {
     const variants = store.aggregator.experimentStats(experimentId);
     const result = {
       experiment: definition ? attachHypothesis(store.catalog, definition) : null,
-      variants
+      variants,
+      decision: decideExperiment(definition, variants)
     };
     if (definition && definition.primaryMetric) {
       result.primaryMetric = {
@@ -208,6 +211,49 @@ export class ControlService {
       };
     }
     return result;
+  }
+
+  shipExperiment(project, experimentId, variant) {
+    if (typeof experimentId !== 'string' || experimentId.length === 0) {
+      throw new Error('experiment id is required');
+    }
+    if (variant !== undefined && variant !== null) {
+      if (typeof variant !== 'string' || variant.length === 0) {
+        throw new Error('variant must be a non-empty string');
+      }
+    }
+    const analysis = this.experimentStats(project, experimentId);
+    if (!analysis.experiment) throw new Error(`unknown experiment: ${experimentId}`);
+    const decision = analysis.decision;
+    let key = variant === undefined || variant === null ? undefined : variant;
+    if (key === undefined) {
+      if (decision.status === 'shipped') key = analysis.experiment.shippedVariant;
+      else if (decision.status === 'winner') key = decision.leadingVariant;
+      else throw new Error(`experiment ${experimentId} is not ready to ship: ${decision.reason}`);
+    } else if (decision.status === 'shipped') {
+      if (key !== analysis.experiment.shippedVariant) {
+        throw new Error(`experiment ${experimentId} already shipped ${analysis.experiment.shippedVariant}`);
+      }
+    } else if (decision.status !== 'winner' || key !== decision.leadingVariant) {
+      throw new Error(`experiment ${experimentId} is not ready to ship: ${decision.reason}`);
+    }
+    const chosen = analysis.experiment.variants.find((row) => row.key === key);
+    if (!chosen) throw new Error(`unknown variant: ${key}`);
+    const store = this.requireStore(project);
+    const current = store.configRepo.snapshot();
+    const experiment = current.experiments.find((row) => row.id === experimentId);
+    let changed = experiment.enabled !== false || experiment.shippedVariant !== key;
+    for (const [name, value] of Object.entries(chosen.values)) {
+      if (current.values[name] !== value) changed = true;
+      current.values[name] = value;
+    }
+    experiment.enabled = false;
+    experiment.shippedVariant = key;
+    if (!changed) {
+      return { version: store.configRepo.version, shippedVariant: key };
+    }
+    this._commit(store, current);
+    return { version: store.configRepo.version, shippedVariant: key };
   }
 
   recentClients(project) {
@@ -281,7 +327,22 @@ export class ControlService {
       role: row.role,
       ...annotateSignal(catalog, row.name)
     }));
-    const outcomes = [...counterRows, ...eventRows];
+    const histogramRows = store.aggregator.topHistograms().map((row) => {
+      const peak = {
+        kind: 'histogram',
+        name: row.name,
+        dims: row.dims,
+        role: row.role,
+        count: row.count,
+        sum: row.sum,
+        min: row.min,
+        max: row.max,
+        ...annotateSignal(catalog, row.name)
+      };
+      if (row.exemplar) peak.exemplar = row.exemplar;
+      return peak;
+    });
+    const outcomes = [...counterRows, ...eventRows, ...histogramRows];
     const clients = store.clients.list();
     const roleNames = new Set();
     for (const targets of Object.values(snapshot.keyRoles)) {
@@ -297,11 +358,13 @@ export class ControlService {
     for (const name of names) {
       const counters = counterRows.filter((row) => row.role === name);
       const events = eventRows.filter((row) => row.role === name);
+      const histograms = histogramRows.filter((row) => row.role === name);
       roles[name] = {
         ...presentRole(catalog.roles[name]),
         outcomes: [
           ...(limit === undefined || limit === null ? counters : counters.slice(0, limit)),
-          ...(limit === undefined || limit === null ? events : events.slice(0, limit))
+          ...(limit === undefined || limit === null ? events : events.slice(0, limit)),
+          ...(limit === undefined || limit === null ? histograms : histograms.slice(0, limit))
         ],
         clients: clients.filter((row) => row.role === name)
       };

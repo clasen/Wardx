@@ -1,6 +1,6 @@
 {
   "name": "@wardx/core",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Runtime-agnostic Wardx engine for metrics, events, logs, Remote Config, and experiments.",
   "keywords": [
     "wardx",
@@ -27,8 +27,13 @@
     "node": ">=20"
   },
   "exports": {
-    ".": "./src/index.js"
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.js",
+      "default": "./src/index.js"
+    }
   },
+  "types": "./src/index.d.ts",
   "files": [
     "src",
     "defaults.json"

@@ -252,6 +252,109 @@ test('overview splits knobs and outcomes and marks undescribed names', async () 
   });
 });
 
+test('overview ranks histogram peaks by max and keeps the exemplar', async () => {
+  const now = Date.now();
+  await withServer(
+    testServerConfig({
+      projects: {
+        demo: {
+          version: 12,
+          values: {
+            'message.delayMs': 1000,
+            'chat.enabled': true,
+            'economy.maxAward': 500
+          },
+          keyRoles: {
+            'message.delayMs': ['game-server'],
+            'chat.enabled': ['client'],
+            'economy.maxAward': ['game-server']
+          },
+          experiments: []
+        }
+      }
+    }),
+    async (server, base) => {
+      const control = server.wardx.control;
+      control.setSignal('demo', 'economy.maxAward', 'Largest legal coin grant');
+      control.setSignal('demo', 'coins.award_size', 'Distribution of coin grant amounts');
+      control.setRoleSource('demo', 'game-server', { path: '/src/game-server' });
+      await fetch(`${base}/v1/sync`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'content-encoding': 'gzip',
+          'x-wardx-key': 'test-key'
+        },
+        body: gzipJson(
+          sampleEnvelope({
+            client: { role: 'game-server' },
+            frames: [
+              {
+                seq: 1,
+                from: now - 1000,
+                to: now,
+                metrics: {
+                  counters: [
+                    ['coins.awarded', { source: 'match' }, 8120],
+                    ['coins.grants', { source: 'match' }, 3]
+                  ],
+                  gauges: [],
+                  histograms: [
+                    [
+                      'coins.award_size',
+                      { source: 'match' },
+                      {
+                        count: 3,
+                        sum: 8120,
+                        min: 40,
+                        max: 8000,
+                        buckets: [[5000, 2]],
+                        exemplar: { value: 8000, attrs: { grantId: 'g-80', reason: 'bonus' } }
+                      }
+                    ]
+                  ]
+                },
+                events: [[now - 200, 'coins.anomaly', { source: 'match', amount: 8000, grantId: 'g-80' }]],
+                logs: [
+                  [
+                    now - 100,
+                    'warn',
+                    'coins_anomaly',
+                    { source: 'match', amount: 8000, reason: 'bonus', grantId: 'g-80' }
+                  ]
+                ]
+              }
+            ]
+          })
+        )
+      });
+      const overview = executeTool(control, 'get_project_overview', { project: 'demo' });
+      const cap = overview.knobs.find((row) => row.key === 'economy.maxAward');
+      assert.equal(cap.value, 500);
+      const peak = overview.roles['game-server'].outcomes.find(
+        (row) => row.kind === 'histogram' && row.name === 'coins.award_size'
+      );
+      assert.equal(peak.max, 8000);
+      assert.equal(peak.count, 3);
+      assert.deepEqual(peak.exemplar, { value: 8000, attrs: { grantId: 'g-80', reason: 'bonus' } });
+      assert.equal(peak.description, 'Distribution of coin grant amounts');
+      assert.equal(overview.roles['game-server'].path, '/src/game-server');
+      assert.equal(overview.onboarding.undescribedOutcomes.includes('coins.award_size'), false);
+      const anomaly = overview.roles['game-server'].outcomes.find(
+        (row) => row.kind === 'event' && row.name === 'coins.anomaly'
+      );
+      assert.equal(anomaly.count, 1);
+      const rows = executeTool(control, 'get_recent_logs', {
+        project: 'demo',
+        message: 'coins_anomaly',
+        attrs: { grantId: 'g-80' }
+      });
+      assert.equal(rows.logs.length, 1);
+      assert.equal(rows.logs[0].attrs.reason, 'bonus');
+    }
+  );
+});
+
 test('overview onboarding completes after catalog answers and skips protocol names', async () => {
   const now = Date.now();
   await withServer(testServerConfig(), async (server, base) => {
@@ -628,4 +731,143 @@ test('createMcpServer constructs an SDK server', async () => {
   const httpServer = createIngestServer(testServerConfig());
   const mcp = createMcpServer(httpServer.wardx.control);
   assert.equal(typeof mcp.connect, 'function');
+});
+
+const SHIPPABLE = {
+  ...DELAY_EXPERIMENT,
+  goalKind: 'conversion',
+  control: 'control',
+  minExposures: 50,
+  confidence: 0.95,
+  hypothesis: 'Shorter delay increases messages sent'
+};
+
+function ingestVariant(aggregator, variant, exposures, goals, now = Date.now()) {
+  const events = [];
+  for (let i = 0; i < exposures; i++) {
+    events.push([now, 'experiment.exposure', { experiment: SHIPPABLE.id, variant }]);
+  }
+  for (let i = 0; i < goals; i++) {
+    events.push([
+      now,
+      'experiment.goal',
+      { experiments: [{ experiment: SHIPPABLE.id, variant }], value: 1 }
+    ]);
+  }
+  aggregator.ingest(
+    sampleEnvelope({
+      frames: [
+        {
+          seq: 1,
+          from: now,
+          to: now + 1,
+          metrics: { counters: [], gauges: [], histograms: [] },
+          events,
+          logs: []
+        }
+      ]
+    })
+  );
+}
+
+test('analyze_experiment is cannot_decide without a close policy', () => {
+  const server = createIngestServer(testServerConfig());
+  const control = server.wardx.control;
+  control.upsertExperiment('demo', DELAY_EXPERIMENT);
+  const analysis = executeTool(control, 'analyze_experiment', {
+    project: 'demo',
+    experimentId: 'message-delay-v1'
+  });
+  assert.equal(analysis.decision.status, 'cannot_decide');
+  assert.equal(analysis.decision.next, 'configure');
+});
+
+test('ship_experiment copies the winner and disables the experiment', async () => {
+  await withServer(testServerConfig(), async (server, base) => {
+    const control = server.wardx.control;
+    control.upsertExperiment('demo', SHIPPABLE);
+    const aggregator = server.wardx.registry.get('demo').aggregator;
+    ingestVariant(aggregator, 'control', 50, 10);
+    ingestVariant(aggregator, 'fast', 50, 40);
+    const analysis = executeTool(control, 'analyze_experiment', {
+      project: 'demo',
+      experimentId: 'message-delay-v1'
+    });
+    assert.equal(analysis.decision.status, 'winner');
+    assert.equal(analysis.decision.leadingVariant, 'fast');
+    const shipped = executeTool(control, 'ship_experiment', {
+      project: 'demo',
+      experimentId: 'message-delay-v1'
+    });
+    assert.equal(shipped.shippedVariant, 'fast');
+    const snapshot = control.getConfig('demo');
+    assert.equal(snapshot.values['message.delayMs'], 400);
+    assert.equal(snapshot.experiments[0].enabled, false);
+    assert.equal(snapshot.experiments[0].shippedVariant, 'fast');
+    assert.equal(snapshot.experiments[0].goalKind, 'conversion');
+    const again = executeTool(control, 'ship_experiment', {
+      project: 'demo',
+      experimentId: 'message-delay-v1'
+    });
+    assert.equal(again.version, snapshot.version);
+    const res = await fetch(`${base}/v1/sync`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'content-encoding': 'gzip',
+        'x-wardx-key': 'test-key'
+      },
+      body: gzipJson(sampleEnvelope({ configVersion: 12, frames: [] }))
+    });
+    const json = await res.json();
+    assert.equal(json.config.values['message.delayMs'], 400);
+    assert.equal(json.config.experiments[0].enabled, false);
+    assert.equal(json.config.experiments[0].shippedVariant, undefined);
+  });
+});
+
+test('ship_experiment refuses while collecting', () => {
+  const server = createIngestServer(testServerConfig());
+  const control = server.wardx.control;
+  control.upsertExperiment('demo', SHIPPABLE);
+  ingestVariant(server.wardx.registry.get('demo').aggregator, 'control', 10, 4);
+  ingestVariant(server.wardx.registry.get('demo').aggregator, 'fast', 12, 8);
+  const analysis = control.analyzeExperiment('demo', 'message-delay-v1');
+  assert.equal(analysis.decision.status, 'collecting');
+  assert.throws(
+    () => executeTool(control, 'ship_experiment', { project: 'demo', experimentId: 'message-delay-v1' }),
+    /not ready to ship/
+  );
+});
+
+test('close-policy fields stay off the client wire', async () => {
+  await withServer(testServerConfig(), async (server, base) => {
+    server.wardx.control.upsertExperiment('demo', SHIPPABLE);
+    const res = await fetch(`${base}/v1/sync`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'content-encoding': 'gzip',
+        'x-wardx-key': 'test-key'
+      },
+      body: gzipJson(sampleEnvelope({ configVersion: 12, frames: [] }))
+    });
+    const json = await res.json();
+    const experiment = json.config.experiments[0];
+    assert.equal(experiment.id, 'message-delay-v1');
+    assert.equal(experiment.goalKind, undefined);
+    assert.equal(experiment.control, undefined);
+    assert.equal(experiment.minExposures, undefined);
+    assert.equal(experiment.confidence, undefined);
+    assert.equal(experiment.shippedVariant, undefined);
+    assert.equal(experiment.hypothesis, undefined);
+  });
+});
+
+test('upsertExperiment rejects a control that is not a variant', () => {
+  const server = createIngestServer(testServerConfig());
+  assert.throws(
+    () => server.wardx.control.upsertExperiment('demo', { ...SHIPPABLE, control: 'missing' }),
+    /experiment.control must be a variant key/
+  );
 });

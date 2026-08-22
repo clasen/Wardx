@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { ControlService } from './control/ControlService.js';
+import { hydrateExperimentStats, persistExperimentStats } from './control/persist.js';
 import { createSyncHandler, json } from './ingest/syncHandler.js';
 import { loadServerConfig, validateServerConfig } from './loadConfig.js';
 import { ProjectRegistry } from './projects/ProjectRegistry.js';
@@ -17,6 +18,7 @@ function createSink(config) {
 export function createIngestServer(configInput) {
   const config = validateServerConfig(configInput);
   const registry = new ProjectRegistry(config);
+  hydrateExperimentStats(config, registry);
   const sink = createSink(config);
   const control = new ControlService({ config, registry });
   const handleSync = createSyncHandler({ config, registry, sink });
@@ -58,6 +60,12 @@ export function listen(server, port, host) {
 export async function startServer(config) {
   const server = createIngestServer(config);
   const address = await listen(server, config.port, config.host);
+  const stop = (code) => {
+    persistExperimentStats(server.wardx.config, server.wardx.registry);
+    process.exit(code);
+  };
+  process.once('SIGINT', () => stop(130));
+  process.once('SIGTERM', () => stop(143));
   return { server, address, config };
 }
 

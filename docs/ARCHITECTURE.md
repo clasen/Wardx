@@ -3,36 +3,38 @@
 One process, two doors. Both go both ways. There is no admin HTTP API.
 
 ```text
-                    AGENT
-             Arisa / Codex / Claude
-                       │
-                       │ MCP stdio
-                       │ tools + wardx://project/{name}
-                       ▼
-┌──────────────────────────────────────────────┐
-│           wardx-server (one process)         │
-│           N isolated projects                │
-│                                              │
-│   MCP ──► ControlService                     │
-│              ├── Remote Config snapshot       │
-│              ├── Experiment definitions       │
-│              ├── Aggregates                  │
-│              ├── Recent logs                 │
-│              └── Catalog                     │
-│                                              │
-│   HTTP POST /v1/sync                         │
-│        ├── envelope store (config.sink)       │
-│        │     null | memory | ndjson          │
-│        └── per-project ingest                │
-│              aggregator, recent logs,        │
-│              clients, config reply            │
-└──────────────────▲───────────────────────────┘
-                   │  frames up / config down
-        ┌──────────┴──────────┐
-        ▼                     ▼
-   Node SDK              C# / Unity SDK
-   wardx / @wardx/core   clients/csharp
-   metrics / config.get  same /v1/sync protocol
+                         AGENT
+                  arisa.sh / Codex / Claude
+                             │
+                    MCP stdio
+                    tools + wardx://project/{name}
+                             ▼
+┌───────────────────────────────────────────────────┐
+│              wardx-server (one process)           │
+│              N isolated projects                  │
+│                                                   │
+│   MCP ──► ControlService                          │
+│              ├── Remote Config snapshot            │
+│              ├── Experiment definitions            │
+│              ├── Aggregates                       │
+│              ├── Recent logs                      │
+│              └── Catalog                          │
+│                                                   │
+│   HTTP POST /v1/sync                              │
+│        ├── envelope store (config.sink)            │
+│        │     null | memory | ndjson               │
+│        └── per-project ingest                     │
+│              aggregator, recent logs, clients     │
+│              config reply filtered by client.role   │
+└─────────────────────────▲─────────────────────────┘
+                          │
+             frames up / that role's config down
+          ┌───────────────┴───────────────┐
+          ▼                               ▼
+   Node SDK                          C# / Unity SDK
+   wardx / @wardx/core               clients/csharp
+   role: game-server                 role: mobile
+   metrics / config.get               same /v1/sync
 ```
 
 `@wardx/core` lives in the SDK, not in the server. The server stores the snapshot, aggregates 1-minute windows, and serves MCP. Experiment assignment and `config.get` run on the client. `identify()` sets the instance subject; a per-call `subjectId` overrides it.
@@ -50,11 +52,11 @@ The envelope store is process-wide. It is not part of ControlService. MCP does n
 Use the cheapest signal that still answers the question.
 
 - **Stability:** counters and histograms (`http.requests`, `http.duration`, queue depth). `log.error` when a request fails, with a clipped `stack` or provider `code` as an attr. Not an event per request. MCP `get_recent_logs` returns that row. If the role has `path` or `git`, the agent uses that checkout to edit the source. Wardx does not change application code. See `wardx` use case 16 and `@wardx/server` use case 8.
-- **Session time:** the app owns the play-session clock (open to close, login to logout). Do not use SDK `sessionId`. On end: histogram `session.duration` with minute-scale buckets, counter `session.time_ms` (accumulated fleet ms), counter `session.ended`, and one `experiment.goal('session.duration', { value: durationMs })`. Optional heartbeat adds only to `session.time_ms`. `analyze_experiment` compares `goalMean` by variant. See `wardx` use case 14.
+- **Session time:** the app owns the play-session clock (open to close, login to logout). Do not use SDK `sessionId`. On end: histogram `session.duration` with minute-scale buckets, counter `session.time_ms` (accumulated fleet ms), counter `session.ended`, and one `experiment.goal('session.duration', { value: durationMs })`. Optional heartbeat adds only to `session.time_ms`. `analyze_experiment` compares `goalMean` by variant and returns a `decision`. Close a winner with `ship_experiment`. See `wardx` use case 14.
 - **Behavior:** a few named events (`screen.view`, `feature.use`, `match.start`) with low-cardinality attrs (`mode`, `channel`, `feature`). A shared name is one outcome. Attrs do not split it.
 - **Funnels:** volume between named steps, not a unique-user path. One event name and one counter per step (`onboarding.start` → `onboarding.profile` → `onboarding.done`, or `level.start` → `level.fail` / `level.complete`). Compare those counts in `get_aggregates`. The aggregator counts events by name and role; event attrs do not split the funnel. `sessionId` is envelope identity, not a join key. Production discards envelopes (`sink: "null"`). There is no per-subject sequence, no uniques, and no time between steps. `experiment.goal` is a one-step conversion or one quantitative value, not an N-step funnel. One experiment should have one quantitative goal name. See `wardx` use cases 7 and 15.
 - **Business:** rare events: `purchase`, `experiment.exposure`, `experiment.goal`.
-- **Economy:** counters of amount and grant count by `source`, plus a histogram of award size. Pass grant attrs to `observe(value, attrs)` so the window max carries an exemplar (a lookup key, not a series per player). A rare `coins.anomaly` event when a grant exceeds a Remote Config cap. Per-player consistency is the game database. Wardx is at-most-once and not a ledger. See `wardx` use case 8.
+- **Economy:** counters of amount and grant count by `source`, plus a histogram of award size. Pass grant attrs to `observe(value, attrs)` so the window max carries an exemplar (a lookup key, not a series per player). A rare `coins.anomaly` event when a grant exceeds a Remote Config cap. MCP overview ranks histogram outcomes by `max` so an agent can compare that peak to the cap, then `get_recent_logs` with the exemplar attrs and open the role `path`/`git`. Per-player consistency is the game database. Wardx is at-most-once and not a ledger. See `wardx` use case 8 and `@wardx/server` use case 9.
 - **Dimensions:** `route`, `result`, `mode`, `source`. Never `userId`, email, or a unique id on a metric. The SDK caps series per process; the server also caps series per metric name per minute (`aggregateMaxSeriesPerMetric`).
 - **Backend SDK:** if one process serves many users, increment counters in process. Do not `event()` once per user action. Give that process its own role so MCP does not mix it with a player client.
 
