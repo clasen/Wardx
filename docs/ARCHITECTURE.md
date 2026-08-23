@@ -9,32 +9,33 @@ One process, two doors. Both go both ways. There is no admin HTTP API.
                     MCP stdio
                     tools + wardx://project/{name}
                              ▼
-┌───────────────────────────────────────────────────┐
-│              wardx-server (one process)           │
-│              N isolated projects                  │
-│                                                   │
-│   MCP ──► ControlService                          │
-│              ├── Remote Config snapshot            │
-│              ├── Experiment definitions            │
-│              ├── Aggregates                       │
-│              ├── Recent logs                      │
-│              └── Catalog                          │
-│                                                   │
-│   HTTP POST /v1/sync                              │
-│        ├── envelope store (config.sink)            │
-│        │     null | memory | ndjson               │
-│        └── per-project ingest                     │
-│              aggregator, recent logs, clients     │
+┌─────────────────────────────────────────────────────┐
+│              wardx-server (one process)             │
+│              N isolated projects                    │
+│                                                     │
+│   MCP ──> ControlService                            │
+│              ├── Remote Config snapshot             │
+│              ├── Experiment definitions             │
+│              ├── Aggregates                         │
+│              ├── Recent logs                        │
+│              └── Catalog                            │
+│                                                     │
+│   HTTP POST /v1/sync                                │
+│        ├── envelope store (config.sink)             │
+│        │     null | memory | ndjson                 │
+│        └── per-project ingest                       │
+│              aggregator, recent logs, clients       │
 │              config reply filtered by client.role   │
-└─────────────────────────▲─────────────────────────┘
-                          │
+└─────────────────────────────────────────────────────┘
+                             ▲
+                             │
              frames up / that role's config down
-          ┌───────────────┴───────────────┐
-          ▼                               ▼
+          ┌──────────────────┴──────────────────┐
+          ▼                                     ▼
    Node SDK                          C# / Unity SDK
    wardx / @wardx/core               clients/csharp
    role: game-server                 role: mobile
-   metrics / config.get               same /v1/sync
+   metrics / config.get              same /v1/sync
 ```
 
 `@wardx/core` lives in the SDK, not in the server. The server stores the snapshot, aggregates 1-minute windows, and serves MCP. Experiment assignment and `config.get` run on the client. `identify()` sets the instance subject; a per-call `subjectId` overrides it.
