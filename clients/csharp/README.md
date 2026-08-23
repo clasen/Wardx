@@ -2,47 +2,11 @@
 
 C# SDK for Wardx. Same wire contract as the Node SDK: `POST /v1/sync`, JSON + gzip, header `X-Wardx-Key`.
 
-This SDK talks to that server. See [Wardx](https://github.com/clasen/Wardx).
+This SDK talks to that server. See [Wardx](https://github.com/clasen/Wardx). Architecture: [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md).
 
 A measure call changes local memory only. Delivery is at-most-once. A failed sync discards that batch. Remote Config is a local read of the last snapshot.
 
 **WARNING:** The SDK does not write a disk queue. The SDK does not retry the same frames.
-
-```text
-                         AGENT
-                  arisa.sh / Codex / Claude
-                             │
-                    MCP stdio
-                    tools + wardx://project/{name}
-                             ▼
-┌─────────────────────────────────────────────────────┐
-│              wardx-server (one process)             │
-│              N isolated projects                    │
-│                                                     │
-│   MCP ──> ControlService                            │
-│              ├── Remote Config snapshot             │
-│              ├── Experiment definitions             │
-│              ├── Aggregates                         │
-│              ├── Recent logs                        │
-│              └── Catalog                            │
-│                                                     │
-│   HTTP POST /v1/sync                                │
-│        ├── envelope store (config.sink)             │
-│        │     null | memory | ndjson                 │
-│        └── per-project ingest                       │
-│              aggregator, recent logs, clients       │
-│              config reply filtered by client.role   │
-└─────────────────────────────────────────────────────┘
-                             ▲
-                             │
-             frames up / that role's config down
-          ┌──────────────────┴──────────────────┐
-          ▼                                     ▼
-   Node SDK                          C# / Unity SDK
-   wardx / @wardx/core               clients/csharp
-   role: game-server                 role: mobile
-   metrics / config.get              same /v1/sync
-```
 
 Unity 2021.3 or later, or .NET Standard 2.1.
 
