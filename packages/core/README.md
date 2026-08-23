@@ -4,12 +4,6 @@
 
 The engine records metrics, events, and logs in memory. The engine also stores Remote Config and assigns experiment variants.
 
-The engine does not send HTTP. A runtime package, for example `wardx`, sends the frames.
-
-Node.js 20 or later is required.
-
-Install this package from npm when you write a custom runtime. If you use Node.js, install `wardx`. The `wardx` package depends on `@wardx/core`.
-
 ## Install
 
 ```bash

@@ -2,6 +2,12 @@
 
 `@wardx/server` is the Wardx ingest server.
 
+To find out what your own product is doing, you set up five services: analytics in one, remote config in another, experiments in a third, logs wherever they land. Then you paste IDs by hand between dashboards that don't talk to each other. One server is enough for that, and Wardx is that server. Your Unity app and your Node backend send it events, metrics and errors as they happen, and get back the configuration meant for them: the game sees its variables, the server sees its own. You run it on your VPS, and all your projects live inside it, kept apart from each other.
+
+Hand what that server collects to an agent and it sees the product the way you do: yesterday's numbers, the last hour of errors, the config running right now. Ask it why onboarding drops off at step three and it answers with your data in front of it. Show it the account claiming rewards every four seconds and it tells you whether that's a bug of yours or someone testing the edge.
+
+The same channel that carries the data up carries the configuration back down, so the agent doesn't stop at the diagnosis: it changes a variable, turns it into a hypothesis, lets it run as an A/B test, and comes back three days later to look at the numbers. Optimization stays within reach. You open the chat on a Tuesday afternoon, see what moved in the funnel, and decide whether the change stays. If it didn't work, you put the variable back and try another.
+
 The server receives `POST /v1/sync`. The server authenticates the project key. The server writes envelopes to a sink. The server aggregates frames into 1-minute windows per project. The server returns that project's Remote Config when the client version is not current.
 
 HTTP is only the client path. Control, analysis, and visualization use MCP tools on the same process. There is no admin HTTP API.

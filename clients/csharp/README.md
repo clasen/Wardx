@@ -2,6 +2,8 @@
 
 C# SDK for Wardx. Same wire contract as the Node SDK: `POST /v1/sync`, JSON + gzip, header `X-Wardx-Key`.
 
+This SDK talks to that server. See [Wardx](https://github.com/clasen/Wardx).
+
 A measure call changes local memory only. Delivery is at-most-once. A failed sync discards that batch. Remote Config is a local read of the last snapshot.
 
 **WARNING:** The SDK does not write a disk queue. The SDK does not retry the same frames.
@@ -51,10 +53,10 @@ Unity 2021.3 or later, or .NET Standard 2.1.
 https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime
 ```
 
-Pin a release with `#v0.1.5`. In `Packages/manifest.json`:
+Pin a release with `#v0.1.6`. In `Packages/manifest.json`:
 
 ```json
-"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.1.5"
+"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.1.6"
 ```
 
 **Unity (this checkout).** Package Manager → Add package from disk → `clients/csharp/Runtime/package.json`.

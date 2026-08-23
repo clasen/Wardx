@@ -2,6 +2,8 @@
 
 `wardx` is the Node.js SDK for Wardx.
 
+This SDK talks to that server. See [Wardx](https://github.com/clasen/Wardx).
+
 The SDK records logs, events, and metrics. The SDK also gets Remote Config and assigns experiment variants.
 
 A measure call changes local memory only. The SDK sends frames on a timer. The SDK uses HTTP `POST /v1/sync` with JSON and gzip.
