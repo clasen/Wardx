@@ -2,47 +2,11 @@
 
 `wardx` is the Node.js SDK for Wardx.
 
-This SDK talks to that server. See [Wardx](https://github.com/clasen/Wardx).
+This SDK talks to that server. See [Wardx](https://github.com/clasen/Wardx). Architecture: [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md).
 
 The SDK records logs, events, and metrics. The SDK also gets Remote Config and assigns experiment variants.
 
 A measure call changes local memory only. The SDK sends frames on a timer. The SDK uses HTTP `POST /v1/sync` with JSON and gzip.
-
-```text
-                         AGENT
-                  arisa.sh / Codex / Claude
-                             │
-                    MCP stdio
-                    tools + wardx://project/{name}
-                             ▼
-┌─────────────────────────────────────────────────────┐
-│              wardx-server (one process)             │
-│              N isolated projects                    │
-│                                                     │
-│   MCP ──> ControlService                            │
-│              ├── Remote Config snapshot             │
-│              ├── Experiment definitions             │
-│              ├── Aggregates                         │
-│              ├── Recent logs                        │
-│              └── Catalog                            │
-│                                                     │
-│   HTTP POST /v1/sync                                │
-│        ├── envelope store (config.sink)             │
-│        │     null | memory | ndjson                 │
-│        └── per-project ingest                       │
-│              aggregator, recent logs, clients       │
-│              config reply filtered by client.role   │
-└─────────────────────────────────────────────────────┘
-                             ▲
-                             │
-             frames up / that role's config down
-          ┌──────────────────┴──────────────────┐
-          ▼                                     ▼
-   Node SDK                          C# / Unity SDK
-   wardx / @wardx/core               clients/csharp
-   role: game-server                 role: mobile
-   metrics / config.get              same /v1/sync
-```
 
 ## Install
 
