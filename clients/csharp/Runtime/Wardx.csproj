@@ -15,4 +15,7 @@
   <ItemGroup>
     <ProjectReference Include="Core/Wardx.Core.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Wardx.Tests" />
+  </ItemGroup>
 </Project>

@@ -58,7 +58,7 @@ namespace Wardx.Tests
             var fitted = core2.SnapshotFrame();
             var exposures = 0;
             string subject = null;
-            foreach (var row in fitted.Frame.Events)
+            foreach (var row in AllEvents(fitted))
             {
                 if (row.Name != "experiment.exposure") continue;
                 exposures++;
@@ -70,7 +70,7 @@ namespace Wardx.Tests
             core2.ExperimentGoal("message.sent", "user-1", 1);
             var fitted2 = core2.SnapshotFrame();
             var goals = 0;
-            foreach (var row in fitted2.Frame.Events)
+            foreach (var row in AllEvents(fitted2))
             {
                 if (row.Name != "experiment.goal") continue;
                 goals++;
@@ -92,7 +92,7 @@ namespace Wardx.Tests
             var identifiedFrame = identified.SnapshotFrame();
             var identifiedGoals = 0;
             var identifiedExposures = 0;
-            foreach (var row in identifiedFrame.Frame.Events)
+            foreach (var row in AllEvents(identifiedFrame))
             {
                 if (row.Name == "experiment.exposure") identifiedExposures++;
                 if (row.Name != "experiment.goal") continue;
@@ -119,6 +119,134 @@ namespace Wardx.Tests
             var hash = Hash.AssignmentHash(experiment.Id, "x", experiment.Salt);
             var unit = Hash.HashToUnitInterval(hash);
             AssertX.True(unit >= 0 && unit < 1, "unit interval");
+
+            var invalid = Fixtures.MessageDelay();
+            invalid.GoalMetric = null;
+            AssertX.Throws(
+                () => new WardxCore(Fixtures.TestSettings()).ApplyConfig(
+                    1,
+                    new Dictionary<string, object>(),
+                    new List<ExperimentDefinition> { invalid }
+                ),
+                "goalMetric"
+            );
+
+            var second = Fixtures.MessageDelay();
+            second.Id = "banner-v1";
+            second.GoalMetric = "checkout.completed";
+            second.Variants = new List<VariantDefinition>
+            {
+                new VariantDefinition
+                {
+                    Key = "control",
+                    Weight = 50,
+                    Values = new Dictionary<string, object> { ["banner.color"] = "blue" }
+                },
+                new VariantDefinition
+                {
+                    Key = "green",
+                    Weight = 50,
+                    Values = new Dictionary<string, object> { ["banner.color"] = "green" }
+                }
+            };
+            var simultaneous = new WardxCore(Fixtures.TestSettings());
+            simultaneous.ApplyConfig(
+                1,
+                new Dictionary<string, object>
+                {
+                    ["message.delayMs"] = 1000,
+                    ["banner.color"] = "blue"
+                },
+                new List<ExperimentDefinition> { Fixtures.MessageDelay(), second }
+            );
+            simultaneous.ConfigGet("message.delayMs", 7, "user-1");
+            simultaneous.ConfigGet("banner.color", "blue", "user-1");
+            simultaneous.ExperimentGoal("checkout.completed", "user-1", 3);
+            simultaneous.ExperimentGoal("not-configured", "user-1");
+            var simultaneousGoals = GoalRows(simultaneous.SnapshotFrame());
+            AssertX.Equal(1, simultaneousGoals.Count, "only matching goal row");
+            var goalAssignments = (System.Collections.IList)simultaneousGoals[0].Attrs["experiments"];
+            AssertX.Equal(1, goalAssignments.Count, "goal has one assignment");
+            var goalAssignment = (Dictionary<string, object>)goalAssignments[0];
+            AssertX.Equal("banner-v1", (string)goalAssignment["experiment"], "intended experiment");
+
+            var beforeExposure = new WardxCore(Fixtures.TestSettings());
+            beforeExposure.ApplyConfig(
+                1,
+                new Dictionary<string, object> { ["message.delayMs"] = 1000 },
+                new List<ExperimentDefinition> { Fixtures.MessageDelay() }
+            );
+            beforeExposure.ExperimentGoal("message.sent", "user-1");
+            AssertX.Equal(0, GoalRows(beforeExposure.SnapshotFrame()).Count, "goal before exposure is ignored");
+
+            var bounded = new WardxCore(Fixtures.TestSettings(o =>
+            {
+                o.ExperimentStateMaxSubjects = 2;
+                o.MaxBufferedEvents = 20;
+            }));
+            bounded.ApplyConfig(
+                1,
+                new Dictionary<string, object> { ["message.delayMs"] = 1000 },
+                new List<ExperimentDefinition> { Fixtures.MessageDelay() }
+            );
+            bounded.ConfigGet("message.delayMs", 7, "user-1");
+            bounded.ConfigGet("message.delayMs", 7, "user-2");
+            bounded.ConfigGet("message.delayMs", 7, "user-3");
+            AssertX.Equal(2, bounded.ExperimentResolver.StateCount, "state is bounded");
+            foreach (var identity in bounded.ExperimentResolver.StateIdentities)
+            {
+                AssertX.Equal(64, identity.Length, "state identity is sha-256");
+                AssertX.True(identity.IndexOf("user-", System.StringComparison.Ordinal) < 0, "state has no raw subject");
+            }
+            bounded.ConfigGet("message.delayMs", 7, "user-1");
+            var boundedExposures = 0;
+            foreach (var row in AllEvents(bounded.SnapshotFrame()))
+            {
+                if (row.Name == "experiment.exposure") boundedExposures++;
+            }
+            AssertX.Equal(4, boundedExposures, "evicted subject can expose again");
+
+            var snapshot = new WardxCore(Fixtures.TestSettings());
+            snapshot.ApplyConfig(
+                1,
+                new Dictionary<string, object> { ["message.delayMs"] = 1000 },
+                new List<ExperimentDefinition> { Fixtures.MessageDelay() }
+            );
+            snapshot.ConfigGet("message.delayMs", 7, "user-1");
+            AssertX.Equal(1, snapshot.ExperimentResolver.StateCount, "snapshot assignment retained");
+            snapshot.ApplyConfig(2, new Dictionary<string, object>(), new List<ExperimentDefinition>());
+            AssertX.Equal(0, snapshot.ExperimentResolver.StateCount, "removed snapshot clears state");
+            var changed = Fixtures.MessageDelay();
+            snapshot.ApplyConfig(
+                3,
+                new Dictionary<string, object> { ["message.delayMs"] = 1000 },
+                new List<ExperimentDefinition> { changed }
+            );
+            snapshot.ConfigGet("message.delayMs", 7, "user-1");
+            changed.Salt = "changed";
+            snapshot.ApplyConfig(
+                4,
+                new Dictionary<string, object> { ["message.delayMs"] = 1000 },
+                new List<ExperimentDefinition> { changed }
+            );
+            AssertX.Equal(0, snapshot.ExperimentResolver.StateCount, "changed snapshot clears state");
+        }
+
+        static List<EventSample> AllEvents(FrameBatch batch)
+        {
+            var rows = new List<EventSample>();
+            foreach (var frame in batch.Frames) rows.AddRange(frame.Events);
+            return rows;
+        }
+
+        static List<EventSample> GoalRows(FrameBatch batch)
+        {
+            var rows = new List<EventSample>();
+            foreach (var row in AllEvents(batch))
+            {
+                if (row.Name == "experiment.goal") rows.Add(row);
+            }
+            return rows;
         }
     }
 }

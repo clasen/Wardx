@@ -19,13 +19,13 @@ const PROJECT_URI_PREFIX = 'wardx://project/';
 
 export const MCP_INSTRUCTIONS = [
   'Wardx ingest control plane. HTTP POST /v1/sync is the only client path; this MCP interface reads telemetry and writes Remote Config and experiments.',
-  'A project is one product. Each SDK instance declares a role, an open name such as unity, game-server, desktop, or mobile. Different roles of the same project may emit similar names; series stay separate by role.',
+  'A project is one product. Each SDK instance declares a role, an open name such as backend, frontend, desktop, or unity. Different roles of the same project may emit similar names; series stay separate by role.',
   'Remote Config keys list the roles that receive them, or ["*"] for every role. Experiments list the roles that assign them. A sync only downloads keys and experiments visible to that instance\'s role.',
   'The SDK ships names with no descriptions. Meaning lives in the MCP catalog: a predefined catalog in the server config, or answers written during onboarding. Both are valid.',
   'Start with list_projects, then get_project_overview or read wardx://project/{name}. Overview knobs include roles. Overview.roles groups outcomes and clients by role name. path and git on a role are optional: path is a local checkout, git is a repository URL. Use them when present to edit that surface. Do not ask for them. Do not invent them.',
   'If onboarding.complete is true, skip questions and continue. If it is false, ask only about missingDescription, undescribedRoles, and the listed undescribed knobs and outcomes. Persist answers with set_project_description, set_role_description, and set_signal. Do not invent descriptions. Do not re-ask names that already have a description. Do not propose, enable, or interpret experiments until onboarding.complete is true.',
   'Knobs are existing Remote Config keys you may experiment on. Outcomes are metrics and events. Descriptions come from the project catalog.',
-  'After get_aggregates, drill into a sample log row with get_recent_logs. A stack or provider code is an attr. Filter either tool with role when comparing surfaces. The ring keeps recent logs of every level. If that role has path or git, use that checkout to inspect or edit the source. Wardx does not change application code.',
+  'After get_aggregates, drill into a sample log row with get_recent_logs. A stack or provider code is an attr. Filter either tool with role when comparing surfaces. The ring keeps recent logs of every level. Catalog persistLogs names also roll up as lifetime count + last exemplar in overview outcomes and window logNames; they survive a restart. 1-minute aggregate windows persist for aggregateRetentionMinutes and reload after a restart. set_persist_log adds a name; delete_persist_log removes it. If that role has path or git, use that checkout to inspect or edit the source. Wardx does not change application code.',
   'Overview histogram outcomes are ranked by max and include the exemplar of that max. Compare max to a numeric Remote Config cap. Then get_aggregates on the amount, count, and size names, and get_recent_logs with the anomaly message or exemplar attrs (grantId, source, reason). That is a fleet jump, not a player to punish. The wallet row lives in the application database.',
   'Propose experiments with upsert_experiment. variant.values may only contain keys visible to experiment.roles. Optional hypothesis stays on the server; clients never receive it. For a test that can be closed, set goalKind (conversion or mean), control, minExposures, and confidence. Those fields never go to clients.',
   'List and analyze previously proposed experiments with list_experiments and analyze_experiment. decision.status is collecting, winner, no_difference, cannot_decide, or shipped. Do not declare a winner unless status is winner or shipped. Conversion compares rate (goals/exposures). Mean compares goalMean. primaryMetric.total is the fleet counter of that name, not a per-variant split. Close a winner with ship_experiment; that copies variant values into Remote Config and disables the experiment. Do not ship by hand with set_config_value plus set_experiment_enabled.',
@@ -53,7 +53,7 @@ export function createMcpServer(control) {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
-      const result = executeTool(control, request.params.name, request.params.arguments || {});
+      const result = await executeTool(control, request.params.name, request.params.arguments || {});
       return toolResult(result);
     } catch (err) {
       return toolError(err);

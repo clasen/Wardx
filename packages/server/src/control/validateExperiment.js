@@ -1,8 +1,29 @@
 import { assertRoles } from '../roles.js';
 
+const EXPERIMENT_KEYS = new Set([
+  'id',
+  'enabled',
+  'allocation',
+  'salt',
+  'roles',
+  'primaryMetric',
+  'goalMetric',
+  'goalKind',
+  'control',
+  'minExposures',
+  'confidence',
+  'shippedVariant',
+  'hypothesis',
+  'variants'
+]);
+const VARIANT_KEYS = new Set(['key', 'weight', 'values']);
+
 export function validateExperiment(experiment) {
   if (!experiment || typeof experiment !== 'object' || Array.isArray(experiment)) {
     throw new Error('experiment must be an object');
+  }
+  for (const key of Object.keys(experiment)) {
+    if (!EXPERIMENT_KEYS.has(key)) throw new Error(`experiment unknown key: ${key}`);
   }
   if (typeof experiment.id !== 'string' || experiment.id.length === 0) {
     throw new Error('experiment.id is required');
@@ -22,6 +43,9 @@ export function validateExperiment(experiment) {
     throw new Error('experiment.salt is required');
   }
   assertRoles(experiment.roles, 'experiment.roles');
+  if (typeof experiment.goalMetric !== 'string' || experiment.goalMetric.length === 0) {
+    throw new Error('experiment.goalMetric is required');
+  }
   if (experiment.primaryMetric !== undefined) {
     if (typeof experiment.primaryMetric !== 'string' || experiment.primaryMetric.length === 0) {
       throw new Error('experiment.primaryMetric must be a non-empty string');
@@ -69,6 +93,9 @@ export function validateExperiment(experiment) {
     if (!variant || typeof variant !== 'object' || Array.isArray(variant)) {
       throw new Error('experiment variant must be an object');
     }
+    for (const key of Object.keys(variant)) {
+      if (!VARIANT_KEYS.has(key)) throw new Error(`experiment variant unknown key: ${key}`);
+    }
     if (typeof variant.key !== 'string' || variant.key.length === 0) {
       throw new Error('variant.key is required');
     }
@@ -95,12 +122,34 @@ export function validateExperiment(experiment) {
   }
 }
 
+function rolesOverlap(a, b) {
+  if (a.includes('*') || b.includes('*')) return true;
+  return a.some((role) => b.includes(role));
+}
+
+export function assertUnambiguousGoalMetrics(experiments) {
+  for (let i = 0; i < experiments.length; i++) {
+    const left = experiments[i];
+    if (!left.enabled) continue;
+    for (let j = i + 1; j < experiments.length; j++) {
+      const right = experiments[j];
+      if (!right.enabled || left.goalMetric !== right.goalMetric) continue;
+      if (rolesOverlap(left.roles, right.roles)) {
+        throw new Error(
+          `enabled experiments ${left.id} and ${right.id} share goalMetric ${left.goalMetric} for overlapping roles`
+        );
+      }
+    }
+  }
+}
+
 export function toClientExperiment(experiment) {
   const out = {
     id: experiment.id,
     enabled: experiment.enabled,
     allocation: experiment.allocation,
     salt: experiment.salt,
+    goalMetric: experiment.goalMetric,
     roles: [...experiment.roles],
     variants: experiment.variants.map((variant) => ({
       key: variant.key,

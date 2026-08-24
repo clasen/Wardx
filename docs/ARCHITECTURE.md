@@ -34,7 +34,7 @@ One process, two doors. Both go both ways. There is no admin HTTP API.
           ▼                                     ▼
    Node SDK                          C# / Unity SDK
    wardx / @wardx/core               clients/csharp
-   role: game-server                 role: mobile
+   role: backend                     role: frontend
    metrics / config.get              same /v1/sync
 ```
 
@@ -42,11 +42,15 @@ One process, two doors. Both go both ways. There is no admin HTTP API.
 
 MCP lists projects with `list_projects`. Every other tool takes a `project` name. Projects are declared in the server config (`projectKeys` + `projects`); MCP does not create them.
 
-A project is one product. Each SDK instance declares a `role`, an open name (`unity`, `game-server`, `desktop`, `mobile`, …). Several roles share the project. They may measure similar names; series stay separate by role. Remote Config keys list the roles that receive them, or `["*"]` for every role. Experiments list the roles that assign them. A sync downloads only what that role can see.
+A project is one product. Each SDK instance declares a `role`, an open name (`backend`, `frontend`, `desktop`, `unity`, …). Several roles share the project. They may measure similar names; series stay separate by role. Remote Config keys list the roles that receive them, or `["*"]` for every role. Experiments list the roles that assign them. A sync downloads only what that role can see.
 
-The SDK ships names only. Meaning lives in the MCP catalog, which never goes down HTTP. Two ways to fill it, both valid: ship a predefined `catalog` in the server config, or leave descriptions empty and complete them during MCP onboarding (`set_project_description` / `set_role_description` / `set_signal`). `get_project_overview.onboarding` lists only the remaining gaps, including undescribed roles. If `onboarding.complete` is true, the agent skips questions. If a new undescribed name or role appears later, onboarding reopens for that gap only. Each role may optionally carry `path` (checkout on this machine) and `git` (repository URL). The agent uses them when present. It does not ask for them.
+The project key authenticates the project. `role` is client-selected routing metadata, not authorization: a client with a valid project key can claim any allowed role name. Role filtering reduces and separates payloads; it must not be used to protect backend-only values or to establish telemetry integrity. Remote Config must never contain credentials, tokens, private keys, or other secrets.
 
-The envelope store is process-wide. It is not part of ControlService. MCP does not read it. Production uses `sink: "null"` (`config/production.json`): discard envelopes after ingest. `memory` and `ndjson` are for local debugging and benchmarks. MCP reads 1-minute aggregates and the recent-log ring, not the envelope store.
+The SDK ships names only. Meaning lives in the MCP catalog, which never goes down HTTP. Two ways to fill it, both valid: ship a predefined `catalog` in the server config, or leave descriptions empty and complete them during MCP onboarding (`set_project_description` / `set_role_description` / `set_signal`). `catalog.persistLogs` is an allowlist of exact log message names. Those names roll up as a lifetime count and last exemplar (`logNames` / overview `kind: "log"`) and survive a restart in `<configPath>.log-stats.json`. Names not on the list stay in the recent-log ring only. `get_project_overview.onboarding` lists only the remaining gaps, including undescribed roles. If `onboarding.complete` is true, the agent skips questions. If a new undescribed name or role appears later, onboarding reopens for that gap only. Each role may optionally carry `path` (checkout on this machine) and `git` (repository URL). The agent uses them when present. It does not ask for them.
+
+The envelope store is process-wide. It is not part of ControlService. MCP does not read it. Production uses `sink: "null"` (`config/production.json`): discard envelopes after ingest. `memory` and `ndjson` are for local debugging and benchmarks. MCP reads 1-minute aggregates (persisted for exactly `aggregateRetentionMinutes` in `<configPath>.aggregate-windows.json`), the recent-log ring, and allowlisted persist-log rollups, not the envelope store.
+
+Wardx is aggregate-first. The recent-client and recent-log rings are bounded by configuration, volatile, and empty again after restart. Aggregate windows expire exactly according to `aggregateRetentionMinutes`. Only explicitly defined sources have lifetime rollups: experiment exposures/goals in `<configPath>.experiment-stats.json` and allowlisted log names in `<configPath>.log-stats.json`. Those rollups do not create journeys, unique-user history, per-account queries, a ledger, or general multi-day analytics. A delayed experiment review requires an external scheduler or automation to start the later agent run.
 
 ## Instrumentation
 
@@ -58,7 +62,7 @@ Use the cheapest signal that still answers the question.
 - **Funnels:** volume between named steps, not a unique-user path. One event name and one counter per step (`onboarding.start` → `onboarding.profile` → `onboarding.done`, or `level.start` → `level.fail` / `level.complete`). Compare those counts in `get_aggregates`. The aggregator counts events by name and role; event attrs do not split the funnel. `sessionId` is envelope identity, not a join key. Production discards envelopes (`sink: "null"`). There is no per-subject sequence, no uniques, and no time between steps. `experiment.goal` is a one-step conversion or one quantitative value, not an N-step funnel. One experiment should have one quantitative goal name. See `wardx` use cases 7 and 15.
 - **Business:** rare events: `purchase`, `experiment.exposure`, `experiment.goal`.
 - **Economy:** counters of amount and grant count by `source`, plus a histogram of award size. Pass grant attrs to `observe(value, attrs)` so the window max carries an exemplar (a lookup key, not a series per player). A rare `coins.anomaly` event when a grant exceeds a Remote Config cap. MCP overview ranks histogram outcomes by `max` so an agent can compare that peak to the cap, then `get_recent_logs` with the exemplar attrs and open the role `path`/`git`. Per-player consistency is the game database. Wardx is at-most-once and not a ledger. See `wardx` use case 8 and `@wardx/server` use case 9.
-- **Dimensions:** `route`, `result`, `mode`, `source`. Never `userId`, email, or a unique id on a metric. The SDK caps series per process; the server also caps series per metric name per minute (`aggregateMaxSeriesPerMetric`).
+- **Dimensions:** `route`, `result`, `mode`, `source`. Never `userId`, email, or a unique id on a metric. Each SDK instance caps series; the server also caps series per metric name per minute (`aggregateMaxSeriesPerMetric`).
 - **Backend SDK:** if one process serves many users, increment counters in process. Do not `event()` once per user action. Give that process its own role so MCP does not mix it with a player client.
 
 ```mermaid
@@ -73,7 +77,7 @@ flowchart LR
   Server -->|"JSON"| Agent
 ```
 
-**SDK ↔ HTTP.** `POST /v1/sync`: the client sends frames, `configVersion`, and `client.role`. The server always replies `ok` and `configVersion`, and includes that role's `config` when the version changed. Telemetry goes up. Remote Config comes down. Same round-trip.
+**SDK ↔ HTTP.** `POST /v1/sync`: the client sends frames, `configVersion`, and `client.role`. A valid request receives `200` with `ok`, `configVersion`, and that role's `config` when the version changed. Invalid authentication, encoding, size, protocol, or routes receive the documented non-`200` response; unexpected failures receive a non-sensitive `500`. Telemetry goes up and Remote Config comes down on a successful round-trip. See [PROTOCOL.md](PROTOCOL.md) for the matrix.
 
 **MCP ↔ agent.** stdio JSON-RPC: the agent calls tools and can read `wardx://project/{name}`. The process returns JSON: project catalog (what the product is, what keys and metrics mean), telemetry, and previously proposed experiments. The same channel writes config and new experiments over those Remote Config keys. A new value reaches the SDK on the next sync. The catalog never goes down HTTP.
 

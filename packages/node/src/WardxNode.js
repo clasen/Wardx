@@ -23,6 +23,7 @@ export class WardxNode {
     this._core = new WardxCore(settings);
     this._transport = createHttpTransport(settings);
     this._stopped = false;
+    this._shutdownPromise = null;
     this._syncChain = Promise.resolve();
     this._instanceId = ulid();
     this._sessionId = ulid();
@@ -70,8 +71,12 @@ export class WardxNode {
     return this._enqueueSync({ flush: true });
   }
 
-  async shutdown() {
-    if (this._stopped) return;
+  shutdown() {
+    if (this._shutdownPromise === null) this._shutdownPromise = this._shutdown();
+    return this._shutdownPromise;
+  }
+
+  async _shutdown() {
     this._stopped = true;
     clearInterval(this._aggregateTimer);
     if (this._syncTimer) clearTimeout(this._syncTimer);

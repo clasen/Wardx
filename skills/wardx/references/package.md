@@ -29,7 +29,7 @@ Exports: `createWardx`, `WardxNode`, `createConsoleTracer`. Node 20+. ESM.
 | `defaults.json` | Operational defaults. Loader throws if a required key is missing. No fallback values. |
 | `src/metrics/` | Counter, Gauge, Histogram, Timer, MetricsRegistry, dimensions |
 | `src/config/` | ConfigStore, ExperimentResolver, FNV-1a hashes |
-| `src/frame/FrameBuilder.js` | Window snapshot; `fitToMaxBytes` |
+| `src/frame/FrameBuilder.js` | Window snapshot; `splitToMaxBytes` with consecutive sequence numbers and observable row drops |
 | `src/buffers/` | EventBuffer, LogBuffer — drop new rows when full |
 | `src/trace/` | `emit`, measure wrappers |
 
@@ -39,14 +39,14 @@ The core does not send HTTP. A runtime (this Node package, or a future SDK) must
 
 - Measure path is synchronous and allocation-light. No `await` inside `inc` / `set` / `observe` / `event` / `log.*` / `config.get`.
 - Failed sync increments `framesFailed` and drops that envelope. Do not retry the same frames. Do not write a disk queue.
-- `role` cannot be `*`. Required create keys are listed in `REQUIRED_CREATE_KEYS`; do not default them in code.
+- `role` cannot be `*`. It is client-selected routing metadata, not authorization; Remote Config never contains secrets. Required create keys are listed in `REQUIRED_CREATE_KEYS`; do not default them in code.
 - Histogram buckets are immutable per series. Changing them throws.
 - Invalid or over-cap dimensions return no-op series and increment `cardinalityDropped`. Do not throw on cardinality.
 - `config.get` never blocks on network. Missing key → caller fallback.
-- `identify(subjectId)` sets the instance default subject. `identify(null)` clears it. Per-call `{ subjectId }` overrides it. Process-wide: a `game-server` that serves many users must pass `subjectId` per call and must not `identify()`.
-- `experiment.goal` throws without a subject (`identify` or `{ subjectId }`). Exposure payload hashes the subject (`privacySalt` or `projectKey`). Raw `subjectId` does not go on the wire. Same `subjectId` + experiment `id` + `salt` → same variant; do not persist the group.
+- `identify(subjectId)` sets the SDK-instance default subject. `identify(null)` clears it. Per-call `{ subjectId }` overrides it. A `game-server` that serves many users must pass `subjectId` per call and must not share an instance default.
+- `experiment.goal` throws without a subject (`identify` or `{ subjectId }`). Exposure payload hashes the subject with the required explicit `privacySalt`. Raw `subjectId` does not go on the wire. Same `subjectId` + experiment `id` + `salt` → same variant; do not persist the group.
 - Tracer is duck-typed and optional. Hooks: core `measure`, `event`, `log`, `frame`; runtime also `sync`. Omit unused hooks. Tracer must not change frames, delivery, or config.
-- Envelope `sdk.name` is `wardx-node`. `client.platform` is `node`. `client.instanceId` / `sessionId` are one ULID each per process.
+- Envelope `sdk.name` is `wardx-node`. `client.platform` is `node`. Every `createWardx()` instance owns one ULID `client.instanceId` and one ULID `sessionId`; they are not process-wide.
 - Sync delay is `syncIntervalMs * random(syncJitterMin, syncJitterMax)`, recomputed every cycle. Aggregate and sync timers are `unref()`'d.
 - `flush` snapshots if dirty and sends; it does not stop timers. `shutdown` stops timers, flushes, closes the HTTP agent, and is idempotent.
 
@@ -56,9 +56,9 @@ The core does not send HTTP. A runtime (this Node package, or a future SDK) must
 
 Required from caller: `endpoint`, `projectKey`, `project`, `role`, `appVersion`, `environment`.
 
-Required from defaults (override allowed): `aggregateIntervalMs` (1000), `syncIntervalMs` (15000), `syncJitterMin` (0.85), `syncJitterMax` (1.15), `maxBufferedEvents` (5000), `maxBufferedLogs` (2000), `maxFrameBytes` (524288), `maxSeriesPerMetric` (1000), `maxDimensionKeys` (8), `maxDimensionValueLength` (64), `httpTimeoutMs` (10000), `histogramBuckets` (`[10, 25, 50, 100, 250, 500, 1000]`).
+Required from defaults (override allowed): `aggregateIntervalMs` (1000), `syncIntervalMs` (15000), `syncJitterMin` (0.85), `syncJitterMax` (1.15), `maxBufferedEvents` (5000), `maxBufferedLogs` (2000), `maxFrameBytes` (524288; minimum 1024), `maxSeriesPerMetric` (1000), `maxDimensionKeys` (8), `maxDimensionValueLength` (64), `experimentStateMaxSubjects` (100000), `httpTimeoutMs` (10000), `histogramBuckets` (`[10, 25, 50, 100, 250, 500, 1000]`).
 
-`tracer` is not a default key. `privacySalt` empty → `projectKey`.
+`tracer` is not a default key. `privacySalt` is required and has no fallback.
 
 ## Verify
 

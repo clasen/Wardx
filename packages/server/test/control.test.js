@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { loadServerConfig } from '../src/loadConfig.js';
 import { executeTool } from '../src/mcp/tools.js';
-import { createIngestServer, listen } from '../src/server.js';
+import { ControlService, createIngestServer, listen } from '../src/server.js';
 import { gzipJson, sampleEnvelope, testServerConfig } from './helpers.js';
 
 const DELAY_EXPERIMENT = {
@@ -14,6 +14,7 @@ const DELAY_EXPERIMENT = {
   allocation: 1,
   salt: '3ad8f9',
   primaryMetric: 'message.sent',
+  goalMetric: 'message.sent',
   roles: ['client'],
   variants: [
     { key: 'control', weight: 50, values: { 'message.delayMs': 1000 } },
@@ -28,7 +29,7 @@ async function withServer(config, fn) {
   try {
     return await fn(server, base);
   } finally {
-    await new Promise((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+    await server.wardx.stop();
   }
 }
 
@@ -68,9 +69,46 @@ test('ControlService persists mutations to the config file', () => {
   }
 });
 
+test('ControlService does not publish config or catalog when durable commit fails', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wardx-'));
+  const path = join(dir, 'server.json');
+  writeFileSync(path, `${JSON.stringify(testServerConfig({ port: 0 }), null, 2)}\n`);
+  try {
+    const server = createIngestServer(loadServerConfig(path));
+    const beforeConfig = server.wardx.control.getConfig('demo');
+    const beforeCatalog = JSON.parse(JSON.stringify(server.wardx.control.getCatalog('demo')));
+    const beforeFile = readFileSync(path, 'utf8');
+    const reports = [];
+    const failing = new ControlService({
+      config: server.wardx.config,
+      registry: server.wardx.registry,
+      persistence: server.wardx.persistence,
+      diagnostics: { report(...args) { reports.push(args); } },
+      persistConfig() {
+        throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+      }
+    });
+
+    assert.throws(() => failing.setValue('demo', 'message.delayMs', 250, ['client']), /disk full/);
+    assert.deepEqual(failing.getConfig('demo'), beforeConfig);
+    assert.equal(readFileSync(path, 'utf8'), beforeFile);
+
+    assert.throws(() => failing.setProjectDescription('demo', 'not published'), /disk full/);
+    assert.deepEqual(failing.getCatalog('demo'), beforeCatalog);
+    assert.equal(readFileSync(path, 'utf8'), beforeFile);
+    assert.equal(reports.length, 2);
+    assert.deepEqual(reports.map((entry) => entry[0]), ['control.persistence_failed', 'control.persistence_failed']);
+    assert.ok(reports.every((entry) => entry[1].code === 'ENOSPC'));
+    assert.ok(reports.every((entry) => entry[2].project === 'demo'));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('aggregator rolls up experiment exposure and goals', async () => {
   const now = Date.now();
   await withServer(testServerConfig(), async (server, base) => {
+    server.wardx.control.upsertExperiment('demo', DELAY_EXPERIMENT);
     const envelope = sampleEnvelope({
       frames: [
         {
@@ -109,7 +147,6 @@ test('aggregator rolls up experiment exposure and goals', async () => {
       },
       body: gzipJson(envelope)
     });
-    server.wardx.control.upsertExperiment('demo', DELAY_EXPERIMENT);
     const windows = server.wardx.control.aggregates('demo');
     assert.equal(windows[0].eventNames.find((row) => row.name === 'purchase').count, 1);
     const analysis = server.wardx.control.analyzeExperiment('demo', 'message-delay-v1');
@@ -191,6 +228,18 @@ test('catalog mutations persist without bumping configVersion', () => {
       saved.projects.demo.catalog.signals['message.delayMs'],
       'Milliseconds to wait before sending a chat message'
     );
+    executeTool(control, 'set_persist_log', { project: 'demo', name: 'payment_failed' });
+    assert.equal(control.getConfig('demo').version, 12);
+    const after = JSON.parse(readFileSync(path, 'utf8'));
+    assert.deepEqual(after.projects.demo.catalog.persistLogs, ['payment_failed']);
+    executeTool(control, 'set_persist_log', { project: 'demo', name: 'payment_failed' });
+    assert.deepEqual(control.getCatalog('demo').persistLogs, ['payment_failed']);
+    executeTool(control, 'delete_persist_log', { project: 'demo', name: 'payment_failed' });
+    assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')).projects.demo.catalog.persistLogs, []);
+    assert.throws(
+      () => executeTool(control, 'delete_persist_log', { project: 'demo', name: 'payment_failed' }),
+      /unknown persist log: payment_failed/
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -249,6 +298,7 @@ test('overview splits knobs and outcomes and marks undescribed names', async () 
     assert.deepEqual(overview.onboarding.undescribedKnobs, ['chat.enabled']);
     assert.deepEqual(overview.onboarding.undescribedOutcomes, ['message.sent', 'purchase']);
     assert.deepEqual(overview.onboarding.undescribedRoles, ['client']);
+    assert.deepEqual(overview.persistLogs, []);
   });
 });
 
@@ -745,13 +795,18 @@ const SHIPPABLE = {
 function ingestVariant(aggregator, variant, exposures, goals, now = Date.now()) {
   const events = [];
   for (let i = 0; i < exposures; i++) {
-    events.push([now, 'experiment.exposure', { experiment: SHIPPABLE.id, variant }]);
+    events.push([now, 'experiment.exposure', { experiment: SHIPPABLE.id, variant, subject: `subject-${variant}-${i}` }]);
   }
   for (let i = 0; i < goals; i++) {
     events.push([
       now,
       'experiment.goal',
-      { experiments: [{ experiment: SHIPPABLE.id, variant }], value: 1 }
+      {
+        metric: SHIPPABLE.goalMetric,
+        subject: `subject-${variant}-${i}`,
+        experiments: [{ experiment: SHIPPABLE.id, variant }],
+        value: 1
+      }
     ]);
   }
   aggregator.ingest(
@@ -855,6 +910,7 @@ test('close-policy fields stay off the client wire', async () => {
     const json = await res.json();
     const experiment = json.config.experiments[0];
     assert.equal(experiment.id, 'message-delay-v1');
+    assert.equal(experiment.goalMetric, 'message.sent');
     assert.equal(experiment.goalKind, undefined);
     assert.equal(experiment.control, undefined);
     assert.equal(experiment.minExposures, undefined);

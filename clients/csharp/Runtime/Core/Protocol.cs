@@ -20,6 +20,7 @@ namespace Wardx
             public const string LastSyncMs = "wardx.internal.last_sync_ms";
             public const string ConfigVersion = "wardx.internal.config_version";
             public const string ProcessRssBytes = "wardx.internal.process_rss_bytes";
+            public const string FrameRowsDropped = "wardx.internal.frame_rows_dropped";
         }
 
         public static readonly string[] RequiredCreateKeys =

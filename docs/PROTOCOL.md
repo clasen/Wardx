@@ -33,9 +33,13 @@ Delivery is **at-most-once**. A failed sync discards the batch. There is no disk
 }
 ```
 
-`client.role` is a non-empty name for this SDK instance inside the project: `unity`, `game-server`, `desktop`, `mobile`, and so on. It is not a closed list. `*` is reserved and rejected. Several roles may sync to the same project. They may emit similar metric names; the server keeps series separate by role.
+`client.instanceId` and `client.sessionId` belong to one SDK instance. Starting another SDK instance in the same process creates another pair; neither identifier is a process-wide singleton or a subject/journey key.
+
+`client.role` is a non-empty name for this SDK instance inside the project: `backend`, `frontend`, `desktop`, `unity`, and so on. It is not a closed list. `*` is reserved and rejected. Several roles may sync to the same project. They may emit similar metric names; the server keeps series separate by role. The project key authenticates only the project. Because the client selects `role`, role filtering is routing metadata, not authorization. Never put secrets in Remote Config, including values limited to a backend-looking role.
 
 `frames` may be empty on bootstrap so the client can fetch Remote Config immediately.
+
+The envelope is closed-schema: unknown top-level, `sdk`, `client`, frame, metric, histogram, exemplar, event, and log fields are rejected. The server also enforces `maxFramesPerEnvelope`, the combined `maxItemsPerEnvelope`, `maxNameBytes`, `maxDimensionKeys`, `maxDimensionValueLength`, `maxAttributeKeys`, `maxAttributeValueLength`, and `maxClockSkewMs` from its required configuration. Values and timestamps must be finite; tuples, dimensions, attributes, histogram bounds/counts/totals, and log levels must have the shapes below. Validation completes before the sink, aggregate state, rings, or persistence are mutated.
 
 ## Frame
 
@@ -74,6 +78,8 @@ A histogram body may include optional `exemplar`: `{ "value": 80, "attrs": { "gr
 
 Internal SDK series use the `wardx.internal.` prefix and are merged into the same arrays.
 
+SDKs measure the serialized UTF-8 JSON and split a logical snapshot into physical frames no larger than `maxFrameBytes`, with consecutive `seq` values. The setting is at least `1024`. A single row that cannot fit in an empty frame is dropped and counted by `wardx.internal.frame_rows_dropped`; the SDK never sends an oversized frame silently.
+
 ## Response
 
 Same config version:
@@ -100,6 +106,19 @@ The response `config` contains only keys and experiments visible to `client.role
 
 The server keeps one `configVersion` per project. It caches one JSON view per role and reuses it. It does not rebuild JSON per instance.
 
+Error responses use `{ "ok": false, "error": "..." }`:
+
+| Status | Meaning |
+| --- | --- |
+| `400` | Malformed gzip/JSON/protocol data, invalid fields, or project mismatch. |
+| `401` | Missing or unknown `X-Wardx-Key`. |
+| `404` | Route or method not found. |
+| `413` | Compressed request body or decoded envelope exceeds `maxRequestBytes`. |
+| `415` | Unsupported `Content-Encoding`. |
+| `500` | Non-sensitive internal failure. Details go only to the configured diagnostic sink. |
+
+Only an absent/identity encoding and `gzip` are supported. Proxies must not transform an unsupported encoding into an accepted one.
+
 ## Experiment assignment
 
 UTF-8 FNV-1a 32-bit:
@@ -113,7 +132,9 @@ If `bucket >= allocation`, the subject is not in the experiment and receives the
 
 Otherwise variants are chosen from cumulative `weight / totalWeight * allocation` thresholds. Exposure is emitted once per session as event `experiment.exposure` with a hashed subject, never the raw `subjectId`.
 
-`subjectHash = fnv1a32(projectSalt + ':' + subjectId)` as 8 lowercase hex digits. The Node SDK uses `privacySalt` from `createWardx`, or the project key when `privacySalt` is omitted.
+Every experiment snapshot has one non-empty `goalMetric`. A goal is emitted only for an assignment already exposed in this SDK instance and only when the goal call's name equals that assignment's `goalMetric`. One call cannot attach unrelated concurrent experiments, and there is no legacy match-all behavior. Assignment/exposure state is bounded by the SDK's required `experimentStateMaxSubjects` setting (default `100000`); eviction may allow a later exposure for that subject in the same long-running SDK instance, but deterministic variant assignment does not change.
+
+`subjectHash = SHA-256(UTF8(projectSalt) || 0x00 || UTF8(subjectId))` as 64 lowercase hex digits. The separator prevents ambiguous concatenation. Node and C# require an explicit non-empty `privacySalt`; they never reuse the project credential. Both implementations use the same bytes and output.
 
 ## Config resolution
 
@@ -127,7 +148,7 @@ config.get(key, fallback, context)
   allocated                       -> variant value + async exposure
 ```
 
-A per-call `context.subjectId` overrides `identify()`. `identify()` is process-wide. A process that serves many users must pass `subjectId` on each call.
+A per-call `context.subjectId` overrides `identify()`. `identify()` changes the default on that SDK instance. A process that serves many users must pass `subjectId` on each call instead of sharing one instance default.
 
 ## Intervals
 
@@ -141,6 +162,8 @@ HTTP:
 
 - `POST /v1/sync`
 - `GET /health`
+
+`GET /health` proves only that the process can answer HTTP at that moment. It does not prove sidecar writability, durable persistence, Remote Config correctness, downstream reachability, or capacity, and it is not a readiness contract.
 
 Remote Config, experiments, aggregates, recent logs, and analysis are MCP tools on the ingest process. There is no admin HTTP API. Each project has its own snapshot, aggregator, recent-client ring, and recent-log ring. Aggregates, clients, and logs are tagged with the sender's role. MCP `get_project_overview` groups them by role.
 

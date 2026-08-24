@@ -1,5 +1,10 @@
 import { gzipSync } from 'node:zlib';
-import { toClientExperiment, toWireExperiment } from '../control/validateExperiment.js';
+import {
+  assertUnambiguousGoalMetrics,
+  toClientExperiment,
+  toWireExperiment,
+  validateExperiment
+} from '../control/validateExperiment.js';
 import { experimentsForRole, validateKeyRoles, valuesForRole } from '../roles.js';
 
 function cloneJson(value) {
@@ -25,6 +30,8 @@ export class ConfigRepository {
       throw new Error('config experiments must be an array');
     }
     validateKeyRoles(snapshot.values, snapshot.keyRoles, 'config snapshot');
+    for (const experiment of snapshot.experiments) validateExperiment(experiment);
+    assertUnambiguousGoalMetrics(snapshot.experiments);
     this.version = snapshot.version;
     this.values = cloneJson(snapshot.values);
     this.keyRoles = cloneJson(snapshot.keyRoles);

@@ -14,7 +14,8 @@ export const INTERNAL = {
   bytesCompressed: 'wardx.internal.bytes_compressed',
   lastSyncMs: 'wardx.internal.last_sync_ms',
   configVersion: 'wardx.internal.config_version',
-  processRssBytes: 'wardx.internal.process_rss_bytes'
+  processRssBytes: 'wardx.internal.process_rss_bytes',
+  frameRowsDropped: 'wardx.internal.frame_rows_dropped'
 };
 
 export const LOG_LEVELS = ['debug', 'info', 'warn', 'error'];
@@ -34,7 +35,8 @@ export const REQUIRED_CREATE_KEYS = [
   'project',
   'role',
   'appVersion',
-  'environment'
+  'environment',
+  'privacySalt'
 ];
 
 export const REQUIRED_SDK_DEFAULT_KEYS = [
@@ -48,6 +50,7 @@ export const REQUIRED_SDK_DEFAULT_KEYS = [
   'maxSeriesPerMetric',
   'maxDimensionKeys',
   'maxDimensionValueLength',
+  'experimentStateMaxSubjects',
   'httpTimeoutMs',
   'histogramBuckets'
 ];

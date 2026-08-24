@@ -7,7 +7,7 @@ function cloneJson(value) {
 const ROLE_ENTRY_KEYS = new Set(['description', 'path', 'git']);
 
 export function emptyCatalog() {
-  return { description: '', roles: {}, signals: {}, experiments: {} };
+  return { description: '', roles: {}, signals: {}, experiments: {}, persistLogs: [] };
 }
 
 export function normalizeRoleEntry(row) {
@@ -70,7 +70,8 @@ export function normalizeCatalog(catalog) {
     description: typeof catalog.description === 'string' ? catalog.description : '',
     roles,
     signals: catalog.signals && typeof catalog.signals === 'object' ? { ...catalog.signals } : {},
-    experiments
+    experiments,
+    persistLogs: Array.isArray(catalog.persistLogs) ? [...catalog.persistLogs] : []
   };
 }
 
@@ -79,7 +80,13 @@ export function validateCatalog(catalog, label) {
     throw new Error(`${label} must be an object`);
   }
   for (const key of Object.keys(catalog)) {
-    if (key !== 'description' && key !== 'roles' && key !== 'signals' && key !== 'experiments') {
+    if (
+      key !== 'description' &&
+      key !== 'roles' &&
+      key !== 'signals' &&
+      key !== 'experiments' &&
+      key !== 'persistLogs'
+    ) {
       throw new Error(`${label} unknown key: ${key}`);
     }
   }
@@ -106,6 +113,20 @@ export function validateCatalog(catalog, label) {
       if (typeof text !== 'string' || text.length === 0) {
         throw new Error(`${label}.signals.${name} must be a non-empty string`);
       }
+    }
+  }
+  if (catalog.persistLogs !== undefined) {
+    if (!Array.isArray(catalog.persistLogs)) {
+      throw new Error(`${label}.persistLogs must be an array`);
+    }
+    const seen = new Set();
+    for (let i = 0; i < catalog.persistLogs.length; i++) {
+      const name = catalog.persistLogs[i];
+      if (typeof name !== 'string' || name.length === 0) {
+        throw new Error(`${label}.persistLogs[${i}] must be a non-empty string`);
+      }
+      if (seen.has(name)) throw new Error(`${label}.persistLogs duplicate name: ${name}`);
+      seen.add(name);
     }
   }
   if (catalog.experiments !== undefined) {
@@ -189,6 +210,7 @@ export function annotateWindows(windows, catalog) {
     counters: window.counters.map((row) => ({ ...row, ...annotateSignal(catalog, row.name) })),
     gauges: window.gauges.map((row) => ({ ...row, ...annotateSignal(catalog, row.name) })),
     histograms: window.histograms.map((row) => ({ ...row, ...annotateSignal(catalog, row.name) })),
-    eventNames: window.eventNames.map((row) => ({ ...row, ...annotateSignal(catalog, row.name) }))
+    eventNames: window.eventNames.map((row) => ({ ...row, ...annotateSignal(catalog, row.name) })),
+    logNames: window.logNames.map((row) => ({ ...row, ...annotateSignal(catalog, row.name) }))
   }));
 }

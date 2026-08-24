@@ -17,6 +17,107 @@ function eventKey(role, name) {
   return role + '\0' + name;
 }
 
+const LOG_LEVELS = new Set(['debug', 'info', 'warn', 'error']);
+
+function persistLogKey(role, level, name) {
+  return role + '\0' + level + '\0' + name;
+}
+
+function copyLogAttrs(attrs) {
+  if (attrs == null) return null;
+  if (typeof attrs !== 'object' || Array.isArray(attrs)) return null;
+  return { ...attrs };
+}
+
+function copyLogExemplar(exemplar) {
+  if (!exemplar || typeof exemplar !== 'object') return null;
+  if (typeof exemplar.ts !== 'number' || !Number.isFinite(exemplar.ts)) return null;
+  if (typeof exemplar.instanceId !== 'string' || exemplar.instanceId.length === 0) return null;
+  return {
+    ts: exemplar.ts,
+    attrs: copyLogAttrs(exemplar.attrs),
+    instanceId: exemplar.instanceId
+  };
+}
+
+function allowedPersistLogs(names) {
+  if (names === undefined || names === null) return null;
+  if (names instanceof Set) return names.size === 0 ? null : names;
+  if (!Array.isArray(names)) throw new Error('persistLogs must be an array of strings');
+  if (names.length === 0) return null;
+  return new Set(names);
+}
+
+function bumpPersistLog(map, key, name, level, role, exemplar) {
+  const prev = map.get(key);
+  const copied = copyLogExemplar(exemplar);
+  if (!prev) {
+    map.set(key, { name, level, role, count: 1, exemplar: copied });
+    return;
+  }
+  prev.count += 1;
+  if (copied && (!prev.exemplar || copied.ts >= prev.exemplar.ts)) prev.exemplar = copied;
+}
+
+function ingestPersistLogs(window, lifetime, logs, role, instanceId, allowed) {
+  if (!allowed) return false;
+  if (typeof instanceId !== 'string' || instanceId.length === 0) return false;
+  let changed = false;
+  for (const row of logs) {
+    if (!Array.isArray(row) || row.length < 3) continue;
+    const ts = row[0];
+    const level = row[1];
+    const message = row[2];
+    if (!LOG_LEVELS.has(level)) continue;
+    if (typeof ts !== 'number' || !Number.isFinite(ts)) continue;
+    if (typeof message !== 'string' || message.length === 0) continue;
+    if (!allowed.has(message)) continue;
+    const exemplar = { ts, attrs: copyLogAttrs(row[3]), instanceId };
+    const key = persistLogKey(role, level, message);
+    bumpPersistLog(window.logNames, key, message, level, role, exemplar);
+    bumpPersistLog(lifetime, key, message, level, role, exemplar);
+    changed = true;
+  }
+  return changed;
+}
+
+function serializePersistLog(row) {
+  const out = { name: row.name, level: row.level, role: row.role, count: row.count, persist: true };
+  if (row.exemplar) out.exemplar = copyLogExemplar(row.exemplar);
+  return out;
+}
+
+function cloneHistogramBody(body) {
+  if (!body) return null;
+  const out = {
+    count: body.count,
+    sum: body.sum,
+    min: body.min,
+    max: body.max,
+    buckets: body.buckets.map((pair) => [pair[0], pair[1]])
+  };
+  const exemplar = copyExemplar(body.exemplar);
+  if (exemplar) out.exemplar = exemplar;
+  return out;
+}
+
+function cloneDims(dims) {
+  if (dims == null) return null;
+  return { ...dims };
+}
+
+function durableLogRow(row) {
+  const out = { name: row.name, level: row.level, role: row.role, count: row.count };
+  if (row.exemplar) out.exemplar = copyLogExemplar(row.exemplar);
+  return out;
+}
+
+function putSeries(map, byName, key, capKey, row) {
+  map.set(key, row);
+  if (!byName.has(capKey)) byName.set(capKey, 0);
+  byName.set(capKey, byName.get(capKey) + 1);
+}
+
 function minuteFloor(ts) {
   return Math.floor(ts / 60000) * 60000;
 }
@@ -103,13 +204,13 @@ function ingestExperimentEvents(window, lifetime, events, role) {
     }
     if (name !== 'experiment.goal') continue;
     const assignments = Array.isArray(attrs.experiments) ? attrs.experiments : [];
+    if (assignments.length !== 1) continue;
     const value = typeof attrs.value === 'number' && Number.isFinite(attrs.value) ? attrs.value : 1;
-    for (const item of assignments) {
-      if (!item || typeof item.experiment !== 'string' || typeof item.variant !== 'string') continue;
-      addGoal(experimentSlot(window.experiments, item.experiment, item.variant), value);
-      addGoal(experimentSlot(lifetime, item.experiment, item.variant), value);
-      changed = true;
-    }
+    const item = assignments[0];
+    if (!item || typeof item.experiment !== 'string' || typeof item.variant !== 'string') continue;
+    addGoal(experimentSlot(window.experiments, item.experiment, item.variant), value);
+    addGoal(experimentSlot(lifetime, item.experiment, item.variant), value);
+    changed = true;
   }
   return changed;
 }
@@ -170,6 +271,7 @@ function emptyWindow(minute) {
     gaugeSeriesByName: new Map(),
     histogramSeriesByName: new Map(),
     eventNames: new Map(),
+    logNames: new Map(),
     experiments: new Map(),
     events: 0,
     logs: 0,
@@ -199,6 +301,7 @@ export class FrameAggregator {
     this.maxSeriesPerMetric = aggregateMaxSeriesPerMetric;
     this.windows = new Map();
     this.lifetime = new Map();
+    this.persistLogLifetime = new Map();
   }
 
   lifetimeSnapshot() {
@@ -238,13 +341,58 @@ export class FrameAggregator {
     }
   }
 
-  ingest(envelope) {
+  persistLogSnapshot() {
+    const logs = {};
+    for (const row of this.persistLogLifetime.values()) {
+      if (!logs[row.name]) logs[row.name] = {};
+      if (!logs[row.name][row.role]) logs[row.name][row.role] = {};
+      const slot = { count: row.count };
+      if (row.exemplar) slot.exemplar = copyLogExemplar(row.exemplar);
+      logs[row.name][row.role][row.level] = slot;
+    }
+    return logs;
+  }
+
+  replacePersistLogs(logs) {
+    this.persistLogLifetime = new Map();
+    if (logs === undefined || logs === null) return;
+    if (typeof logs !== 'object' || Array.isArray(logs)) {
+      throw new Error('persist log lifetime must be an object');
+    }
+    for (const [name, byRole] of Object.entries(logs)) {
+      for (const [role, byLevel] of Object.entries(byRole)) {
+        for (const [level, stats] of Object.entries(byLevel)) {
+          const key = persistLogKey(role, level, name);
+          const row = { name, level, role, count: stats.count };
+          const exemplar = copyLogExemplar(stats.exemplar);
+          if (exemplar) row.exemplar = exemplar;
+          this.persistLogLifetime.set(key, row);
+        }
+      }
+    }
+  }
+
+  forgetPersistLog(name) {
+    let changed = false;
+    for (const [key, row] of this.persistLogLifetime) {
+      if (row.name === name) {
+        this.persistLogLifetime.delete(key);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  ingest(envelope, persistLogs) {
     const role = envelope.client.role;
     if (typeof role !== 'string' || role.length === 0 || role === '*') {
       throw new Error('client.role must be a non-empty string');
     }
     const max = this.maxSeriesPerMetric;
+    const allowed = allowedPersistLogs(persistLogs);
+    const instanceId = envelope.client.instanceId;
     let lifetimeChanged = false;
+    let persistLogsChanged = false;
     for (const frame of envelope.frames) {
       const minute = minuteFloor(frame.from);
       let window = this.windows.get(minute);
@@ -264,6 +412,9 @@ export class FrameAggregator {
       stats.events += frame.events.length;
       stats.logs += frame.logs.length;
       if (ingestExperimentEvents(window, this.lifetime, frame.events, role)) lifetimeChanged = true;
+      if (ingestPersistLogs(window, this.persistLogLifetime, frame.logs, role, instanceId, allowed)) {
+        persistLogsChanged = true;
+      }
       for (const [name, dims, value] of frame.metrics.counters) {
         const key = seriesKey(role, name, dims);
         const capKey = eventKey(role, name);
@@ -307,7 +458,11 @@ export class FrameAggregator {
       }
     }
     this._prune();
-    return lifetimeChanged;
+    return {
+      experiments: lifetimeChanged,
+      persistLogs: persistLogsChanged,
+      windows: envelope.frames.length > 0
+    };
   }
 
   _prune() {
@@ -315,6 +470,143 @@ export class FrameAggregator {
     for (const [minute] of this.windows) {
       if (minute < cutoff) this.windows.delete(minute);
     }
+  }
+
+  windowsSnapshot() {
+    const out = [];
+    for (const window of this.windows.values()) {
+      const roles = {};
+      for (const [name, row] of window.roleStats) {
+        roles[name] = { frames: row.frames, events: row.events, logs: row.logs };
+      }
+      const experiments = [];
+      for (const [id, byVariant] of window.experiments) {
+        const variants = [];
+        for (const [key, stats] of byVariant) {
+          variants.push({
+            key,
+            exposures: stats.exposures,
+            goals: stats.goals,
+            goalSum: stats.goalSum,
+            goalSumSq: stats.goalSumSq
+          });
+        }
+        experiments.push({ id, variants });
+      }
+      out.push({
+        from: window.from,
+        to: window.to,
+        frames: window.frames,
+        events: window.events,
+        logs: window.logs,
+        cardinalityDropped: window.cardinalityDropped,
+        roles,
+        counters: [...window.counters.values()].map((row) => ({
+          name: row.name,
+          dims: cloneDims(row.dims),
+          role: row.role,
+          value: row.value
+        })),
+        gauges: [...window.gauges.values()].map((row) => ({
+          name: row.name,
+          dims: cloneDims(row.dims),
+          role: row.role,
+          value: row.value,
+          timestamp: row.timestamp
+        })),
+        histograms: [...window.histograms.values()].map((row) => ({
+          name: row.name,
+          dims: cloneDims(row.dims),
+          role: row.role,
+          body: cloneHistogramBody(row.body)
+        })),
+        eventNames: [...window.eventNames.values()].map((row) => ({
+          name: row.name,
+          role: row.role,
+          count: row.count
+        })),
+        logNames: [...window.logNames.values()].map((row) => durableLogRow(row)),
+        experiments
+      });
+    }
+    return out.sort((a, b) => a.from - b.from);
+  }
+
+  replaceWindows(windows) {
+    this.windows = new Map();
+    if (windows === undefined || windows === null) {
+      return;
+    }
+    if (!Array.isArray(windows)) throw new Error('aggregate windows must be an array');
+    for (const incoming of windows) {
+      const window = emptyWindow(incoming.from);
+      window.to = incoming.to;
+      window.frames = incoming.frames;
+      window.events = incoming.events;
+      window.logs = incoming.logs;
+      window.cardinalityDropped = incoming.cardinalityDropped;
+      for (const [name, row] of Object.entries(incoming.roles)) {
+        window.roleStats.set(name, { frames: row.frames, events: row.events, logs: row.logs });
+      }
+      for (const row of incoming.counters) {
+        const dims = cloneDims(row.dims);
+        const key = seriesKey(row.role, row.name, dims);
+        putSeries(window.counters, window.counterSeriesByName, key, eventKey(row.role, row.name), {
+          name: row.name,
+          dims,
+          role: row.role,
+          value: row.value
+        });
+      }
+      for (const row of incoming.gauges) {
+        const dims = cloneDims(row.dims);
+        const key = seriesKey(row.role, row.name, dims);
+        putSeries(window.gauges, window.gaugeSeriesByName, key, eventKey(row.role, row.name), {
+          name: row.name,
+          dims,
+          role: row.role,
+          value: row.value,
+          timestamp: row.timestamp
+        });
+      }
+      for (const row of incoming.histograms) {
+        const dims = cloneDims(row.dims);
+        const key = seriesKey(row.role, row.name, dims);
+        putSeries(window.histograms, window.histogramSeriesByName, key, eventKey(row.role, row.name), {
+          name: row.name,
+          dims,
+          role: row.role,
+          body: cloneHistogramBody(row.body)
+        });
+      }
+      for (const row of incoming.eventNames) {
+        window.eventNames.set(eventKey(row.role, row.name), {
+          name: row.name,
+          role: row.role,
+          count: row.count
+        });
+      }
+      for (const row of incoming.logNames) {
+        const exemplar = copyLogExemplar(row.exemplar);
+        const stored = { name: row.name, level: row.level, role: row.role, count: row.count };
+        if (exemplar) stored.exemplar = exemplar;
+        window.logNames.set(persistLogKey(row.role, row.level, row.name), stored);
+      }
+      for (const experiment of incoming.experiments) {
+        const byVariant = new Map();
+        for (const variant of experiment.variants) {
+          byVariant.set(variant.key, {
+            exposures: variant.exposures,
+            goals: variant.goals,
+            goalSum: variant.goalSum,
+            goalSumSq: variant.goalSumSq
+          });
+        }
+        window.experiments.set(experiment.id, byVariant);
+      }
+      this.windows.set(incoming.from, window);
+    }
+    this._prune();
   }
 
   snapshot(filter = {}) {
@@ -332,6 +624,12 @@ export class FrameAggregator {
         if (role && row.role !== role) continue;
         eventNames.push({ name: row.name, role: row.role, count: row.count });
       }
+      const logNames = [];
+      for (const row of window.logNames.values()) {
+        if (names && !names.has(row.name)) continue;
+        if (role && row.role !== role) continue;
+        logNames.push(serializePersistLog(row));
+      }
       const stats = {};
       for (const [name, row] of window.roleStats) {
         stats[name] = { frames: row.frames, events: row.events, logs: row.logs };
@@ -348,6 +646,7 @@ export class FrameAggregator {
         gauges: filterByRole(filterByName([...window.gauges.values()], names), role),
         histograms: filterByRole(filterByName([...window.histograms.values()], names), role),
         eventNames,
+        logNames,
         experiments: serializeExperiments(window.experiments, names),
         cardinalityDropped: window.cardinalityDropped
       });
@@ -412,6 +711,14 @@ export class FrameAggregator {
       }
     }
     const ranked = [...totals.values()].sort((a, b) => b.count - a.count);
+    if (limit === undefined || limit === null) return ranked;
+    return ranked.slice(0, limit);
+  }
+
+  topPersistLogs(limit) {
+    const ranked = [...this.persistLogLifetime.values()]
+      .map((row) => serializePersistLog(row))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
     if (limit === undefined || limit === null) return ranked;
     return ranked.slice(0, limit);
   }

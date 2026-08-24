@@ -31,6 +31,7 @@ export function testG({ subjects = 1_000_000 } = {}) {
     enabled: true,
     allocation: 1,
     salt: '3ad8f9',
+    goalMetric: 'message.sent',
     variants: [
       { key: 'control', weight: 50, values: { 'message.delayMs': 1000 } },
       { key: 'fast', weight: 50, values: { 'message.delayMs': 400 } }

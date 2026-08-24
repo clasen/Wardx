@@ -10,6 +10,7 @@ description: Instruments Node.js with the Wardx SDK (wardx / createWardx) — co
 - A measure call changes local memory only. It does not send. It does not return a Promise.
 - Delivery is at-most-once. A failed sync discards that batch. There is no disk queue and no retry of the same frames.
 - Remote Config is always a local read of the last snapshot.
+- Remote Config must not contain secrets. The project key authenticates the project; client-selected `role` is routing metadata, not authorization.
 - The SDK sends names. Descriptions live in the server catalog.
 
 Control plane (MCP, catalog, experiments as definitions, aggregates) is the **wardx-server** skill. This skill writes Node.js instrumentation and SDK code. Unity is the **wardx-unity** skill. A plain C# / .NET process is the **wardx-csharp** skill.
@@ -23,9 +24,9 @@ Package internals when editing `packages/node` or `packages/core`: [references/p
 3. Pick the cheapest signal that answers the question (table below).
 4. Call `shutdown` when the process stops. `flush` sends now and leaves timers running.
 
-Required `createWardx` keys: `endpoint`, `projectKey`, `project`, `role`, `appVersion`, `environment`. `role` is an open name (`client`, `unity`, `game-server`, `desktop`). It cannot be `*`. `project` must match the server mapping. `projectKey` is header `X-Wardx-Key`.
+Required `createWardx` keys: `endpoint`, `projectKey`, `project`, `role`, `appVersion`, `environment`. `role` is an open routing name (`client`, `unity`, `game-server`, `desktop`), not an authorization boundary. It cannot be `*`. `project` must match the server mapping. `projectKey` is header `X-Wardx-Key`.
 
-Optional: `privacySalt` (empty → `projectKey`), `tracer`, and keys in `packages/core/defaults.json`. A bootstrap sync starts immediately; later syncs use `syncIntervalMs` with jitter.
+`privacySalt` is required, non-empty, stable, and project-specific; it is never derived from `projectKey`. Optional overrides are `tracer` and keys in `packages/core/defaults.json`. `maxFrameBytes` is at least 1024; `experimentStateMaxSubjects` defaults to 100000 and bounds assignment/exposure state. A bootstrap sync starts immediately; later syncs use `syncIntervalMs` with jitter.
 
 ## Choose a signal
 
@@ -65,7 +66,7 @@ Do not ship catalog descriptions from the SDK. Name the metric; meaning is onboa
 
 `identify(subjectId)` sets the default subject for this SDK instance. Later `config.get` and `experiment.goal` use it. A per-call `{ subjectId }` overrides it. `identify(null)` clears it. Use a stable account id (`user.id`, `playerId`), not `sessionId`.
 
-On a single-user process (desktop, one logged-in client), `identify` once after login. On a process that serves many users (`game-server`), pass `{ subjectId }` on every call. Do not `identify()` there: it is process-wide and would mix users.
+On a single-user process (desktop, one logged-in client), `identify` once after login. On a process that serves many users (`game-server`), pass `{ subjectId }` on every call. Do not share one SDK instance's default there; it would mix users.
 
 ```js
 wardx.identify(userId);
@@ -84,7 +85,7 @@ Resolution:
 
 Until a sync applies a newer `configVersion`, `config.get` returns the fallback or the last snapshot. The first `config.get` with a subject in a session can emit `experiment.exposure` (`experiment`, `variant`, hashed `subject`). The raw `subjectId` never goes on the wire. Assignment is local and deterministic (same subject, experiment, salt → same variant). Do not persist the variant. Do not ask the server which group the user is in. Changing `salt` redistributes; keep it when replacing the same experiment `id`.
 
-`experiment.goal` needs a subject from `identify()` or `{ subjectId }`. It emits event `experiment.goal` with known assignments for that subject. Optional `value`. Without a subject, the call throws.
+`experiment.goal` needs a subject from `identify()` or `{ subjectId }`. It emits only for an assignment that was exposed in this SDK instance and whose experiment `goalMetric` matches the call name. Optional `value`. Without a subject, the call throws. There is no legacy match-all fallback.
 
 Do not wait for the network on the hot path. Do not invent experiment definitions in application code; the server stores them. Do not put `subjectId` on metric dimensions.
 
@@ -116,7 +117,8 @@ const wardx = createWardx({
   project: 'demo',
   role: 'game-server',
   appVersion: '2.4.1',
-  environment: 'production'
+  environment: 'production',
+  privacySalt: 'demo-subject-hash-v1'
 });
 
 function handleMatchmaking(req, res) {

@@ -1,4 +1,4 @@
-const POLICY_FIELDS = ['goalKind', 'control', 'minExposures', 'confidence'];
+const POLICY_FIELDS = ['goalMetric', 'goalKind', 'control', 'minExposures', 'confidence'];
 
 export function normsInv(p) {
   if (typeof p !== 'number' || !Number.isFinite(p) || p <= 0 || p >= 1) {

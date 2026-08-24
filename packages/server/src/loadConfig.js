@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { validateCatalog } from './control/catalog.js';
 import { requireKeys } from './requireKeys.js';
 import { validateKeyRoles } from './roles.js';
-import { validateExperiment } from './control/validateExperiment.js';
+import { assertUnambiguousGoalMetrics, validateExperiment } from './control/validateExperiment.js';
 
 const REQUIRED = [
   'host',
@@ -10,6 +10,16 @@ const REQUIRED = [
   'projectKeys',
   'sink',
   'maxRequestBytes',
+  'maxClockSkewMs',
+  'maxFramesPerEnvelope',
+  'maxItemsPerEnvelope',
+  'maxNameBytes',
+  'maxDimensionKeys',
+  'maxDimensionValueLength',
+  'maxAttributeKeys',
+  'maxAttributeValueLength',
+  'persistenceFlushIntervalMs',
+  'diagnostics',
   'aggregateRetentionMinutes',
   'aggregateMaxSeriesPerMetric',
   'memorySinkMaxEnvelopes',
@@ -19,9 +29,14 @@ const REQUIRED = [
 ];
 
 const REQUIRED_PROJECT = ['version', 'values', 'keyRoles', 'experiments'];
+const ALLOWED = new Set([...REQUIRED, 'ndjsonPath', 'configPath']);
+const ALLOWED_PROJECT = new Set([...REQUIRED_PROJECT, 'catalog']);
 
 function validateProjectSnapshot(snapshot, label) {
   requireKeys(snapshot, REQUIRED_PROJECT, label);
+  for (const key of Object.keys(snapshot)) {
+    if (!ALLOWED_PROJECT.has(key)) throw new Error(`${label} unknown key: ${key}`);
+  }
   if (typeof snapshot.version !== 'number' || !Number.isFinite(snapshot.version)) {
     throw new Error(`${label}.version must be a finite number`);
   }
@@ -33,6 +48,7 @@ function validateProjectSnapshot(snapshot, label) {
   }
   validateKeyRoles(snapshot.values, snapshot.keyRoles, label);
   for (const experiment of snapshot.experiments) validateExperiment(experiment);
+  assertUnambiguousGoalMetrics(snapshot.experiments);
   if (snapshot.catalog !== undefined) validateCatalog(snapshot.catalog, `${label}.catalog`);
 }
 
@@ -54,6 +70,9 @@ export function loadServerConfig(path) {
 
 export function validateServerConfig(parsed) {
   requireKeys(parsed, REQUIRED, 'server config');
+  for (const key of Object.keys(parsed)) {
+    if (!ALLOWED.has(key)) throw new Error(`server config unknown key: ${key}`);
+  }
   if (typeof parsed.host !== 'string' || parsed.host.length === 0) {
     throw new Error('server config host must be a non-empty string');
   }
@@ -76,6 +95,32 @@ export function validateServerConfig(parsed) {
   }
   if (!Number.isInteger(parsed.maxRequestBytes) || parsed.maxRequestBytes < 1) {
     throw new Error('server config maxRequestBytes must be an integer >= 1');
+  }
+  for (const key of [
+    'maxClockSkewMs',
+    'maxFramesPerEnvelope',
+    'maxItemsPerEnvelope',
+    'maxNameBytes',
+    'maxDimensionKeys',
+    'maxDimensionValueLength',
+    'maxAttributeKeys',
+    'maxAttributeValueLength',
+    'persistenceFlushIntervalMs'
+  ]) {
+    if (!Number.isInteger(parsed[key]) || parsed[key] < 1) {
+      throw new Error(`server config ${key} must be an integer >= 1`);
+    }
+  }
+  if (
+    !parsed.diagnostics ||
+    typeof parsed.diagnostics !== 'object' ||
+    Array.isArray(parsed.diagnostics) ||
+    !['none', 'stderr'].includes(parsed.diagnostics.sink)
+  ) {
+    throw new Error('server config diagnostics.sink must be none or stderr');
+  }
+  for (const key of Object.keys(parsed.diagnostics)) {
+    if (key !== 'sink') throw new Error(`server config diagnostics unknown key: ${key}`);
   }
   if (!Number.isInteger(parsed.aggregateRetentionMinutes) || parsed.aggregateRetentionMinutes < 1) {
     throw new Error('server config aggregateRetentionMinutes must be an integer >= 1');

@@ -11,11 +11,11 @@ test('snapshot swaps buffers so new writes land on the active buffer', () => {
   const first = core.snapshotFrame();
   core.event('b', { k: 2 });
   const second = core.snapshotFrame();
-  assert.equal(first.frame.events.length, 1);
-  assert.equal(first.frame.events[0][1], 'a');
-  assert.equal(second.frame.events.length, 1);
-  assert.equal(second.frame.events[0][1], 'b');
-  const counter = first.frame.metrics.counters.find((row) => row[0] === 'n');
+  assert.equal(first.frames.flatMap((frame) => frame.events).length, 1);
+  assert.equal(first.frames.flatMap((frame) => frame.events)[0][1], 'a');
+  assert.equal(second.frames.flatMap((frame) => frame.events).length, 1);
+  assert.equal(second.frames.flatMap((frame) => frame.events)[0][1], 'b');
+  const counter = first.frames.flatMap((frame) => frame.metrics.counters).find((row) => row[0] === 'n');
   assert.equal(counter[2], 4);
 });
 
@@ -25,7 +25,7 @@ test('seq increases monotonically', () => {
   const a = core.snapshotFrame();
   core.event('b');
   const b = core.snapshotFrame();
-  assert.equal(a.frame.seq + 1, b.frame.seq);
+  assert.equal(a.frames.at(-1).seq + 1, b.frames[0].seq);
 });
 
 test('internal dropped counters are merged into the next frame without recursion', () => {
@@ -33,7 +33,8 @@ test('internal dropped counters are merged into the next frame without recursion
   core.event('keep');
   core.event('drop-me');
   const fitted = core.snapshotFrame();
-  const dropped = fitted.frame.metrics.counters.find((row) => row[0] === 'wardx.internal.events_dropped');
+  const dropped = fitted.frames.flatMap((frame) => frame.metrics.counters)
+    .find((row) => row[0] === 'wardx.internal.events_dropped');
   assert.equal(dropped[2], 1);
 });
 
@@ -48,51 +49,80 @@ function bareFrame({ events = [], logs = [], histograms = [], gauges = [] }) {
   };
 }
 
-test('fitToMaxBytes keeps a frame that already fits', () => {
+test('splitToMaxBytes keeps a frame that already fits', () => {
   const frame = bareFrame({ events: [[1, 'a', null]] });
-  const fitted = FrameBuilder.fitToMaxBytes(frame, 4096);
-  assert.equal(fitted.droppedEvents, 0);
-  assert.equal(fitted.droppedLogs, 0);
-  assert.equal(fitted.frame.events.length, 1);
-  assert.ok(Buffer.byteLength(fitted.json, 'utf8') <= 4096);
+  const batch = FrameBuilder.splitToMaxBytes(frame, 4096);
+  assert.equal(batch.droppedRows, 0);
+  assert.equal(batch.frames.length, 1);
+  assert.equal(batch.frames[0].events.length, 1);
+  assert.ok(Buffer.byteLength(batch.jsons[0], 'utf8') <= 4096);
 });
 
-test('fitToMaxBytes drops trailing events until the json fits', () => {
+test('splitToMaxBytes preserves all splittable events in consecutive frames', () => {
   const events = [];
   for (let i = 0; i < 200; i++) events.push([i, 'e', { pad: 'y'.repeat(80) }]);
-  const fitted = FrameBuilder.fitToMaxBytes(bareFrame({ events }), 4096);
-  assert.ok(fitted.droppedEvents > 0);
-  assert.equal(fitted.droppedEvents + fitted.frame.events.length, 200);
-  assert.equal(fitted.frame.events[0][0], 0);
-  assert.equal(fitted.frame.events.at(-1)[0], 200 - fitted.droppedEvents - 1);
-  assert.ok(Buffer.byteLength(fitted.json, 'utf8') <= 4096);
+  const batch = FrameBuilder.splitToMaxBytes(bareFrame({ events }), 4096);
+  assert.ok(batch.frames.length > 1);
+  assert.equal(batch.droppedRows, 0);
+  assert.deepEqual(batch.frames.flatMap((frame) => frame.events), events);
+  assert.deepEqual(batch.frames.map((frame) => frame.seq), [...batch.frames.keys()].map((i) => i + 1));
+  assert.ok(batch.jsons.every((json) => Buffer.byteLength(json, 'utf8') <= 4096));
 });
 
-test('fitToMaxBytes drops debug logs before error logs', () => {
-  const logs = [
-    [1, 'error', 'keep-error', { pad: 'x'.repeat(40) }],
-    [2, 'debug', 'drop-debug', { pad: 'x'.repeat(40) }],
-    [3, 'error', 'keep-error-2', { pad: 'x'.repeat(40) }]
-  ];
-  const frame = bareFrame({ logs });
-  const full = Buffer.byteLength(JSON.stringify(frame), 'utf8');
-  const fitted = FrameBuilder.fitToMaxBytes(frame, full - 10);
-  assert.equal(fitted.droppedLogs, 1);
-  assert.deepEqual(
-    fitted.frame.logs.map((row) => row[2]),
-    ['keep-error', 'keep-error-2']
-  );
-  assert.ok(Buffer.byteLength(fitted.json, 'utf8') <= full - 10);
+test('splitToMaxBytes drops only an indivisible row and reports it in-band', () => {
+  const huge = ['x'.repeat(3000), null, 1];
+  const frame = bareFrame({});
+  frame.metrics.counters = [['kept', null, 2], huge];
+  const batch = FrameBuilder.splitToMaxBytes(frame, 1024);
+  assert.equal(batch.droppedRows, 1);
+  assert.equal(batch.droppedCounters, 1);
+  const counters = batch.frames.flatMap((physical) => physical.metrics.counters);
+  assert.ok(counters.some((row) => row[0] === 'kept'));
+  assert.ok(counters.some((row) => row[0] === 'wardx.internal.frame_rows_dropped' && row[2] === 1));
+  assert.ok(batch.jsons.every((json) => Buffer.byteLength(json, 'utf8') <= 1024));
 });
 
-test('fitToMaxBytes trims 5000 events under a 32KB cap without dropping the prefix order', () => {
+test('splitToMaxBytes handles 5000 mixed rows under a 32KB cap without loss', () => {
   const events = [];
   for (let i = 0; i < 5000; i++) events.push([i, 'e', { payload: 'y'.repeat(40), i }]);
   const t0 = process.hrtime.bigint();
-  const fitted = FrameBuilder.fitToMaxBytes(bareFrame({ events }), 32768);
+  const batch = FrameBuilder.splitToMaxBytes(bareFrame({ events }), 32768);
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
-  assert.ok(fitted.droppedEvents > 0);
-  assert.equal(fitted.droppedEvents + fitted.frame.events.length, 5000);
-  assert.ok(Buffer.byteLength(fitted.json, 'utf8') <= 32768);
-  assert.ok(ms < 250, `expected fit under 250ms, took ${ms.toFixed(1)}ms`);
+  assert.equal(batch.droppedRows, 0);
+  assert.equal(batch.frames.flatMap((frame) => frame.events).length, 5000);
+  assert.ok(batch.jsons.every((json) => Buffer.byteLength(json, 'utf8') <= 32768));
+  assert.ok(ms < 1000, `expected split under 1000ms, took ${ms.toFixed(1)}ms`);
+});
+
+test('counter-only, mixed, and internal-heavy snapshots all satisfy the byte limit', () => {
+  const core = new WardxCore(testSettings({ maxFrameBytes: 1024, maxSeriesPerMetric: 500 }));
+  for (let i = 0; i < 150; i++) core.counter(`counter.${i}`, { lane: i }).inc();
+  for (let i = 0; i < 40; i++) {
+    core.gauge(`gauge.${i}`).set(i);
+    core.event(`event.${i}`, { value: i });
+    core.log.info(`log-${i}`, { value: i });
+  }
+  const batch = core.snapshotFrame();
+  assert.ok(batch.frames.length > 1);
+  assert.equal(batch.droppedRows, 0);
+  assert.ok(batch.jsons.every((json) => Buffer.byteLength(json, 'utf8') <= 1024));
+  assert.deepEqual(
+    batch.frames.map((frame) => frame.seq),
+    [...batch.frames.keys()].map((i) => i + 1)
+  );
+});
+
+test('maxFrameBytes rejects values below the physical frame minimum', () => {
+  assert.throws(() => FrameBuilder.splitToMaxBytes(bareFrame({}), 1023), /at least 1024/);
+});
+
+test('shared Node/C# maximum-size fixture has identical partitions', () => {
+  const frame = bareFrame({ events: [[1, 'fixture.event', { runtime: 'shared' }]] });
+  frame.seq = 7;
+  frame.metrics.counters = Array.from({ length: 80 }, (_, i) => [`counter.${i}`, null, i]);
+  const batch = FrameBuilder.splitToMaxBytes(frame, 1024);
+  assert.deepEqual(batch.frames.map((physical) => physical.seq), [7, 8, 9]);
+  assert.deepEqual(batch.frames.map((physical) => physical.metrics.counters.length), [41, 39, 0]);
+  assert.deepEqual(batch.frames.map((physical) => physical.events.length), [0, 0, 1]);
+  assert.deepEqual(batch.jsons.map((json) => Buffer.byteLength(json)), [1023, 997, 141]);
 });

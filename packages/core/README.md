@@ -37,24 +37,25 @@ import { WardxCore, assignVariant, loadSdkDefaults } from '@wardx/core';
 | Key | Description |
 | --- | --- |
 | `endpoint` | Sync URL. The core does not use this key. Runtimes use this key. |
-| `projectKey` | Project credential. Runtimes send this key. If `privacySalt` is empty, the core uses this key as the salt. |
+| `projectKey` | Project credential. Runtimes send this key. It is never reused as the subject-hash salt. |
 | `project` | Project name. |
 | `role` | Runtime identity inside the project. Runtimes send this name. The core does not use this key. |
 | `appVersion` | Application version. |
 | `environment` | Environment name, for example `production`. |
-| `privacySalt` | Salt for the hashed subject. If you omit this key, the core uses `projectKey`. |
+| `privacySalt` | Required stable, non-empty, project-specific salt for one-way subject hashes. |
 | `aggregateIntervalMs` | Default `1000`. Interval to snapshot dirty data. |
 | `syncIntervalMs` | Default `15000`. Interval for the runtime sync. |
 | `maxBufferedEvents` | Default `5000`. |
 | `maxBufferedLogs` | Default `2000`. |
-| `maxFrameBytes` | Default `524288`. |
+| `maxFrameBytes` | Default `524288`; must be at least `1024`. |
 | `maxSeriesPerMetric` | Default `1000`. |
 | `maxDimensionKeys` | Default `8`. |
 | `maxDimensionValueLength` | Default `64`. |
+| `experimentStateMaxSubjects` | Default `100000`. Maximum subjects retained for assignment/exposure state in this SDK instance. |
 | `histogramBuckets` | Default `[10, 25, 50, 100, 250, 500, 1000]`. |
 | `tracer` | Optional. Duck-typed local hook with any of `measure`, `event`, `log`, `frame`. The core does not print. Runtimes may also call `sync`. |
 
-The defaults live in `defaults.json`. Do not omit a required key. The loader does not add a fallback for a missing key. `tracer` is not a default key. Omit it to keep the measure path unchanged.
+The defaults live in `defaults.json`. Do not omit a required key. The loader does not add a fallback for a missing key. `tracer` is not a default key. Omit it to keep the measure path unchanged. The project key authenticates only the project; `role` is client-selected routing metadata, not authorization. Never put secrets in Remote Config.
 
 ## Use case 1: Record metrics in a custom runtime
 
@@ -73,7 +74,7 @@ const settings = {
   role: 'client',
   appVersion: '0.1.0',
   environment: 'development',
-  privacySalt: 'dev_project_key'
+  privacySalt: 'demo-subject-hash-v1'
 };
 
 const core = new WardxCore(settings);
@@ -86,7 +87,7 @@ core.histogram('request.duration').observe(42);
 const endTimer = core.timer('matchmaking.duration');
 endTimer({ result: 'success' });
 
-const fitted = core.snapshotFrame();
+const batch = core.snapshotFrame();
 const frames = core.takePendingFrames();
 ```
 
@@ -165,6 +166,7 @@ core.applyConfig(13, {
       allocation: 1,
       salt: '3ad8f9',
       primaryMetric: 'message.sent',
+      goalMetric: 'message.sent',
       variants: [
         { key: 'control', weight: 50, values: { 'message.delayMs': 1000 } },
         { key: 'fast', weight: 50, values: { 'message.delayMs': 400 } }
@@ -218,7 +220,7 @@ const experiment = {
 const variant = assignVariant(experiment, 'user-1');
 const hash = assignmentHash(experiment.id, 'user-1', experiment.salt);
 const bucket = hashToUnitInterval(hash);
-const hashedSubject = subjectHash('dev_project_key', 'user-1');
+const hashedSubject = subjectHash('demo-subject-hash-v1', 'user-1');
 ```
 
 Hash input:
@@ -230,7 +232,7 @@ bucket = hash / 2^32
 
 If `bucket >= allocation`, `assignVariant` returns `null`.
 
-`subjectHash` returns 8 lowercase hex digits of `fnv1a32(privacySalt + ':' + subjectId)`.
+`subjectHash` returns 64 lowercase hex digits of `SHA-256(UTF8(privacySalt) || 0x00 || UTF8(subjectId))`.
 
 ## Use case 5: Build a frame for a custom transport
 
@@ -242,8 +244,8 @@ If `bucket >= allocation`, `assignVariant` returns `null`.
 import { FrameBuilder, PROTOCOL_VERSION, SDK_NAME, PLATFORM } from '@wardx/core';
 
 core.counter('match.completed').inc();
-const fitted = core.snapshotIfDirty();
-if (fitted) {
+const batch = core.snapshotIfDirty();
+if (batch) {
   const frames = core.takePendingFrames();
   const envelope = {
     protocol: PROTOCOL_VERSION,
@@ -265,12 +267,9 @@ if (fitted) {
 
 `snapshotIfDirty` returns `null` when there is no new data.
 
-If a frame is larger than `maxFrameBytes`, `FrameBuilder.fitToMaxBytes` discards data in this order:
+`snapshotFrame` uses `FrameBuilder.splitToMaxBytes`. It measures the serialized UTF-8 JSON, preserves row order within counters, gauges, histograms, events, and logs, and emits as many physical frames as needed with consecutive `seq` values. Every emitted frame is at most `maxFrameBytes`.
 
-1. Logs with the lowest severity.
-2. Events from the end of the buffer.
-3. Application histograms.
-4. Application gauges. Internal gauges stay.
+An individual row that cannot fit in an otherwise empty frame is dropped. The batch reports dropped counts by collection and emits their total as `wardx.internal.frame_rows_dropped`. If even that internal row cannot fit, splitting throws. `maxFrameBytes` must be at least `1024`.
 
 Internal series use the prefix `wardx.internal.`.
 
@@ -285,7 +284,7 @@ Internal series use the prefix `wardx.internal.`.
 | `fnv1a32`, `assignmentHash`, `hashToUnitInterval`, `subjectHash` | Hash helpers. |
 | `Counter`, `Gauge`, `Histogram`, `MetricsRegistry` | Metric types. |
 | `EventBuffer`, `LogBuffer` | In-memory buffers. |
-| `FrameBuilder` | Builds and trims frames. |
+| `FrameBuilder` | Builds and splits frames to the serialized byte limit. |
 | `resolveSettings`, `loadSdkDefaults`, `nextSyncDelayMs` | Settings helpers. |
 | `PROTOCOL_VERSION`, `SDK_NAME`, `PLATFORM`, `INTERNAL` | Protocol constants. |
 | `ulid` | Identifier helper. |

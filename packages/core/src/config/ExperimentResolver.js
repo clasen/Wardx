@@ -1,5 +1,19 @@
 import { assignmentHash, hashToUnitInterval, subjectHash } from './hash.js';
 
+function canonicalize(value) {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === 'object') {
+    const canonical = {};
+    for (const key of Object.keys(value).sort()) canonical[key] = canonicalize(value[key]);
+    return canonical;
+  }
+  return value;
+}
+
+export function experimentFingerprint(experiment) {
+  return subjectHash('wardx.experiment.snapshot', JSON.stringify(canonicalize(experiment)));
+}
+
 export function assignVariant(experiment, subjectId) {
   if (!experiment.enabled) return null;
   const hash = assignmentHash(experiment.id, subjectId, experiment.salt);
@@ -51,8 +65,9 @@ export class ExperimentResolver {
   constructor(options) {
     this.privacySalt = options.privacySalt;
     this.onExposure = options.onExposure;
-    this.exposureKeys = new Set();
-    this.assignmentsBySubject = new Map();
+    this.stateMaxSubjects = options.stateMaxSubjects;
+    this.stateBySubject = new Map();
+    this.activeFingerprints = new Map();
   }
 
   hashSubject(subjectId) {
@@ -60,19 +75,31 @@ export class ExperimentResolver {
   }
 
   recordAssignment(subjectId, experiment, variant) {
-    let list = this.assignmentsBySubject.get(subjectId);
-    if (!list) {
-      list = [];
-      this.assignmentsBySubject.set(subjectId, list);
+    const subject = this.hashSubject(subjectId);
+    let state = this.stateBySubject.get(subject);
+    if (!state) {
+      while (this.stateBySubject.size >= this.stateMaxSubjects) {
+        const oldest = this.stateBySubject.keys().next().value;
+        this.stateBySubject.delete(oldest);
+      }
+      state = { assignments: new Map() };
+      this.stateBySubject.set(subject, state);
     }
-    for (let i = 0; i < list.length; i++) {
-      if (list[i].experiment === experiment.id) return;
-    }
-    list.push({ experiment: experiment.id, variant: variant.key });
+    if (state.assignments.has(experiment.id)) return state.assignments.get(experiment.id);
+    const assignment = {
+      experiment: experiment.id,
+      variant: variant.key,
+      goalMetric: experiment.goalMetric,
+      fingerprint: experimentFingerprint(experiment),
+      exposed: false
+    };
+    state.assignments.set(experiment.id, assignment);
+    return assignment;
   }
 
   assignmentsFor(subjectId) {
-    return this.assignmentsBySubject.get(subjectId) || [];
+    const state = this.stateBySubject.get(this.hashSubject(subjectId));
+    return state ? Array.from(state.assignments.values()) : [];
   }
 
   resolve(key, remoteValue, subjectId, experimentsByKey) {
@@ -83,36 +110,47 @@ export class ExperimentResolver {
       const variant = assignVariant(experiment, subjectId);
       if (!variant) continue;
       if (!Object.prototype.hasOwnProperty.call(variant.values, key)) continue;
-      this.recordAssignment(subjectId, experiment, variant);
-      this._expose(experiment, variant, subjectId);
+      const assignment = this.recordAssignment(subjectId, experiment, variant);
+      this._expose(assignment, subjectId);
       return variant.values[key];
     }
     return remoteValue;
   }
 
-  _expose(experiment, variant, subjectId) {
+  _expose(assignment, subjectId) {
+    if (assignment.exposed) return;
+    assignment.exposed = true;
     const hashed = this.hashSubject(subjectId);
-    const exposureKey = experiment.id + '\0' + hashed;
-    if (this.exposureKeys.has(exposureKey)) return;
-    this.exposureKeys.add(exposureKey);
     this.onExposure({
-      experiment: experiment.id,
-      variant: variant.key,
+      experiment: assignment.experiment,
+      variant: assignment.variant,
       subject: hashed
     });
   }
 
-  relevantExperiments(subjectId, experiments) {
-    const known = this.assignmentsFor(subjectId);
-    if (known.length > 0) return known;
-    const attached = [];
-    if (!Array.isArray(experiments)) return attached;
-    for (const experiment of experiments) {
-      if (!experiment.enabled) continue;
-      const variant = assignVariant(experiment, subjectId);
-      if (!variant) continue;
-      attached.push({ experiment: experiment.id, variant: variant.key });
+  exposedAssignmentForGoal(subjectId, goalMetric) {
+    const matches = this.assignmentsFor(subjectId).filter(
+      (assignment) => assignment.exposed && assignment.goalMetric === goalMetric
+    );
+    if (matches.length > 1) {
+      throw new Error(`goal metric ${goalMetric} matches multiple exposed experiments`);
     }
-    return attached;
+    return matches[0] || null;
+  }
+
+  applySnapshot(experiments) {
+    const active = new Map();
+    for (const experiment of experiments) {
+      if (experiment.enabled) active.set(experiment.id, experimentFingerprint(experiment));
+    }
+    this.activeFingerprints = active;
+    for (const [subject, state] of this.stateBySubject) {
+      for (const [experimentId, assignment] of state.assignments) {
+        if (active.get(experimentId) !== assignment.fingerprint) {
+          state.assignments.delete(experimentId);
+        }
+      }
+      if (state.assignments.size === 0) this.stateBySubject.delete(subject);
+    }
   }
 }

@@ -8,7 +8,7 @@ const ROLE = {
   type: 'string',
   minLength: 1,
   description:
-    'Open client role name declared by an SDK instance, for example unity, game-server, desktop, or mobile. Not *.'
+    'Open client role name declared by an SDK instance, for example backend, frontend, desktop, or unity. Not *.'
 };
 
 const ROLES = {
@@ -28,7 +28,7 @@ export const TOOL_DEFS = [
   {
     name: 'get_project_overview',
     description:
-      'Project description, onboarding gaps, Remote Config knobs (each with the roles that receive them), telemetry and clients grouped by role, and previously proposed experiments. Outcomes include counters, events, and histogram peaks (max + exemplar of the window max). Each role may include optional path (local checkout) and git (repository URL). A predefined catalog can make onboarding.complete true. If it is false, ask only about the listed gaps and persist with set_project_description / set_role_description / set_signal before proposing experiments.',
+      'Project description, onboarding gaps, Remote Config knobs (each with the roles that receive them), telemetry and clients grouped by role, persistLogs allowlist, and previously proposed experiments. Outcomes include counters, events, histogram peaks (max + exemplar of the window max), and allowlisted persist log rollups (count + last exemplar). Each role may include optional path (local checkout) and git (repository URL). A predefined catalog can make onboarding.complete true. If it is false, ask only about the listed gaps and persist with set_project_description / set_role_description / set_signal before proposing experiments.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -124,6 +124,34 @@ export const TOOL_DEFS = [
     }
   },
   {
+    name: 'set_persist_log',
+    description:
+      'Add a log message name to the catalog persistLogs allowlist. The server keeps a lifetime count and last exemplar for that name. Does not bump configVersion. Clients never receive this.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: PROJECT,
+        name: { type: 'string', minLength: 1, description: 'Exact log message to persist.' }
+      },
+      required: ['project', 'name'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'delete_persist_log',
+    description:
+      'Remove a log message name from persistLogs and drop its lifetime rollup. Does not bump configVersion.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: PROJECT,
+        name: { type: 'string', minLength: 1 }
+      },
+      required: ['project', 'name'],
+      additionalProperties: false
+    }
+  },
+  {
     name: 'get_config',
     description: 'Read the Remote Config snapshot for a project: version, values, experiments.',
     inputSchema: {
@@ -189,6 +217,11 @@ export const TOOL_DEFS = [
             salt: { type: 'string', minLength: 1 },
             roles: ROLES,
             primaryMetric: { type: 'string', minLength: 1 },
+            goalMetric: {
+              type: 'string',
+              minLength: 1,
+              description: 'Exact experiment.goal metric name for this experiment.'
+            },
             hypothesis: { type: 'string', minLength: 1 },
             goalKind: {
               type: 'string',
@@ -223,7 +256,7 @@ export const TOOL_DEFS = [
               }
             }
           },
-          required: ['id', 'enabled', 'allocation', 'salt', 'roles', 'variants'],
+          required: ['id', 'enabled', 'allocation', 'salt', 'roles', 'goalMetric', 'variants'],
           additionalProperties: false
         }
       },
@@ -264,7 +297,7 @@ export const TOOL_DEFS = [
   {
     name: 'get_aggregates',
     description:
-      'Read 1-minute telemetry windows for a project, with catalog descriptions on names. Optional names, from, and to filter the payload.',
+      'Read 1-minute telemetry windows for a project, with catalog descriptions on names. Windows include logNames for catalog persistLogs (count + last exemplar). Optional names, from, and to filter the payload.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -332,6 +365,10 @@ export function executeTool(control, name, args = {}) {
       return control.setSignal(args.project, args.name, args.description);
     case 'delete_signal':
       return control.deleteSignal(args.project, args.name);
+    case 'set_persist_log':
+      return control.setPersistLog(args.project, args.name);
+    case 'delete_persist_log':
+      return control.deletePersistLog(args.project, args.name);
     case 'get_config':
       return control.getConfig(args.project);
     case 'set_config_value':

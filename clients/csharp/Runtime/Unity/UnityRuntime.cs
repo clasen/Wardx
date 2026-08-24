@@ -184,7 +184,7 @@ namespace Wardx
                 Role = role,
                 AppVersion = appVersion,
                 Environment = environment,
-                PrivacySalt = string.IsNullOrEmpty(privacySalt) ? null : privacySalt
+                PrivacySalt = privacySalt
             }));
         }
 

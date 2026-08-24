@@ -33,6 +33,7 @@ export class WardxCore {
     this.configStore = new ConfigStore();
     this.experiments = new ExperimentResolver({
       privacySalt: settings.privacySalt,
+      stateMaxSubjects: settings.experimentStateMaxSubjects,
       onExposure: (payload) => {
         this.event('experiment.exposure', payload);
       }
@@ -137,14 +138,12 @@ export class WardxCore {
       throw new Error('experiment.goal requires a metric name');
     }
     const subject = this.experiments.hashSubject(subjectId);
-    const experiments = this.experiments.relevantExperiments(
-      subjectId,
-      this.configStore.experiments
-    );
+    const assignment = this.experiments.exposedAssignmentForGoal(subjectId, name);
+    if (assignment === null) return;
     const payload = {
       metric: name,
       subject,
-      experiments
+      experiments: [{ experiment: assignment.experiment, variant: assignment.variant }]
     };
     if (context && context.value !== undefined) payload.value = context.value;
     this.event('experiment.goal', payload);
@@ -156,6 +155,7 @@ export class WardxCore {
       values: config.values,
       experiments: config.experiments
     });
+    this.experiments.applySnapshot(this.configStore.experiments);
     this.internal.configVersion = version;
   }
 
@@ -182,7 +182,7 @@ export class WardxCore {
     const logs = this.logs.swap();
     const internal = this.internal.snapshotAndReset();
     const frame = FrameBuilder.build({
-      seq: ++this.seq,
+      seq: this.seq + 1,
       from,
       to,
       metrics,
@@ -190,23 +190,26 @@ export class WardxCore {
       logs,
       internal
     });
-    const fitted = FrameBuilder.fitToMaxBytes(frame, this.settings.maxFrameBytes);
-    this.internal.logsDropped += fitted.droppedLogs;
-    this.internal.eventsDropped += fitted.droppedEvents;
-    this.pendingFrames.push(fitted.frame);
-    emit(this._tracer, 'frame', {
-      seq: fitted.frame.seq,
-      from: fitted.frame.from,
-      to: fitted.frame.to,
-      counters: fitted.frame.metrics.counters.length,
-      gauges: fitted.frame.metrics.gauges.length,
-      histograms: fitted.frame.metrics.histograms.length,
-      events: fitted.frame.events.length,
-      logs: fitted.frame.logs.length,
-      droppedLogs: fitted.droppedLogs,
-      droppedEvents: fitted.droppedEvents
-    });
-    return fitted;
+    const batch = FrameBuilder.splitToMaxBytes(frame, this.settings.maxFrameBytes);
+    this.seq = batch.frames.at(-1).seq;
+    this.pendingFrames.push(...batch.frames);
+    for (let i = 0; i < batch.frames.length; i++) {
+      const physical = batch.frames[i];
+      emit(this._tracer, 'frame', {
+        seq: physical.seq,
+        from: physical.from,
+        to: physical.to,
+        counters: physical.metrics.counters.length,
+        gauges: physical.metrics.gauges.length,
+        histograms: physical.metrics.histograms.length,
+        events: physical.events.length,
+        logs: physical.logs.length,
+        droppedLogs: i === 0 ? batch.droppedLogs : 0,
+        droppedEvents: i === 0 ? batch.droppedEvents : 0,
+        droppedRows: i === 0 ? batch.droppedRows : 0
+      });
+    }
+    return batch;
   }
 
   takePendingFrames() {

@@ -16,6 +16,7 @@ namespace Wardx
         public bool Enabled;
         public double Allocation;
         public string Salt;
+        public string GoalMetric;
         public string PrimaryMetric;
         public List<VariantDefinition> Variants;
     }
@@ -84,43 +85,77 @@ namespace Wardx
     {
         public string Experiment;
         public string Variant;
+        internal string GoalMetric;
+        internal string Fingerprint;
+        internal bool Exposed;
+    }
+
+    sealed class ExperimentSubjectState
+    {
+        public readonly Dictionary<string, ExperimentAssignment> Assignments =
+            new Dictionary<string, ExperimentAssignment>();
+        public LinkedListNode<string> OrderNode;
     }
 
     public sealed class ExperimentResolver
     {
         readonly string _privacySalt;
         readonly Action<Dictionary<string, object>> _onExposure;
-        readonly HashSet<string> _exposureKeys = new HashSet<string>();
-        readonly Dictionary<string, List<ExperimentAssignment>> _assignmentsBySubject = new Dictionary<string, List<ExperimentAssignment>>();
+        readonly int _stateMaxSubjects;
+        readonly Dictionary<string, ExperimentSubjectState> _stateBySubject =
+            new Dictionary<string, ExperimentSubjectState>();
+        readonly LinkedList<string> _subjectOrder = new LinkedList<string>();
 
-        public ExperimentResolver(string privacySalt, Action<Dictionary<string, object>> onExposure)
+        public ExperimentResolver(string privacySalt, int stateMaxSubjects, Action<Dictionary<string, object>> onExposure)
         {
             _privacySalt = privacySalt;
+            _stateMaxSubjects = stateMaxSubjects;
             _onExposure = onExposure;
         }
+
+        public int StateCount => _stateBySubject.Count;
+
+        internal IEnumerable<string> StateIdentities => _stateBySubject.Keys;
 
         public string HashSubject(string subjectId)
         {
             return Hash.SubjectHash(_privacySalt, subjectId);
         }
 
-        public void RecordAssignment(string subjectId, ExperimentDefinition experiment, VariantDefinition variant)
+        public ExperimentAssignment RecordAssignment(string subjectId, ExperimentDefinition experiment, VariantDefinition variant)
         {
-            if (!_assignmentsBySubject.TryGetValue(subjectId, out var list))
+            var subject = HashSubject(subjectId);
+            if (!_stateBySubject.TryGetValue(subject, out var state))
             {
-                list = new List<ExperimentAssignment>();
-                _assignmentsBySubject[subjectId] = list;
+                while (_stateBySubject.Count >= _stateMaxSubjects)
+                {
+                    var oldest = _subjectOrder.First;
+                    _subjectOrder.RemoveFirst();
+                    _stateBySubject.Remove(oldest.Value);
+                }
+                state = new ExperimentSubjectState();
+                state.OrderNode = _subjectOrder.AddLast(subject);
+                _stateBySubject[subject] = state;
             }
-            for (int i = 0; i < list.Count; i++)
+            if (state.Assignments.TryGetValue(experiment.Id, out var known)) return known;
+            var assignment = new ExperimentAssignment
             {
-                if (list[i].Experiment == experiment.Id) return;
-            }
-            list.Add(new ExperimentAssignment { Experiment = experiment.Id, Variant = variant.Key });
+                Experiment = experiment.Id,
+                Variant = variant.Key,
+                GoalMetric = experiment.GoalMetric,
+                Fingerprint = ExperimentFingerprint(experiment),
+                Exposed = false
+            };
+            state.Assignments[experiment.Id] = assignment;
+            return assignment;
         }
 
         public IReadOnlyList<ExperimentAssignment> AssignmentsFor(string subjectId)
         {
-            if (_assignmentsBySubject.TryGetValue(subjectId, out var list)) return list;
+            if (_stateBySubject.TryGetValue(HashSubject(subjectId), out var state))
+            {
+                return new List<ExperimentAssignment>(state.Assignments.Values);
+            }
             return Array.Empty<ExperimentAssignment>();
         }
 
@@ -137,46 +172,98 @@ namespace Wardx
                 var variant = Experiments.AssignVariant(experiment, subjectId);
                 if (variant == null) continue;
                 if (!variant.Values.TryGetValue(key, out var value)) continue;
-                RecordAssignment(subjectId, experiment, variant);
-                Expose(experiment, variant, subjectId);
+                var assignment = RecordAssignment(subjectId, experiment, variant);
+                Expose(assignment, subjectId);
                 return value;
             }
             return remoteValue;
         }
 
-        public List<ExperimentAssignment> RelevantExperiments(string subjectId, IReadOnlyList<ExperimentDefinition> experiments)
+        public ExperimentAssignment ExposedAssignmentForGoal(string subjectId, string goalMetric)
         {
-            var known = AssignmentsFor(subjectId);
-            if (known.Count > 0)
+            ExperimentAssignment match = null;
+            foreach (var assignment in AssignmentsFor(subjectId))
             {
-                var copy = new List<ExperimentAssignment>(known.Count);
-                foreach (var row in known) copy.Add(row);
-                return copy;
+                if (!assignment.Exposed || assignment.GoalMetric != goalMetric) continue;
+                if (match != null)
+                {
+                    throw new InvalidOperationException(
+                        "goal metric " + goalMetric + " matches multiple exposed experiments"
+                    );
+                }
+                match = assignment;
             }
-            var attached = new List<ExperimentAssignment>();
-            if (experiments == null) return attached;
-            foreach (var experiment in experiments)
-            {
-                if (!experiment.Enabled) continue;
-                var variant = Experiments.AssignVariant(experiment, subjectId);
-                if (variant == null) continue;
-                attached.Add(new ExperimentAssignment { Experiment = experiment.Id, Variant = variant.Key });
-            }
-            return attached;
+            return match;
         }
 
-        void Expose(ExperimentDefinition experiment, VariantDefinition variant, string subjectId)
+        public void ApplySnapshot(IReadOnlyList<ExperimentDefinition> experiments)
         {
+            var active = new Dictionary<string, string>();
+            foreach (var experiment in experiments)
+            {
+                if (experiment.Enabled) active[experiment.Id] = ExperimentFingerprint(experiment);
+            }
+            var emptySubjects = new List<string>();
+            foreach (var pair in _stateBySubject)
+            {
+                var obsolete = new List<string>();
+                foreach (var assignment in pair.Value.Assignments)
+                {
+                    if (!active.TryGetValue(assignment.Key, out var fingerprint)
+                        || fingerprint != assignment.Value.Fingerprint)
+                    {
+                        obsolete.Add(assignment.Key);
+                    }
+                }
+                foreach (var experimentId in obsolete) pair.Value.Assignments.Remove(experimentId);
+                if (pair.Value.Assignments.Count == 0) emptySubjects.Add(pair.Key);
+            }
+            foreach (var subject in emptySubjects)
+            {
+                var state = _stateBySubject[subject];
+                _subjectOrder.Remove(state.OrderNode);
+                _stateBySubject.Remove(subject);
+            }
+        }
+
+        void Expose(ExperimentAssignment assignment, string subjectId)
+        {
+            if (assignment.Exposed) return;
+            assignment.Exposed = true;
             var hashed = HashSubject(subjectId);
-            var exposureKey = experiment.Id + "\0" + hashed;
-            if (_exposureKeys.Contains(exposureKey)) return;
-            _exposureKeys.Add(exposureKey);
             _onExposure(new Dictionary<string, object>
             {
-                ["experiment"] = experiment.Id,
-                ["variant"] = variant.Key,
+                ["experiment"] = assignment.Experiment,
+                ["variant"] = assignment.Variant,
                 ["subject"] = hashed
             });
+        }
+
+        static string ExperimentFingerprint(ExperimentDefinition experiment)
+        {
+            var variants = new List<object>();
+            foreach (var variant in experiment.Variants)
+            {
+                var values = new SortedDictionary<string, object>(StringComparer.Ordinal);
+                foreach (var value in variant.Values) values[value.Key] = value.Value;
+                variants.Add(new Dictionary<string, object>
+                {
+                    ["key"] = variant.Key,
+                    ["values"] = values,
+                    ["weight"] = variant.Weight
+                });
+            }
+            var canonical = new Dictionary<string, object>
+            {
+                ["allocation"] = experiment.Allocation,
+                ["enabled"] = experiment.Enabled,
+                ["goalMetric"] = experiment.GoalMetric,
+                ["id"] = experiment.Id,
+                ["primaryMetric"] = experiment.PrimaryMetric,
+                ["salt"] = experiment.Salt,
+                ["variants"] = variants
+            };
+            return Hash.SubjectHash("wardx.experiment.snapshot", Json.Stringify(canonical));
         }
     }
 
@@ -190,9 +277,19 @@ namespace Wardx
 
         public void ApplySnapshot(int version, Dictionary<string, object> values, List<ExperimentDefinition> experiments)
         {
+            if (experiments == null) experiments = new List<ExperimentDefinition>();
+            foreach (var experiment in experiments)
+            {
+                if (string.IsNullOrEmpty(experiment.GoalMetric))
+                {
+                    throw new InvalidOperationException(
+                        "experiment " + experiment.Id + " requires a non-empty goalMetric"
+                    );
+                }
+            }
             Version = version;
             Values = values ?? new Dictionary<string, object>();
-            Experiments = experiments ?? new List<ExperimentDefinition>();
+            Experiments = experiments;
             ExperimentsByKey = Wardx.Experiments.IndexByKey(Experiments);
         }
 

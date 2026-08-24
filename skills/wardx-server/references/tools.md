@@ -9,12 +9,14 @@ Resource `wardx://project/{name}` returns the same JSON as `get_project_overview
 | Tool | Arguments | Returns |
 | --- | --- | --- |
 | `list_projects` | _(none)_ | `{ projects: string[] }` |
-| `get_project_overview` | `project`, optional `limit` (max counters, events, and histograms per role, highest first) | description, `onboarding`, `knobs`, `roles` (outcomes + clients, optional `path`/`git`), `experiments`, `version`. Histogram outcomes are ranked by `max` and include `exemplar` when the peak had attrs. |
+| `get_project_overview` | `project`, optional `limit` (max counters, events, histograms, and persist logs per role, highest first) | description, `onboarding`, `knobs`, `persistLogs`, `roles` (outcomes + clients, optional `path`/`git`), `experiments`, `version`. Histogram outcomes are ranked by `max` and include `exemplar` when the peak had attrs. Persist log outcomes are `kind: "log"` with lifetime `count` and last `exemplar`. |
 | `set_project_description` | `project`, `description` | `{ project }` |
 | `set_role_description` | `project`, `role`, `description` | `{ project, role }` |
 | `set_role_source` | `project`, `role`, and `path` and/or `git` | `{ project, role }` |
 | `set_signal` | `project`, `name`, `description` | `{ project, name }` |
 | `delete_signal` | `project`, `name` | `{ project, name }` |
+| `set_persist_log` | `project`, `name` (exact log message) | `{ project, name }` |
+| `delete_persist_log` | `project`, `name` | `{ project, name }` |
 
 `role` is an open client role name. It cannot be `*`.
 
@@ -41,6 +43,7 @@ Resource `wardx://project/{name}` returns the same JSON as `get_project_overview
   "allocation": 1,
   "salt": "3ad8f9",
   "primaryMetric": "message.sent",
+  "goalMetric": "message.sent",
   "roles": ["client"],
   "hypothesis": "Shorter delay increases messages sent",
   "goalKind": "conversion",
@@ -54,7 +57,7 @@ Resource `wardx://project/{name}` returns the same JSON as `get_project_overview
 }
 ```
 
-Required: `id`, `enabled`, `allocation` ∈ [0, 1], `salt`, `roles`, `variants` (non-empty; weights sum to > 0). Optional: `primaryMetric`, `hypothesis`, `goalKind` (`conversion` | `mean`), `control`, `minExposures`, `confidence`. `hypothesis` and the close-policy fields are stripped before the snapshot goes to clients. A closable test needs all four policy fields; there is no implicit `minExposures` or `confidence`. `ship_experiment` refuses unless `analyze_experiment.decision.status` is `winner` (or already shipped that variant).
+Required: `id`, `enabled`, `allocation` ∈ [0, 1], `salt`, `goalMetric`, `roles`, `variants` (non-empty; weights sum to > 0). Optional: `primaryMetric`, `hypothesis`, `goalKind` (`conversion` | `mean`), `control`, `minExposures`, `confidence`. `hypothesis` and the close-policy fields are stripped before the snapshot goes to clients. A closable test needs all four policy fields; there is no implicit `minExposures` or `confidence`. Only a goal whose name equals `goalMetric` attaches to the experiment; there is no compatibility fallback. `ship_experiment` refuses unless `analyze_experiment.decision.status` is `winner` (or already shipped that variant).
 
 Keep `salt` when replacing the same `id`. Assignment is client-side and deterministic (`experimentId + subjectId + salt`). The server does not map users. Clients `identify()` or pass `subjectId` on `config.get` / `experiment.goal`; no subject and that read is Remote Config with no exposure.
 
@@ -62,7 +65,7 @@ Keep `salt` when replacing the same `id`. Assignment is client-side and determin
 
 | Tool | Arguments | Returns |
 | --- | --- | --- |
-| `get_aggregates` | `project`, optional `names[]`, `from`, `to`, `role` | `{ windows }` with catalog legends on names. Histogram bodies include `max` and optional `exemplar`. |
+| `get_aggregates` | `project`, optional `names[]`, `from`, `to`, `role` | `{ windows }` with catalog legends on names. Histogram bodies include `max` and optional `exemplar`. Allowlisted logs appear as `logNames` (`count` + last `exemplar`). |
 | `get_recent_logs` | `project`, optional `level` (`debug`\|`info`\|`warn`\|`error`), `message` (exact), `attrs` (exact match on listed keys), `role`, `limit` | `{ logs }` newest first |
 | `analyze_experiment` | `project`, `experimentId` | definition + hypothesis, lifetime `variants[]` with `exposures`/`goals`/`goalSum`/`goalSumSq`/`goalMean`/`rate`, `decision`, optional `primaryMetric` fleet total |
 
@@ -79,5 +82,6 @@ Undescribed names include `{ undescribed: true }` instead of `{ description }`.
 | `unknown experiment: …` | `set_experiment_enabled` / analyze / ship on a missing id |
 | `experiment … is not ready to ship` | `ship_experiment` while `decision.status` is not `winner` |
 | `unknown signal: …` | `delete_signal` on a name not in the catalog |
+| `unknown persist log: …` | `delete_persist_log` on a name not in `persistLogs` |
 | `path or git is required` | `set_role_source` with neither field |
 | `role cannot be *` | `*` is only valid inside a `roles` array as the sole entry |

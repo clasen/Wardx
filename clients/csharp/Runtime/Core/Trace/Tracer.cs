@@ -58,6 +58,7 @@ namespace Wardx
         public int Logs;
         public int DroppedLogs;
         public int DroppedEvents;
+        public int DroppedRows;
     }
 
     public sealed class SyncRecord

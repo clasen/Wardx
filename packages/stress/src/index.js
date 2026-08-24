@@ -13,14 +13,15 @@ const { values, positionals } = parseArgs({
     rate: { type: 'string' },
     duration: { type: 'string' },
     clients: { type: 'string' },
-    subjects: { type: 'string' }
+    subjects: { type: 'string' },
+    profile: { type: 'string' }
   }
 });
 
 const which = (positionals[0] || 'all').toUpperCase();
 const smoke = values.smoke || !values.full;
 const durationMs = Number(values.duration || (smoke ? 2000 : 300_000));
-const rate = Number(values.rate || (smoke ? 1000 : 5000));
+const rate = Number(values.rate || (smoke ? 1000 : 5250));
 const clients = Number(values.clients || (smoke ? 200 : 10_000));
 const subjects = Number(values.subjects || (smoke ? 50_000 : 1_000_000));
 
@@ -36,8 +37,10 @@ const tests = {
     testC();
   },
   async D() {
-    const rates = smoke ? [rate] : [1000, 2500, 5000, 10_000];
-    for (const r of rates) await testD({ rate: r, durationMs });
+    const profiles = values.profile ? [values.profile] : ['raw', 'persistence'];
+    for (const profile of profiles) {
+      await testD({ rate, durationMs, mode: smoke ? 'smoke' : 'full', profile });
+    }
   },
   async E() {
     await testE({ clients, durationMs, syncIntervalMs: smoke ? 250 : 15_000 });

@@ -1,0 +1,30 @@
+name: Release verification
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 4 * * 0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wardx-release-verification
+  cancel-in-progress: false
+
+jobs:
+  release-gate:
+    name: Full release gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: current
+          cache: npm
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - run: npm ci
+      - run: npm run verify:release

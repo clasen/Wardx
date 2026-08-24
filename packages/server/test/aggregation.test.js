@@ -313,6 +313,40 @@ test('experiment.goal value rolls up to goalSum and goalMean per variant', () =>
   assert.equal(window.variants[0].goalMean, 90000);
 });
 
+test('experiment.goal ignores ambiguous assignment lists', () => {
+  const agg = aggregator();
+  const now = Date.now();
+  agg.ingest(
+    sampleEnvelope({
+      frames: [
+        {
+          seq: 1,
+          from: now,
+          to: now + 1,
+          metrics: { counters: [], gauges: [], histograms: [] },
+          events: [
+            [
+              now,
+              'experiment.goal',
+              {
+                metric: 'purchase.completed',
+                subject: 'subject-hash',
+                experiments: [
+                  { experiment: 'checkout-v1', variant: 'short' },
+                  { experiment: 'pricing-v1', variant: 'low' }
+                ]
+              }
+            ]
+          ],
+          logs: []
+        }
+      ]
+    })
+  );
+  assert.deepEqual(agg.experimentStats('checkout-v1'), []);
+  assert.deepEqual(agg.experimentStats('pricing-v1'), []);
+});
+
 test('experiment lifetime stats survive window prune', () => {
   const agg = new FrameAggregator({
     aggregateRetentionMinutes: 1,
@@ -328,11 +362,16 @@ test('experiment lifetime stats survive window prune', () => {
           to: now + 1,
           metrics: { counters: [], gauges: [], histograms: [] },
           events: [
-            [now, 'experiment.exposure', { experiment: 'delay', variant: 'fast' }],
+            [now, 'experiment.exposure', { experiment: 'delay', variant: 'fast', subject: 'subject-hash' }],
             [
               now,
               'experiment.goal',
-              { experiments: [{ experiment: 'delay', variant: 'fast' }], value: 1 }
+              {
+                metric: 'message.sent',
+                subject: 'subject-hash',
+                experiments: [{ experiment: 'delay', variant: 'fast' }],
+                value: 1
+              }
             ]
           ],
           logs: []
@@ -345,4 +384,97 @@ test('experiment lifetime stats survive window prune', () => {
   assert.equal(fast.exposures, 1);
   assert.equal(fast.goals, 1);
   assert.equal(fast.goalSum, 1);
+});
+
+test('FrameAggregator rolls up allowlisted logs and ignores other messages', () => {
+  const agg = aggregator();
+  const now = Date.now();
+  const changed = agg.ingest(
+    sampleEnvelope({
+      client: { instanceId: 'inst-1' },
+      frames: [
+        {
+          seq: 1,
+          from: now,
+          to: now + 1,
+          metrics: { counters: [], gauges: [], histograms: [] },
+          events: [],
+          logs: [
+            [now - 20, 'error', 'payment_failed', { code: 'timeout' }],
+            [now - 10, 'error', 'payment_failed', { code: 'card' }],
+            [now, 'info', 'match_started', { mode: 'ranked' }]
+          ]
+        }
+      ]
+    }),
+    ['payment_failed']
+  );
+  assert.equal(changed.persistLogs, true);
+  assert.equal(changed.experiments, false);
+  assert.equal(changed.windows, true);
+  const window = agg.snapshot()[0];
+  assert.equal(window.logs, 3);
+  assert.equal(window.logNames.length, 1);
+  const row = window.logNames[0];
+  assert.equal(row.name, 'payment_failed');
+  assert.equal(row.level, 'error');
+  assert.equal(row.role, 'client');
+  assert.equal(row.count, 2);
+  assert.equal(row.persist, true);
+  assert.equal(row.exemplar.ts, now - 10);
+  assert.equal(row.exemplar.attrs.code, 'card');
+  assert.equal(row.exemplar.instanceId, 'inst-1');
+  assert.equal(agg.topPersistLogs()[0].count, 2);
+});
+
+test('FrameAggregator without persistLogs leaves logNames empty', () => {
+  const agg = aggregator();
+  agg.ingest(sampleEnvelope());
+  const window = agg.snapshot()[0];
+  assert.equal(window.logs, 1);
+  assert.deepEqual(window.logNames, []);
+  assert.deepEqual(agg.topPersistLogs(), []);
+});
+
+test('FrameAggregator window snapshot round-trips through replaceWindows', () => {
+  const agg = aggregator();
+  const now = Date.now();
+  agg.ingest(
+    sampleEnvelope({
+      frames: [
+        {
+          seq: 1,
+          from: now,
+          to: now + 1,
+          metrics: {
+            counters: [['match.completed', { mode: 'ranked' }, 4]],
+            gauges: [['players.online', null, 9, now]],
+            histograms: [
+              [
+                'coins.award_size',
+                { source: 'match' },
+                {
+                  count: 1,
+                  sum: 80,
+                  min: 80,
+                  max: 80,
+                  buckets: [[50, 1]],
+                  exemplar: { value: 80, attrs: { grantId: 'g-80' } }
+                }
+              ]
+            ]
+          },
+          events: [[now, 'purchase', { product: 'premium' }]],
+          logs: [[now, 'error', 'payment_failed', { code: 'timeout' }]]
+        }
+      ]
+    }),
+    ['payment_failed']
+  );
+  const restored = aggregator();
+  restored.replaceWindows(agg.windowsSnapshot());
+  restored.replacePersistLogs(agg.persistLogSnapshot());
+  assert.deepEqual(restored.snapshot(), agg.snapshot());
+  assert.equal(restored.topHistograms()[0].max, 80);
+  assert.equal(restored.topPersistLogs()[0].count, 1);
 });

@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 const encoder = new TextEncoder();
 
 export const FNV_OFFSET_32 = 0x811c9dc5;
@@ -23,5 +25,9 @@ export function assignmentHash(experimentId, subjectId, salt) {
 }
 
 export function subjectHash(projectSalt, subjectId) {
-  return (fnv1a32(`${projectSalt}:${subjectId}`) >>> 0).toString(16).padStart(8, '0');
+  return createHash('sha256')
+    .update(projectSalt, 'utf8')
+    .update('\0', 'utf8')
+    .update(subjectId, 'utf8')
+    .digest('hex');
 }

@@ -57,8 +57,8 @@ export function resolveSettings(options) {
   if (settings.role === '*') {
     throw new Error('role cannot be *');
   }
-  if (settings.privacySalt === undefined || settings.privacySalt === null || settings.privacySalt === '') {
-    settings.privacySalt = settings.projectKey;
+  if (typeof settings.privacySalt !== 'string' || settings.privacySalt.length === 0) {
+    throw new Error('privacySalt must be a non-empty string');
   }
   assertPositiveNumber(settings, 'aggregateIntervalMs');
   assertPositiveNumber(settings, 'syncIntervalMs');
@@ -68,6 +68,13 @@ export function resolveSettings(options) {
   assertPositiveNumber(settings, 'maxSeriesPerMetric');
   assertPositiveNumber(settings, 'maxDimensionKeys');
   assertPositiveNumber(settings, 'maxDimensionValueLength');
+  assertPositiveNumber(settings, 'experimentStateMaxSubjects');
+  if (!Number.isInteger(settings.experimentStateMaxSubjects)) {
+    throw new Error('experimentStateMaxSubjects must be an integer');
+  }
+  if (settings.maxFrameBytes < 1024) {
+    throw new Error('maxFrameBytes must be at least 1024');
+  }
   assertPositiveNumber(settings, 'httpTimeoutMs');
   assertNumberInRange(settings, 'syncJitterMin', 0, 1);
   assertNumberInRange(settings, 'syncJitterMax', 1, 2);

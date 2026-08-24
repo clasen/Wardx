@@ -121,10 +121,14 @@ namespace Wardx
         }
     }
 
-    public sealed class FittedFrame
+    public sealed class FrameBatch
     {
-        public Frame Frame;
-        public string Json;
+        public List<Frame> Frames = new List<Frame>();
+        public List<string> Jsons = new List<string>();
+        public int DroppedRows;
+        public int DroppedCounters;
+        public int DroppedGauges;
+        public int DroppedHistograms;
         public int DroppedLogs;
         public int DroppedEvents;
     }
@@ -192,124 +196,147 @@ namespace Wardx
             }
         }
 
-        public static FittedFrame FitToMaxBytes(Frame frame, int maxFrameBytes)
+        public static FrameBatch SplitToMaxBytes(Frame frame, int maxFrameBytes)
+        {
+            if (maxFrameBytes < 1024)
+            {
+                throw new System.ArgumentException("maxFrameBytes must be an integer at least 1024");
+            }
+            var splitter = new FrameSplitter(frame, maxFrameBytes);
+            foreach (var row in frame.Counters) splitter.AddCounter(row);
+            foreach (var row in frame.Gauges) splitter.AddGauge(row);
+            foreach (var row in frame.Histograms) splitter.AddHistogram(row);
+            foreach (var row in frame.Events) splitter.AddEvent(row);
+            foreach (var row in frame.Logs) splitter.AddLog(row);
+            return splitter.Finish();
+        }
+    }
+
+    sealed class FrameSplitter
+    {
+        readonly int _startingSeq;
+        readonly long _from;
+        readonly long _to;
+        readonly int _maxFrameBytes;
+        readonly FrameBatch _batch = new FrameBatch();
+        Frame _current;
+
+        public FrameSplitter(Frame source, int maxFrameBytes)
+        {
+            _startingSeq = source.Seq;
+            _from = source.From;
+            _to = source.To;
+            _maxFrameBytes = maxFrameBytes;
+            _current = EmptyFrame(_startingSeq, _from, _to);
+        }
+
+        public void AddCounter(CounterSample row)
+        {
+            if (!TryAdd(row, frame => frame.Counters)) _batch.DroppedCounters++;
+        }
+
+        public void AddGauge(GaugeSample row)
+        {
+            if (!TryAdd(row, frame => frame.Gauges)) _batch.DroppedGauges++;
+        }
+
+        public void AddHistogram(HistogramSample row)
+        {
+            if (!TryAdd(row, frame => frame.Histograms)) _batch.DroppedHistograms++;
+        }
+
+        public void AddEvent(EventSample row)
+        {
+            if (!TryAdd(row, frame => frame.Events)) _batch.DroppedEvents++;
+        }
+
+        public void AddLog(LogSample row)
+        {
+            if (!TryAdd(row, frame => frame.Logs)) _batch.DroppedLogs++;
+        }
+
+        public FrameBatch Finish()
+        {
+            _batch.DroppedRows = _batch.DroppedCounters
+                + _batch.DroppedGauges
+                + _batch.DroppedHistograms
+                + _batch.DroppedEvents
+                + _batch.DroppedLogs;
+            if (_batch.DroppedRows > 0)
+            {
+                var observable = new CounterSample(
+                    Protocol.Internal.FrameRowsDropped,
+                    null,
+                    _batch.DroppedRows
+                );
+                if (!TryAdd(observable, frame => frame.Counters))
+                {
+                    throw new System.InvalidOperationException(
+                        "maxFrameBytes cannot contain the frame drop metric"
+                    );
+                }
+            }
+            if (_batch.Frames.Count == 0 || RowCount(_current) > 0) FinishCurrent();
+            return _batch;
+        }
+
+        bool TryAdd<T>(T row, System.Func<Frame, List<T>> collection)
+        {
+            var rows = collection(_current);
+            rows.Add(row);
+            if (Measure(_current).Bytes <= _maxFrameBytes) return true;
+            rows.RemoveAt(rows.Count - 1);
+            if (RowCount(_current) > 0)
+            {
+                FinishCurrent();
+                rows = collection(_current);
+                rows.Add(row);
+                if (Measure(_current).Bytes <= _maxFrameBytes) return true;
+                rows.RemoveAt(rows.Count - 1);
+            }
+            return false;
+        }
+
+        void FinishCurrent()
+        {
+            var measured = Measure(_current);
+            if (measured.Bytes > _maxFrameBytes)
+            {
+                throw new System.InvalidOperationException("frame splitter produced an oversized frame");
+            }
+            _batch.Frames.Add(_current);
+            _batch.Jsons.Add(measured.Json);
+            _current = EmptyFrame(_startingSeq + _batch.Frames.Count, _from, _to);
+        }
+
+        static Frame EmptyFrame(int seq, long from, long to)
+        {
+            return new Frame { Seq = seq, From = from, To = to };
+        }
+
+        static int RowCount(Frame frame)
+        {
+            return frame.Counters.Count
+                + frame.Gauges.Count
+                + frame.Histograms.Count
+                + frame.Events.Count
+                + frame.Logs.Count;
+        }
+
+        static FrameMeasurement Measure(Frame frame)
         {
             var json = Json.Stringify(frame.ToWire());
-            var bytes = System.Text.Encoding.UTF8.GetByteCount(json);
-            if (bytes <= maxFrameBytes)
+            return new FrameMeasurement
             {
-                return new FittedFrame { Frame = frame, Json = json, DroppedLogs = 0, DroppedEvents = 0 };
-            }
-
-            var droppedLogs = 0;
-            var droppedEvents = 0;
-
-            if (frame.Logs.Count > 0)
-            {
-                var dropOrder = LogDropOrder(frame.Logs);
-                var original = frame.Logs;
-                var k = LeastDrops(dropOrder.Length, mid =>
-                {
-                    frame.Logs = LogsWithoutFirstK(original, dropOrder, mid);
-                    return Json.Utf8ByteLength(frame.ToWire()) <= maxFrameBytes;
-                });
-                frame.Logs = LogsWithoutFirstK(original, dropOrder, k);
-                droppedLogs = k;
-                json = Json.Stringify(frame.ToWire());
-                bytes = System.Text.Encoding.UTF8.GetByteCount(json);
-                if (bytes <= maxFrameBytes)
-                {
-                    return new FittedFrame { Frame = frame, Json = json, DroppedLogs = droppedLogs, DroppedEvents = droppedEvents };
-                }
-            }
-
-            if (frame.Events.Count > 0)
-            {
-                var original = frame.Events;
-                var k = LeastDrops(original.Count, mid =>
-                {
-                    frame.Events = Slice(original, original.Count - mid);
-                    return Json.Utf8ByteLength(frame.ToWire()) <= maxFrameBytes;
-                });
-                frame.Events = Slice(original, original.Count - k);
-                droppedEvents = k;
-                json = Json.Stringify(frame.ToWire());
-                bytes = System.Text.Encoding.UTF8.GetByteCount(json);
-                if (bytes <= maxFrameBytes)
-                {
-                    return new FittedFrame { Frame = frame, Json = json, DroppedLogs = droppedLogs, DroppedEvents = droppedEvents };
-                }
-            }
-
-            if (bytes > maxFrameBytes && frame.Histograms.Count > 0)
-            {
-                frame.Histograms = new List<HistogramSample>();
-                json = Json.Stringify(frame.ToWire());
-                bytes = System.Text.Encoding.UTF8.GetByteCount(json);
-            }
-            if (bytes > maxFrameBytes)
-            {
-                var kept = new List<GaugeSample>();
-                foreach (var row in frame.Gauges)
-                {
-                    if (row.Name != null && row.Name.StartsWith(Protocol.InternalPrefix)) kept.Add(row);
-                }
-                frame.Gauges = kept;
-                json = Json.Stringify(frame.ToWire());
-            }
-            return new FittedFrame { Frame = frame, Json = json, DroppedLogs = droppedLogs, DroppedEvents = droppedEvents };
+                Json = json,
+                Bytes = System.Text.Encoding.UTF8.GetByteCount(json)
+            };
         }
+    }
 
-        static int[] LogDropOrder(List<LogSample> logs)
-        {
-            var order = new int[logs.Count];
-            for (int i = 0; i < order.Length; i++) order[i] = i;
-            System.Array.Sort(order, (a, b) =>
-            {
-                var rankA = LogLevels.Rank(logs[a].Level);
-                var rankB = LogLevels.Rank(logs[b].Level);
-                if (rankA != rankB) return rankA.CompareTo(rankB);
-                return a.CompareTo(b);
-            });
-            return order;
-        }
-
-        static List<LogSample> LogsWithoutFirstK(List<LogSample> logs, int[] dropOrder, int k)
-        {
-            if (k <= 0) return logs;
-            if (k >= logs.Count) return new List<LogSample>();
-            var drop = new HashSet<int>();
-            for (int i = 0; i < k; i++) drop.Add(dropOrder[i]);
-            var kept = new List<LogSample>(logs.Count - k);
-            for (int i = 0; i < logs.Count; i++)
-            {
-                if (!drop.Contains(i)) kept.Add(logs[i]);
-            }
-            return kept;
-        }
-
-        static List<EventSample> Slice(List<EventSample> events, int count)
-        {
-            if (count <= 0) return new List<EventSample>();
-            if (count >= events.Count) return events;
-            var kept = new List<EventSample>(count);
-            for (int i = 0; i < count; i++) kept.Add(events[i]);
-            return kept;
-        }
-
-        static int LeastDrops(int maxDrop, System.Func<int, bool> fits)
-        {
-            if (maxDrop == 0) return 0;
-            if (!fits(maxDrop)) return maxDrop;
-            var lo = 0;
-            var hi = maxDrop;
-            while (lo < hi)
-            {
-                var mid = (lo + hi) >> 1;
-                if (fits(mid)) hi = mid;
-                else lo = mid + 1;
-            }
-            return lo;
-        }
+    sealed class FrameMeasurement
+    {
+        public string Json;
+        public int Bytes;
     }
 }

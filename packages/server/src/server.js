@@ -1,6 +1,8 @@
 import http from 'node:http';
 import { ControlService } from './control/ControlService.js';
-import { hydrateExperimentStats, persistExperimentStats } from './control/persist.js';
+import { PersistenceCoordinator } from './control/PersistenceCoordinator.js';
+import { hydrateAggregateWindows, hydrateExperimentStats, hydrateLogStats } from './control/persist.js';
+import { createDiagnostics } from './diagnostics.js';
 import { createSyncHandler, json } from './ingest/syncHandler.js';
 import { loadServerConfig, validateServerConfig } from './loadConfig.js';
 import { ProjectRegistry } from './projects/ProjectRegistry.js';
@@ -19,9 +21,13 @@ export function createIngestServer(configInput) {
   const config = validateServerConfig(configInput);
   const registry = new ProjectRegistry(config);
   hydrateExperimentStats(config, registry);
+  hydrateLogStats(config, registry);
+  hydrateAggregateWindows(config, registry);
+  const diagnostics = createDiagnostics(config);
+  const persistence = new PersistenceCoordinator({ config, registry, diagnostics });
   const sink = createSink(config);
-  const control = new ControlService({ config, registry });
-  const handleSync = createSyncHandler({ config, registry, sink });
+  const control = new ControlService({ config, registry, persistence, diagnostics });
+  const handleSync = createSyncHandler({ config, registry, sink, persistence, diagnostics });
 
   const server = http.createServer((req, res) => {
     const host = req.headers.host || `${config.host}:${config.port}`;
@@ -37,12 +43,25 @@ export function createIngestServer(configInput) {
       }
       json(res, 404, { ok: false, error: 'not found' });
     })();
-    work.catch(() => {
+    work.catch((error) => {
+      diagnostics.report('http.unexpected', error, { method: req.method, path: url.pathname });
       if (!res.headersSent) json(res, 500, { ok: false, error: 'internal' });
     });
   });
 
-  server.wardx = { config, registry, control, sink };
+  let stopPromise = null;
+  async function stop() {
+    if (stopPromise) return stopPromise;
+    stopPromise = (async () => {
+      if (server.listening) {
+        await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+      }
+      await persistence.flush();
+      if (typeof sink.close === 'function') await sink.close();
+    })();
+    return stopPromise;
+  }
+  server.wardx = { config, registry, control, sink, persistence, diagnostics, stop };
   return server;
 }
 
@@ -60,9 +79,14 @@ export function listen(server, port, host) {
 export async function startServer(config) {
   const server = createIngestServer(config);
   const address = await listen(server, config.port, config.host);
-  const stop = (code) => {
-    persistExperimentStats(server.wardx.config, server.wardx.registry);
-    process.exit(code);
+  const stop = async (code) => {
+    try {
+      await server.wardx.stop();
+      process.exit(code);
+    } catch (error) {
+      server.wardx.diagnostics.report('shutdown.failed', error);
+      process.exit(1);
+    }
   };
   process.once('SIGINT', () => stop(130));
   process.once('SIGTERM', () => stop(143));

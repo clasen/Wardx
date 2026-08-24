@@ -48,3 +48,45 @@ test('validateServerConfig rejects an invalid catalog', () => {
   config.projects.demo.catalog = { signals: { 'message.sent': 1 } };
   assert.throws(() => validateServerConfig(config), /signals\.message\.sent must be a non-empty string/);
 });
+
+test('validateServerConfig rejects a duplicate persistLogs name', () => {
+  const config = testServerConfig();
+  config.projects.demo.catalog = { persistLogs: ['payment_failed', 'payment_failed'] };
+  assert.throws(() => validateServerConfig(config), /persistLogs duplicate name: payment_failed/);
+});
+
+test('validateServerConfig rejects unknown server, diagnostics, and project keys', () => {
+  const top = testServerConfig();
+  top.extra = true;
+  assert.throws(() => validateServerConfig(top), /server config unknown key: extra/);
+
+  const diagnostics = testServerConfig();
+  diagnostics.diagnostics.extra = true;
+  assert.throws(() => validateServerConfig(diagnostics), /diagnostics unknown key: extra/);
+
+  const project = testServerConfig();
+  project.projects.demo.extra = true;
+  assert.throws(() => validateServerConfig(project), /projects\.demo unknown key: extra/);
+});
+
+test('validateServerConfig requires goalMetric and rejects overlapping enabled goals', () => {
+  const experiment = {
+    id: 'delay-v1',
+    enabled: true,
+    allocation: 1,
+    salt: 'delay-v1',
+    goalMetric: 'message.sent',
+    roles: ['client'],
+    variants: [{ key: 'control', weight: 1, values: { 'message.delayMs': 1000 } }]
+  };
+  const missing = testServerConfig();
+  missing.projects.demo.experiments = [{ ...experiment, goalMetric: undefined }];
+  assert.throws(() => validateServerConfig(missing), /experiment\.goalMetric is required/);
+
+  const ambiguous = testServerConfig();
+  ambiguous.projects.demo.experiments = [
+    experiment,
+    { ...experiment, id: 'delay-v2', salt: 'delay-v2' }
+  ];
+  assert.throws(() => validateServerConfig(ambiguous), /share goalMetric message\.sent for overlapping roles/);
+});

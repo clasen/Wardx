@@ -1,9 +1,21 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { fnv1a32 } from '../src/config/hash.js';
+import { fnv1a32, subjectHash } from '../src/config/hash.js';
 
 test('FNV-1a 32-bit empty string', () => {
   assert.equal(fnv1a32(''), 0x811c9dc5);
+});
+
+test('subject identity uses 256 bits and separates a known FNV-1a collision', () => {
+  assert.equal(fnv1a32('costarring'), fnv1a32('liquid'));
+  const first = subjectHash('test-salt', 'costarring');
+  const second = subjectHash('test-salt', 'liquid');
+  assert.match(first, /^[0-9a-f]{64}$/);
+  assert.notEqual(first, second);
+  assert.equal(
+    subjectHash('test-salt', 'user-1'),
+    '0199ba4aea1913bcc6519b7c625951855764717ecccc8fd914182a41b59b0a69'
+  );
 });
 
 test('FNV-1a 32-bit a', () => {

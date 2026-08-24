@@ -1,5 +1,6 @@
 using System;
 using System.Text;
+using System.Security.Cryptography;
 
 namespace Wardx
 {
@@ -39,7 +40,14 @@ namespace Wardx
 
         public static string SubjectHash(string projectSalt, string subjectId)
         {
-            return Fnv1a32(projectSalt + ":" + subjectId).ToString("x8");
+            var bytes = Encoding.UTF8.GetBytes(projectSalt + "\0" + subjectId);
+            using (var sha = SHA256.Create())
+            {
+                var digest = sha.ComputeHash(bytes);
+                var hex = new StringBuilder(digest.Length * 2);
+                for (int i = 0; i < digest.Length; i++) hex.Append(digest[i].ToString("x2"));
+                return hex.ToString();
+            }
         }
     }
 }

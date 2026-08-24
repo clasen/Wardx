@@ -10,6 +10,7 @@ description: Instruments C# / .NET with the Wardx SDK (WardxClient.Create) — c
 - A measure call changes local memory only. It does not send. It does not return a Task.
 - Delivery is at-most-once. A failed sync discards that batch. There is no disk queue and no retry of the same frames.
 - Remote Config is always a local read of the last snapshot.
+- Remote Config must not contain secrets. The project key authenticates the project; client-selected `Role` is routing metadata, not authorization.
 - The SDK sends names. Descriptions live in the server catalog.
 
 Control plane (MCP, catalog, experiments as definitions, aggregates) is the **wardx-server** skill. This skill writes C# / .NET instrumentation. A Unity player is the **wardx-unity** skill.
@@ -23,9 +24,9 @@ Package internals when editing `clients/csharp`: [references/package.md](referen
 3. Pick the cheapest signal that answers the question (table below).
 4. Call `ShutdownAsync` when the process stops. `FlushAsync` sends now and leaves timers running.
 
-Required `WardxOptions` keys: `Endpoint`, `ProjectKey`, `Project`, `Role`, `AppVersion`, `Environment`. `Role` is an open name (`game-server`, `desktop`, `csharp`). It cannot be `*`. `Project` must match the server mapping. `ProjectKey` is header `X-Wardx-Key`.
+Required `WardxOptions` keys: `Endpoint`, `ProjectKey`, `Project`, `Role`, `AppVersion`, `Environment`. `Role` is an open routing name (`game-server`, `desktop`, `csharp`), not an authorization boundary. It cannot be `*`. `Project` must match the server mapping. `ProjectKey` is header `X-Wardx-Key`.
 
-Optional: `PrivacySalt` (empty → `ProjectKey`), `Tracer`, and keys in `SdkDefaults` / `packages/core/defaults.json`. A bootstrap sync starts immediately; later syncs use `SyncIntervalMs` with jitter.
+`PrivacySalt` is required, non-empty, stable, and project-specific; it is never derived from `ProjectKey`. Optional overrides are `Tracer` and keys in `SdkDefaults` / `packages/core/defaults.json`. `MaxFrameBytes` is at least 1024; `ExperimentStateMaxSubjects` defaults to 100000 and bounds assignment/exposure state. A bootstrap sync starts immediately; later syncs use `SyncIntervalMs` with jitter.
 
 ## Choose a signal
 
@@ -50,7 +51,7 @@ A counter in a frame is a window delta, not a lifetime total. A gauge that is ne
 
 **Dimensions.** Small sets: `mode`, `route`, `code`, `source`, `result`. Values are string, number, or boolean. Never `userId`, email, or a unique id on a metric dimension. The SDK caps series per name (`MaxSeriesPerMetric`); extra series become no-ops and increment `wardx.internal.cardinality_dropped`. Histogram `Observe(value, attrs)` keeps attrs only for the window max (`exemplar`). A lookup key (`grantId`, `matchId`) belongs there, not on the series.
 
-**Backend vs client.** If one process serves many users, increment counters in process. Do not `Event()` once per user action. Give that process its own `role` (`game-server`) so MCP does not mix it with a Unity player. Pass `subjectId` on each `Config.Get` / `Experiment.Goal`. Do not `Identify()` there: it is process-wide and would mix users.
+**Backend vs client.** If one process serves many users, increment counters in process. Do not `Event()` once per user action. Give that process its own `role` (`game-server`) so MCP does not mix it with a Unity player. Pass `subjectId` on each `Config.Get` / `Experiment.Goal`. Do not share one SDK instance's default there; it would mix users.
 
 **Funnels.** Wardx compares how often each named step fired. It does not store a user journey. Give each step its own name. Emit the event and increment a counter of the same name. Event attrs do not split the server count. `Experiment.Goal` is one conversion or one quantitative value, not an N-step funnel. Read the drop with `get_aggregates` (wardx-server).
 
@@ -72,7 +73,7 @@ wardx.Experiment.Goal("message.sent", userId, 1);
 
 Until a sync applies a newer `configVersion`, `Get` returns the fallback or the last snapshot. The first `Get` with a subject in a session can emit `experiment.exposure` (`experiment`, `variant`, hashed `subject`). The raw `subjectId` never goes on the wire. Assignment is local and deterministic. Do not persist the variant. Changing `salt` redistributes; keep it when replacing the same experiment `id`.
 
-`Experiment.Goal` needs a subject from `Identify()` or the `subjectId` argument. Without a subject, the call throws.
+`Experiment.Goal` needs a subject from `Identify()` or the `subjectId` argument. It emits only for an assignment exposed in this SDK instance whose experiment `goalMetric` matches the call name. Without a subject, the call throws. There is no legacy match-all fallback.
 
 Do not wait for the network on the hot path. Do not invent experiment definitions in application code; the server stores them. Do not put `subjectId` on metric dimensions.
 
@@ -104,7 +105,8 @@ var wardx = WardxClient.Create(new WardxOptions
     Project = "demo",
     Role = "game-server",
     AppVersion = "2.4.1",
-    Environment = "production"
+    Environment = "production",
+    PrivacySalt = "demo-subject-hash-v1"
 });
 
 void HandleMatchmaking()

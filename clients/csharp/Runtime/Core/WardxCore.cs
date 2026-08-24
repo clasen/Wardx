@@ -21,6 +21,8 @@ namespace Wardx
         public readonly ConfigStore ConfigStore = new ConfigStore();
         public readonly CoreLogApi Log;
 
+        internal ExperimentResolver ExperimentResolver => _experiments;
+
         public WardxCore(Settings settings)
         {
             _settings = settings;
@@ -35,7 +37,7 @@ namespace Wardx
             );
             _events = new EventBuffer(settings.MaxBufferedEvents);
             _logs = new LogBuffer(settings.MaxBufferedLogs);
-            _experiments = new ExperimentResolver(settings.PrivacySalt, payload =>
+            _experiments = new ExperimentResolver(settings.PrivacySalt, settings.ExperimentStateMaxSubjects, payload =>
             {
                 Event("experiment.exposure", payload);
             });
@@ -128,13 +130,14 @@ namespace Wardx
             {
                 throw new ArgumentException("experiment.goal requires a metric name");
             }
+            var assignment = _experiments.ExposedAssignmentForGoal(subjectId, name);
+            if (assignment == null) return;
             var subject = _experiments.HashSubject(subjectId);
-            var experiments = _experiments.RelevantExperiments(subjectId, ConfigStore.Experiments);
             var payload = new Dictionary<string, object>
             {
                 ["metric"] = name,
                 ["subject"] = subject,
-                ["experiments"] = AssignmentWire(experiments)
+                ["experiments"] = AssignmentWire(assignment)
             };
             if (value != null) payload["value"] = value;
             Event("experiment.goal", payload);
@@ -143,10 +146,11 @@ namespace Wardx
         public void ApplyConfig(int version, Dictionary<string, object> values, List<ExperimentDefinition> experiments)
         {
             ConfigStore.ApplySnapshot(version, values, experiments);
+            _experiments.ApplySnapshot(ConfigStore.Experiments);
             Internal.ConfigVersion = version;
         }
 
-        public FittedFrame SnapshotIfDirty()
+        public FrameBatch SnapshotIfDirty()
         {
             if (!_metrics.IsDirty() && _events.Length == 0 && _logs.Length == 0 && !Internal.HasCounterActivity())
             {
@@ -155,7 +159,7 @@ namespace Wardx
             return SnapshotFrame();
         }
 
-        public FittedFrame SnapshotFrame()
+        public FrameBatch SnapshotFrame()
         {
             var to = Clock.UnixMs();
             var from = _windowStart;
@@ -166,25 +170,29 @@ namespace Wardx
             var events = _events.Swap();
             var logs = _logs.Swap();
             var internalSnap = Internal.SnapshotAndReset();
-            var frame = FrameBuilder.Build(++_seq, from, to, metrics, events, logs, internalSnap);
-            var fitted = FrameBuilder.FitToMaxBytes(frame, _settings.MaxFrameBytes);
-            Internal.LogsDropped += fitted.DroppedLogs;
-            Internal.EventsDropped += fitted.DroppedEvents;
-            _pendingFrames.Add(fitted.Frame);
-            TracerEmit.Frame(_tracer, new FrameRecord
+            var frame = FrameBuilder.Build(_seq + 1, from, to, metrics, events, logs, internalSnap);
+            var batch = FrameBuilder.SplitToMaxBytes(frame, _settings.MaxFrameBytes);
+            _seq = batch.Frames[batch.Frames.Count - 1].Seq;
+            _pendingFrames.AddRange(batch.Frames);
+            for (int i = 0; i < batch.Frames.Count; i++)
             {
-                Seq = fitted.Frame.Seq,
-                From = fitted.Frame.From,
-                To = fitted.Frame.To,
-                Counters = fitted.Frame.Counters.Count,
-                Gauges = fitted.Frame.Gauges.Count,
-                Histograms = fitted.Frame.Histograms.Count,
-                Events = fitted.Frame.Events.Count,
-                Logs = fitted.Frame.Logs.Count,
-                DroppedLogs = fitted.DroppedLogs,
-                DroppedEvents = fitted.DroppedEvents
-            });
-            return fitted;
+                var physical = batch.Frames[i];
+                TracerEmit.Frame(_tracer, new FrameRecord
+                {
+                    Seq = physical.Seq,
+                    From = physical.From,
+                    To = physical.To,
+                    Counters = physical.Counters.Count,
+                    Gauges = physical.Gauges.Count,
+                    Histograms = physical.Histograms.Count,
+                    Events = physical.Events.Count,
+                    Logs = physical.Logs.Count,
+                    DroppedLogs = i == 0 ? batch.DroppedLogs : 0,
+                    DroppedEvents = i == 0 ? batch.DroppedEvents : 0,
+                    DroppedRows = i == 0 ? batch.DroppedRows : 0
+                });
+            }
+            return batch;
         }
 
         public List<Frame> TakePendingFrames()
@@ -205,18 +213,16 @@ namespace Wardx
             return wrapped;
         }
 
-        static List<object> AssignmentWire(List<ExperimentAssignment> assignments)
+        static List<object> AssignmentWire(ExperimentAssignment assignment)
         {
-            var rows = new List<object>(assignments.Count);
-            foreach (var row in assignments)
+            return new List<object>
             {
-                rows.Add(new Dictionary<string, object>
+                new Dictionary<string, object>
                 {
-                    ["experiment"] = row.Experiment,
-                    ["variant"] = row.Variant
-                });
-            }
-            return rows;
+                    ["experiment"] = assignment.Experiment,
+                    ["variant"] = assignment.Variant
+                }
+            };
         }
     }
 

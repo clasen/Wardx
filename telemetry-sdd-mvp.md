@@ -240,8 +240,11 @@ import { createWardx } from 'wardx';
 const wardx = createWardx({
   endpoint: 'https://ingest.wardx.dev',
   projectKey: 'dev_project_key',
+  project: 'demo',
+  role: 'game-server',
   appVersion: '2.4.1',
-  environment: 'production'
+  environment: 'production',
+  privacySalt: 'demo-subject-hash-v1'
 });
 ```
 

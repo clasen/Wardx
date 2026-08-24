@@ -62,6 +62,7 @@ namespace Wardx.Tests
                 Enabled = true,
                 Allocation = 1,
                 Salt = "3ad8f9",
+                GoalMetric = "message.sent",
                 PrimaryMetric = "message.sent",
                 Variants = new List<VariantDefinition>
                 {

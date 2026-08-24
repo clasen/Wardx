@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { gunzipSync } from 'node:zlib';
+import { createServer } from 'node:net';
 import { createConsoleTracer, createWardx } from '../src/index.js';
 import { createIngestServer, listen } from '../../server/src/server.js';
 import { testServerConfig } from '../../server/test/helpers.js';
@@ -23,7 +25,8 @@ test('createWardx does not require connectivity', () => {
     project: 'demo',
     role: 'client',
     appVersion: '1.0.0',
-    environment: 'test'
+    environment: 'test',
+    privacySalt: 'test-salt'
   });
   wardx.counter('x').inc();
   return wardx.shutdown();
@@ -38,6 +41,7 @@ test('sdk syncs frames and receives remote config', async () => {
       role: 'client',
       appVersion: '2.4.1',
       environment: 'test',
+      privacySalt: 'test-salt',
       aggregateIntervalMs: 60_000,
       syncIntervalMs: 60_000
     });
@@ -72,6 +76,7 @@ test('tracer receives measure records and a sync record on flush', async () => {
       role: 'client',
       appVersion: '1.0.0',
       environment: 'test',
+      privacySalt: 'test-salt',
       aggregateIntervalMs: 60_000,
       syncIntervalMs: 60_000,
       tracer: {
@@ -119,4 +124,122 @@ test('createConsoleTracer writes one line per measure', () => {
   assert.equal(lines.length, 2);
   assert.match(lines[0], /counter\s+match\.completed mode=ranked {2}inc 1/);
   assert.match(lines[1], /sync\s+flush frames=1 gzip=120B 3\.3ms ok config=12/);
+});
+
+test('concurrent shutdown callers share final flush and close once', async () => {
+  let releaseBootstrap;
+  let posts = 0;
+  let closes = 0;
+  const bootstrap = new Promise((resolve) => {
+    releaseBootstrap = resolve;
+  });
+  const wardx = createWardx({
+    endpoint: 'http://127.0.0.1:1',
+    projectKey: 'test-key',
+    project: 'demo',
+    role: 'client',
+    appVersion: '1.0.0',
+    environment: 'test',
+    privacySalt: 'test-salt',
+    aggregateIntervalMs: 60_000,
+    syncIntervalMs: 60_000
+  });
+  wardx._transport = {
+    post: async () => {
+      posts += 1;
+      if (posts === 1) await bootstrap;
+      return { ok: true, status: 200, json: { ok: true, configVersion: 0 } };
+    },
+    close: () => {
+      closes += 1;
+    }
+  };
+  await new Promise((resolve) => setImmediate(resolve));
+  wardx.event('pending-at-shutdown');
+  const first = wardx.shutdown();
+  const second = wardx.shutdown();
+  assert.equal(first, second);
+  releaseBootstrap();
+  await Promise.all([first, second]);
+  assert.equal(posts, 2);
+  assert.equal(closes, 1);
+});
+
+test('failed frames stay at-most-once and frames_failed is sent on the next flush', async () => {
+  const envelopes = [];
+  let posts = 0;
+  const wardx = createWardx({
+    endpoint: 'http://127.0.0.1:1',
+    projectKey: 'test-key',
+    project: 'demo',
+    role: 'client',
+    appVersion: '1.0.0',
+    environment: 'test',
+    privacySalt: 'test-salt',
+    aggregateIntervalMs: 60_000,
+    syncIntervalMs: 60_000
+  });
+  wardx._transport = {
+    post: async (body) => {
+      posts += 1;
+      envelopes.push(JSON.parse(gunzipSync(body).toString('utf8')));
+      if (posts === 2) return { ok: false, status: 503, json: null };
+      return { ok: true, status: 200, json: { ok: true, configVersion: 0 } };
+    },
+    close() {}
+  };
+  await new Promise((resolve) => setImmediate(resolve));
+  wardx.counter('lost-on-failure').inc();
+  await wardx.flush();
+  await wardx.flush();
+  const failedMetric = envelopes[2].frames
+    .flatMap((frame) => frame.metrics.counters)
+    .find((row) => row[0] === 'wardx.internal.frames_failed');
+  const lostCounterAttempts = envelopes
+    .flatMap((envelope) => envelope.frames)
+    .flatMap((frame) => frame.metrics.counters)
+    .filter((row) => row[0] === 'lost-on-failure');
+  assert.equal(failedMetric[2], 1);
+  assert.equal(lostCounterAttempts.length, 1);
+  await wardx.shutdown();
+});
+
+test('real connection failure is at-most-once and reports frames_failed after recovery', async () => {
+  const probe = createServer();
+  const reserved = await listen(probe, 0, '127.0.0.1');
+  const port = reserved.port;
+  await new Promise((resolve, reject) => probe.close((error) => (error ? reject(error) : resolve())));
+
+  const endpoint = `http://127.0.0.1:${port}`;
+  const wardx = createWardx({
+    endpoint,
+    projectKey: 'test-key',
+    project: 'demo',
+    role: 'client',
+    appVersion: '1.0.0',
+    environment: 'test',
+    privacySalt: 'test-salt',
+    aggregateIntervalMs: 60_000,
+    syncIntervalMs: 60_000,
+    httpTimeoutMs: 1000
+  });
+  await wardx._syncChain;
+  wardx.counter('discarded-on-failure').inc();
+  await wardx.flush();
+
+  const server = createIngestServer(testServerConfig());
+  await listen(server, port, '127.0.0.1');
+  try {
+    await wardx.flush();
+    const receivedCounters = server.wardx.sink.envelopes
+      .flatMap((envelope) => envelope.frames)
+      .flatMap((frame) => frame.metrics.counters);
+    assert.equal(receivedCounters.some((row) => row[0] === 'discarded-on-failure'), false);
+    const failed = receivedCounters.find((row) => row[0] === 'wardx.internal.frames_failed');
+    assert.ok(failed);
+    assert.ok(failed[2] >= 1);
+  } finally {
+    await wardx.shutdown();
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
 });

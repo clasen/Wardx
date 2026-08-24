@@ -15,6 +15,7 @@ export const INTERNAL: {
   readonly lastSyncMs: 'wardx.internal.last_sync_ms';
   readonly configVersion: 'wardx.internal.config_version';
   readonly processRssBytes: 'wardx.internal.process_rss_bytes';
+  readonly frameRowsDropped: 'wardx.internal.frame_rows_dropped';
 };
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -56,6 +57,7 @@ export interface SdkDefaults {
   maxSeriesPerMetric: number;
   maxDimensionKeys: number;
   maxDimensionValueLength: number;
+  experimentStateMaxSubjects: number;
   httpTimeoutMs: number;
   histogramBuckets: number[];
 }
@@ -67,7 +69,7 @@ export interface CreateWardxOptions extends Partial<SdkDefaults> {
   role: string;
   appVersion: string;
   environment: string;
-  privacySalt?: string;
+  privacySalt: string;
   tracer?: Tracer | null;
 }
 
@@ -112,6 +114,7 @@ export interface Experiment {
   enabled: boolean;
   allocation: number;
   salt: string;
+  goalMetric: string;
   primaryMetric?: string;
   variants: ExperimentVariant[];
 }
@@ -167,9 +170,13 @@ export interface Frame {
   logs: LogRow[];
 }
 
-export interface FittedFrame {
-  frame: Frame;
-  json: string;
+export interface FrameBatch {
+  frames: Frame[];
+  jsons: string[];
+  droppedRows: number;
+  droppedCounters: number;
+  droppedGauges: number;
+  droppedHistograms: number;
   droppedLogs: number;
   droppedEvents: number;
 }
@@ -223,6 +230,7 @@ export interface FrameTraceRecord {
   logs: number;
   droppedLogs: number;
   droppedEvents: number;
+  droppedRows: number;
 }
 
 export interface SyncTraceRecord {
@@ -344,9 +352,15 @@ export class ConfigStore {
 }
 
 export class ExperimentResolver {
-  constructor(options: { privacySalt: string; onExposure: (payload: ExposurePayload) => void });
+  stateMaxSubjects: number;
+  stateBySubject: Map<string, unknown>;
+  constructor(options: {
+    privacySalt: string;
+    stateMaxSubjects: number;
+    onExposure: (payload: ExposurePayload) => void;
+  });
   hashSubject(subjectId: string): string;
-  recordAssignment(subjectId: string, experiment: Experiment, variant: ExperimentVariant): void;
+  recordAssignment(subjectId: string, experiment: Experiment, variant: ExperimentVariant): Assignment;
   assignmentsFor(subjectId: string): Assignment[];
   resolve(
     key: string,
@@ -354,7 +368,8 @@ export class ExperimentResolver {
     subjectId: string | null | undefined,
     experimentsByKey: Map<string, Experiment[]>
   ): ConfigValue;
-  relevantExperiments(subjectId: string, experiments: Experiment[]): Assignment[];
+  exposedAssignmentForGoal(subjectId: string, goalMetric: string): Assignment | null;
+  applySnapshot(experiments: Experiment[]): void;
 }
 
 export class FrameBuilder {
@@ -368,7 +383,7 @@ export class FrameBuilder {
     internal: InternalSnapshot;
   }): Frame;
   static mergeInternal(counters: CounterRow[], gauges: GaugeRow[], internal: InternalSnapshot): void;
-  static fitToMaxBytes(frame: Frame, maxFrameBytes: number): FittedFrame;
+  static splitToMaxBytes(frame: Frame, maxFrameBytes: number): FrameBatch;
 }
 
 export class WardxCore {
@@ -394,8 +409,8 @@ export class WardxCore {
   configGet<T>(key: string, fallback: T, context?: SubjectContext): T;
   experimentGoal(name: string, context?: ExperimentGoalContext): void;
   applyConfig(version: number, config: ConfigSnapshot): void;
-  snapshotIfDirty(): FittedFrame | null;
-  snapshotFrame(): FittedFrame;
+  snapshotIfDirty(): FrameBatch | null;
+  snapshotFrame(): FrameBatch;
   takePendingFrames(): Frame[];
 }
 

@@ -8,6 +8,26 @@ import { loadServerConfig } from '../src/loadConfig.js';
 import { createIngestServer, listen } from '../src/server.js';
 import { gzipJson, sampleEnvelope, testServerConfig } from './helpers.js';
 
+const DELAY_EXPERIMENT = {
+  id: 'delay',
+  enabled: true,
+  allocation: 1,
+  salt: 'delay-salt',
+  primaryMetric: 'message.sent',
+  goalMetric: 'message.sent',
+  roles: ['client'],
+  variants: [
+    { key: 'control', weight: 50, values: { 'message.delayMs': 1000 } },
+    { key: 'fast', weight: 50, values: { 'message.delayMs': 400 } }
+  ]
+};
+
+function experimentServerConfig(overrides = {}) {
+  const config = testServerConfig(overrides);
+  config.projects.demo.experiments = [DELAY_EXPERIMENT];
+  return config;
+}
+
 async function withServer(config, fn) {
   const server = createIngestServer(config);
   const address = await listen(server, config.port, config.host);
@@ -15,7 +35,7 @@ async function withServer(config, fn) {
   try {
     return await fn(server, base);
   } finally {
-    await new Promise((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+    await server.wardx.stop();
   }
 }
 
@@ -29,11 +49,16 @@ function experimentEnvelope(now = Date.now()) {
         to: now + 1,
         metrics: { counters: [], gauges: [], histograms: [] },
         events: [
-          [now, 'experiment.exposure', { experiment: 'delay', variant: 'fast' }],
+          [now, 'experiment.exposure', { experiment: 'delay', variant: 'fast', subject: 'subject-hash' }],
           [
             now,
             'experiment.goal',
-            { experiments: [{ experiment: 'delay', variant: 'fast' }], value: 4 }
+            {
+              metric: 'message.sent',
+              subject: 'subject-hash',
+              experiments: [{ experiment: 'delay', variant: 'fast' }],
+              value: 4
+            }
           ]
         ],
         logs: []
@@ -66,7 +91,7 @@ test('loadExperimentStats returns empty when the sidecar is missing', () => {
 test('experiment lifetime stats persist across ingest server restarts', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'wardx-'));
   const path = join(dir, 'server.json');
-  writeFileSync(path, `${JSON.stringify(testServerConfig({ port: 0 }), null, 2)}\n`);
+  writeFileSync(path, `${JSON.stringify(experimentServerConfig({ port: 0 }), null, 2)}\n`);
   try {
     const first = loadServerConfig(path);
     await withServer(first, async (server, base) => {
@@ -80,6 +105,7 @@ test('experiment lifetime stats persist across ingest server restarts', async ()
         body: gzipJson(experimentEnvelope())
       });
       assert.equal(res.status, 200);
+      await server.wardx.persistence.flush();
       const saved = JSON.parse(readFileSync(experimentStatsPath(path), 'utf8'));
       assert.equal(saved.projects.demo.delay.fast.exposures, 1);
       assert.equal(saved.projects.demo.delay.fast.goals, 1);

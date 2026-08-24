@@ -1,46 +1,29 @@
 import { INTERNAL } from '../protocol.js';
-import { LOG_RANK } from '../protocol.js';
 
 function measure(frame) {
   const json = JSON.stringify(frame);
   return { json, bytes: Buffer.byteLength(json, 'utf8') };
 }
 
-function logDropOrder(logs) {
-  return logs
-    .map((_, index) => index)
-    .sort((a, b) => {
-      const rankA = LOG_RANK[logs[a][1]];
-      const rankB = LOG_RANK[logs[b][1]];
-      const aKey = rankA === undefined ? Infinity : rankA;
-      const bKey = rankB === undefined ? Infinity : rankB;
-      if (aKey !== bKey) return aKey - bKey;
-      return a - b;
-    });
+function emptyFrame(seq, from, to) {
+  return {
+    seq,
+    from,
+    to,
+    metrics: { counters: [], gauges: [], histograms: [] },
+    events: [],
+    logs: []
+  };
 }
 
-function logsWithoutFirstK(logs, dropOrder, k) {
-  if (k <= 0) return logs;
-  if (k >= logs.length) return [];
-  const drop = new Set(dropOrder.slice(0, k));
-  return logs.filter((_, index) => !drop.has(index));
-}
-
-function leastDrops(maxDrop, fits) {
-  if (maxDrop === 0) return 0;
-  if (!fits(maxDrop)) return maxDrop;
-  let lo = 0;
-  let hi = maxDrop;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (fits(mid)) hi = mid;
-    else lo = mid + 1;
-  }
-  return lo;
-}
-
-function isInternalGauge(row) {
-  return typeof row[0] === 'string' && row[0].startsWith('wardx.internal.');
+function rowCount(frame) {
+  return (
+    frame.metrics.counters.length +
+    frame.metrics.gauges.length +
+    frame.metrics.histograms.length +
+    frame.events.length +
+    frame.logs.length
+  );
 }
 
 export class FrameBuilder {
@@ -88,45 +71,80 @@ export class FrameBuilder {
     }
   }
 
-  static fitToMaxBytes(frame, maxFrameBytes) {
-    let { json, bytes } = measure(frame);
-    if (bytes <= maxFrameBytes) return { frame, json, droppedLogs: 0, droppedEvents: 0 };
-
-    let droppedLogs = 0;
-    let droppedEvents = 0;
-
-    if (frame.logs.length > 0) {
-      const dropOrder = logDropOrder(frame.logs);
-      const k = leastDrops(dropOrder.length, (mid) => {
-        const probe = { ...frame, logs: logsWithoutFirstK(frame.logs, dropOrder, mid) };
-        return measure(probe).bytes <= maxFrameBytes;
-      });
-      frame.logs = logsWithoutFirstK(frame.logs, dropOrder, k);
-      droppedLogs = k;
-      ({ json, bytes } = measure(frame));
-      if (bytes <= maxFrameBytes) return { frame, json, droppedLogs, droppedEvents };
+  static splitToMaxBytes(frame, maxFrameBytes) {
+    if (!Number.isInteger(maxFrameBytes) || maxFrameBytes < 1024) {
+      throw new Error('maxFrameBytes must be an integer at least 1024');
     }
+    const frames = [];
+    const jsons = [];
+    const dropped = {
+      counters: 0,
+      gauges: 0,
+      histograms: 0,
+      events: 0,
+      logs: 0
+    };
+    let current = emptyFrame(frame.seq, frame.from, frame.to);
 
-    if (frame.events.length > 0) {
-      const original = frame.events;
-      const k = leastDrops(original.length, (mid) => {
-        const probe = { ...frame, events: original.slice(0, original.length - mid) };
-        return measure(probe).bytes <= maxFrameBytes;
-      });
-      frame.events = original.slice(0, original.length - k);
-      droppedEvents = k;
-      ({ json, bytes } = measure(frame));
-      if (bytes <= maxFrameBytes) return { frame, json, droppedLogs, droppedEvents };
-    }
+    const finishCurrent = () => {
+      const measured = measure(current);
+      if (measured.bytes > maxFrameBytes) {
+        throw new Error('frame splitter produced an oversized frame');
+      }
+      frames.push(current);
+      jsons.push(measured.json);
+      current = emptyFrame(frame.seq + frames.length, frame.from, frame.to);
+    };
 
-    if (bytes > maxFrameBytes && frame.metrics.histograms.length > 0) {
-      frame.metrics.histograms = [];
-      ({ json, bytes } = measure(frame));
+    const addRow = (collection, row, countDrop = true) => {
+      collection(current).push(row);
+      if (measure(current).bytes <= maxFrameBytes) return true;
+      collection(current).pop();
+      if (rowCount(current) > 0) {
+        finishCurrent();
+        collection(current).push(row);
+        if (measure(current).bytes <= maxFrameBytes) return true;
+        collection(current).pop();
+      }
+      if (countDrop) dropped[collection.kind] += 1;
+      return false;
+    };
+
+    const counters = (candidate) => candidate.metrics.counters;
+    counters.kind = 'counters';
+    const gauges = (candidate) => candidate.metrics.gauges;
+    gauges.kind = 'gauges';
+    const histograms = (candidate) => candidate.metrics.histograms;
+    histograms.kind = 'histograms';
+    const events = (candidate) => candidate.events;
+    events.kind = 'events';
+    const logs = (candidate) => candidate.logs;
+    logs.kind = 'logs';
+
+    for (const row of frame.metrics.counters) addRow(counters, row);
+    for (const row of frame.metrics.gauges) addRow(gauges, row);
+    for (const row of frame.metrics.histograms) addRow(histograms, row);
+    for (const row of frame.events) addRow(events, row);
+    for (const row of frame.logs) addRow(logs, row);
+
+    const droppedRows = Object.values(dropped).reduce((sum, value) => sum + value, 0);
+    if (
+      droppedRows > 0 &&
+      !addRow(counters, [INTERNAL.frameRowsDropped, null, droppedRows], false)
+    ) {
+      throw new Error('maxFrameBytes cannot contain the frame drop metric');
     }
-    if (bytes > maxFrameBytes) {
-      frame.metrics.gauges = frame.metrics.gauges.filter(isInternalGauge);
-      ({ json } = measure(frame));
-    }
-    return { frame, json, droppedLogs, droppedEvents };
+    if (frames.length === 0 || rowCount(current) > 0) finishCurrent();
+
+    return {
+      frames,
+      jsons,
+      droppedRows,
+      droppedCounters: dropped.counters,
+      droppedGauges: dropped.gauges,
+      droppedHistograms: dropped.histograms,
+      droppedEvents: dropped.events,
+      droppedLogs: dropped.logs
+    };
   }
 }

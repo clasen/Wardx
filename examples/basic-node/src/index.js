@@ -6,7 +6,8 @@ const wardx = createWardx({
   project: 'demo',
   role: 'client',
   appVersion: '0.1.0',
-  environment: 'development'
+  environment: 'development',
+  privacySalt: 'demo-subject-hash-v1'
 });
 
 wardx.log.info('match_started', { mode: 'ranked', players: 4 });

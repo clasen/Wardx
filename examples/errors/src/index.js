@@ -4,6 +4,7 @@ import { createWardx } from 'wardx';
 
 const PROJECT = 'demo';
 const PROJECT_KEY = 'dev_project_key';
+const PRIVACY_SALT = 'demo-subject-hash-v1';
 const STACK_MAX = 4096;
 
 const FAILURES = [
@@ -95,6 +96,16 @@ const server = createIngestServer({
   projectKeys: { [PROJECT_KEY]: PROJECT },
   sink: 'memory',
   maxRequestBytes: 2097152,
+  maxClockSkewMs: 300000,
+  maxFramesPerEnvelope: 256,
+  maxItemsPerEnvelope: 10000,
+  maxNameBytes: 256,
+  maxDimensionKeys: 8,
+  maxDimensionValueLength: 64,
+  maxAttributeKeys: 32,
+  maxAttributeValueLength: 1024,
+  persistenceFlushIntervalMs: 250,
+  diagnostics: { sink: 'stderr' },
   aggregateRetentionMinutes: 60,
   aggregateMaxSeriesPerMetric: 1000,
   memorySinkMaxEnvelopes: 100,
@@ -133,7 +144,8 @@ const wardx = createWardx({
   project: PROJECT,
   role: 'client',
   appVersion: '0.1.0',
-  environment: 'development'
+  environment: 'development',
+  privacySalt: PRIVACY_SALT
 });
 const sink = server.wardx.sink;
 

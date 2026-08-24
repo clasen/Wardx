@@ -15,6 +15,7 @@ namespace Wardx
         public const int MaxSeriesPerMetric = 1000;
         public const int MaxDimensionKeys = 8;
         public const int MaxDimensionValueLength = 64;
+        public const int ExperimentStateMaxSubjects = 100000;
         public const int HttpTimeoutMs = 10000;
 
         public static readonly double[] HistogramBuckets = { 10, 25, 50, 100, 250, 500, 1000 };

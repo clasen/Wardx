@@ -5,6 +5,7 @@ import { decideExperiment, normsInv } from '../src/control/experimentDecision.js
 const POLICY = {
   id: 'delay',
   enabled: true,
+  goalMetric: 'message.sent',
   goalKind: 'conversion',
   control: 'control',
   minExposures: 50,

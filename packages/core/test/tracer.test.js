@@ -125,7 +125,7 @@ test('snapshotFrame emits a frame summary, not the wire arrays', () => {
   const fitted = engine.snapshotFrame();
   const frame = tracer.records.find((row) => row.hook === 'frame');
   assert.ok(frame);
-  assert.equal(frame.seq, fitted.frame.seq);
+  assert.equal(frame.seq, fitted.frames[0].seq);
   assert.ok(frame.counters >= 1);
   assert.equal(frame.events, 1);
   assert.equal(frame.droppedLogs, 0);

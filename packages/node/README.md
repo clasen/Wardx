@@ -32,8 +32,10 @@ To receive frames, run an ingest server. Install `@wardx/server` and start it wi
 - A measure call does not send network data.
 - A measure call does not wait for a Promise.
 - Delivery is at-most-once. If a sync fails, the SDK discards the batch.
+- Physical frames are serialized, split to `maxFrameBytes`, and assigned consecutive sequence numbers. An individually oversized row is counted in `wardx.internal.frame_rows_dropped`.
 - The application has priority over telemetry.
 - Remote Config is always read from local memory.
+- Remote Config must not contain secrets. The project key authenticates the project; client-selected `role` is routing metadata, not authorization.
 - The SDK sends names only. Descriptions live in the server catalog: ship them in the config file, or fill them during MCP onboarding.
 - `identify(subjectId)` sets the default subject for this instance. A per-call `{ subjectId }` overrides it. A process that serves many users must pass `subjectId` on each call and must not `identify()`.
 
@@ -48,11 +50,12 @@ To receive frames, run an ingest server. Install `@wardx/server` and start it wi
 | `endpoint` | Base URL of the ingest server, for example `http://127.0.0.1:8787`. |
 | `projectKey` | Value of header `X-Wardx-Key`. |
 | `project` | Project name. The name must match the server mapping. |
-| `role` | Name of this instance inside the project, for example `client`, `unity`, `game-server`, `desktop`. Not `*`. |
+| `role` | Routing name of this instance inside the project, for example `client`, `unity`, `game-server`, `desktop`. Not `*`; not an authorization boundary. |
 | `appVersion` | Application version. |
 | `environment` | Environment name. |
+| `privacySalt` | Required stable, project-specific salt for one-way subject hashes. |
 
-Optional keys include `privacySalt`, `tracer`, and the keys in `@wardx/core` `defaults.json`. If `privacySalt` is empty, the SDK uses `projectKey`. `tracer` is a local diagnostic hook. It does not go over the wire.
+Optional keys include `tracer` and overrides for centralized values in `@wardx/core` `defaults.json`. `maxFrameBytes` is at least `1024`; `experimentStateMaxSubjects` defaults to `100000` and bounds assignment/exposure state in this SDK instance. Missing or empty `privacySalt` is rejected; it is never derived from the project credential. `tracer` is a local diagnostic hook. It does not go over the wire.
 
 The SDK starts a bootstrap sync immediately. The SDK then syncs on `syncIntervalMs` with jitter.
 
@@ -71,7 +74,8 @@ const wardx = createWardx({
   project: 'demo',
   role: 'client',
   appVersion: '2.4.1',
-  environment: 'production'
+  environment: 'production',
+  privacySalt: 'demo-subject-hash-v1'
 });
 
 wardx.log.info('match_started', { mode: 'ranked', players: 4 });
@@ -388,7 +392,7 @@ The SDK updates the snapshot when a sync response contains a newer `configVersio
 
 The ingest server config can define experiment `message-delay-v1` on key `message.delayMs`. See `@wardx/server`. Variants live on the server. The app still reads the same key.
 
-On a client with one user, call `identify` once after login. Later `config.get` and `experiment.goal` use that subject. On a server that handles many users, pass `{ subjectId }` on every call. Do not `identify()` there: it is process-wide and would mix users.
+On a client with one user, call `identify` once after login. Later `config.get` and `experiment.goal` use that subject. On a server that handles many users, pass `{ subjectId }` on every call. Do not use one SDK instance's default there; it would mix users.
 
 ```js
 wardx.identify(userId);
@@ -419,7 +423,7 @@ The first `config.get` that has a subject in a session can emit event `experimen
 
 The payload does not contain the raw `subjectId`.
 
-`experiment.goal` needs a subject: from `identify()` or from `{ subjectId }` on that call. The event includes the known assignments for that subject. Without a subject, the call throws.
+`experiment.goal` needs a subject: from `identify()` or from `{ subjectId }` on that call. It emits nothing until that subject has an exposure whose `goalMetric` matches the goal name; a valid event contains exactly that one assignment. Without a subject, the call throws.
 
 ## Use case 11: Continue when the ingest server is down
 
@@ -434,7 +438,8 @@ const wardx = createWardx({
   project: 'demo',
   role: 'client',
   appVersion: '0.1.0',
-  environment: 'development'
+  environment: 'development',
+  privacySalt: 'demo-subject-hash-v1'
 });
 
 wardx.counter('jobs.completed').inc();
@@ -458,7 +463,8 @@ const wardx = createWardx({
   project: 'demo',
   role: 'client',
   appVersion: '0.1.0',
-  environment: 'production'
+  environment: 'production',
+  privacySalt: 'demo-subject-hash-v1'
 });
 
 async function onStop() {
@@ -470,7 +476,7 @@ process.on('SIGTERM', onStop);
 process.on('SIGINT', onStop);
 ```
 
-`shutdown` is safe to call more than one time. The second call returns immediately.
+`shutdown` is safe to call more than once. Concurrent callers receive the same promise and all await the final flush and single transport close.
 
 `flush` sends the current pending frames and does not stop the timers. Use `shutdown` when the process stops.
 
@@ -490,6 +496,7 @@ const wardx = createWardx({
   role: 'client',
   appVersion: '0.1.0',
   environment: 'development',
+  privacySalt: 'demo-subject-hash-v1',
   tracer: createConsoleTracer()
 });
 ```
@@ -579,7 +586,7 @@ The volume funnel `level.start` → `level.fail` / `level.complete` is the diffi
 
 Call `experiment.goal('session.duration', { value: durationMs })` when the play session ends (use case 14).
 
-From MCP, after onboarding: `upsert_experiment` on the existing keys (`level.3.enemyHp`, …) with a hypothesis such as "Lower HP on level 3 increases session duration", `primaryMetric: 'session.time_ms'`, `goalKind: 'mean'`, `control`, `minExposures`, `confidence`, and variants that only change those keys. Later `analyze_experiment`: follow `decision` and compare `goalMean` for the duration goal. `ship_experiment` when status is `winner`. Compare the funnel counts with `get_aggregates`. See `@wardx/server` use case 7.
+From MCP, after onboarding: `upsert_experiment` on the existing keys (`level.3.enemyHp`, …) with a hypothesis such as "Lower HP on level 3 increases session duration", `primaryMetric: 'session.time_ms'`, `goalMetric: 'session.duration'`, `goalKind: 'mean'`, `control`, `minExposures`, `confidence`, and variants that only change those keys. Later `analyze_experiment`: follow `decision` and compare `goalMean` for the duration goal. `ship_experiment` when status is `winner`. Compare the funnel counts with `get_aggregates`. See `@wardx/server` use case 7.
 
 ## Use case 16: Surface an error so an agent can open the source
 
@@ -629,13 +636,13 @@ The log ring is recent only (`recentLogsMax`). It is not a history search. See `
 | `timer(name, dims)` | Starts a timer. The returned function records milliseconds. |
 | `event(name, attrs)` | Buffers a product event. |
 | `log.debug\|info\|warn\|error(message, attrs)` | Buffers a structured log. |
-| `identify(subjectId)` | Sets the default subject for this instance. `identify(null)` clears it. Process-wide: do not use on a game-server that serves many users. |
+| `identify(subjectId)` | Sets the default subject for this SDK instance. `identify(null)` clears it. Do not share that default across users on a multi-user server. |
 | `config.get(key, fallback, context)` | Reads Remote Config. Uses `identify()` or `{ subjectId }`. A per-call `{ subjectId }` overrides `identify()`. Omit both for the shared value. |
 | `experiment.goal(name, context)` | Emits `experiment.goal`. Needs a subject from `identify()` or `{ subjectId }`. Optional `value` for a quantitative goal such as session duration. |
 | `flush()` | Sends pending frames now. Returns a Promise. |
 | `shutdown()` | Stops timers, sends pending frames, and closes the HTTP agent. |
 
-The SDK creates one `instanceId` and one `sessionId` per process. The IDs are ULIDs.
+Each `createWardx()` SDK instance creates its own `instanceId` and `sessionId`. The IDs are ULIDs; they are not process-wide singletons or subject/journey keys.
 
 Sync delay is `syncIntervalMs * random(syncJitterMin, syncJitterMax)`. The default interval is 15 seconds. The default jitter is 0.85 to 1.15.
 

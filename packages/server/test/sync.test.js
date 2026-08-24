@@ -10,7 +10,7 @@ async function withServer(config, fn) {
   try {
     return await fn(server, base);
   } finally {
-    await new Promise((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+    await server.wardx.stop();
   }
 }
 
@@ -42,6 +42,112 @@ test('POST /v1/sync accepts gzip frames and returns config when versions differ'
     assert.equal(json.configVersion, 12);
     assert.equal(json.config.values['message.delayMs'], 1000);
     assert.equal(server.wardx.sink.frameCount, 1);
+  });
+});
+
+test('POST /v1/sync bounds decoded gzip bytes and distinguishes corrupt gzip', async () => {
+  const oversized = sampleEnvelope({
+    client: { role: 'client'.repeat(100) },
+    frames: []
+  });
+  const compressed = gzipJson(oversized);
+  const maxRequestBytes = compressed.length + 1;
+  assert.ok(Buffer.byteLength(JSON.stringify(oversized)) > maxRequestBytes);
+
+  await withServer(testServerConfig({ maxRequestBytes }), async (_server, base) => {
+    const tooLarge = await fetch(`${base}/v1/sync`, {
+      method: 'POST',
+      headers: syncHeaders(),
+      body: compressed
+    });
+    assert.equal(tooLarge.status, 413);
+    assert.deepEqual(await tooLarge.json(), { ok: false, error: 'payload too large' });
+
+    const corrupt = await fetch(`${base}/v1/sync`, {
+      method: 'POST',
+      headers: syncHeaders(),
+      body: Buffer.from('not-gzip')
+    });
+    assert.equal(corrupt.status, 400);
+    assert.deepEqual(await corrupt.json(), { ok: false, error: 'invalid gzip' });
+  });
+});
+
+test('POST /v1/sync accepts plain and gzip envelopes at the exact decoded limit', async () => {
+  const envelope = sampleEnvelope({ frames: [] });
+  const plain = Buffer.from(JSON.stringify(envelope));
+  await withServer(testServerConfig({ maxRequestBytes: plain.length }), async (_server, base) => {
+    const plainResponse = await fetch(`${base}/v1/sync`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-wardx-key': 'test-key' },
+      body: plain
+    });
+    assert.equal(plainResponse.status, 200);
+
+    const gzipResponse = await fetch(`${base}/v1/sync`, {
+      method: 'POST',
+      headers: syncHeaders(),
+      body: gzipJson(envelope)
+    });
+    assert.equal(gzipResponse.status, 200);
+  });
+});
+
+test('POST /v1/sync rejects unsupported content encoding', async () => {
+  await withServer(testServerConfig(), async (_server, base) => {
+    const response = await fetch(`${base}/v1/sync`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'content-encoding': 'br',
+        'x-wardx-key': 'test-key'
+      },
+      body: Buffer.from('{}')
+    });
+    assert.equal(response.status, 415);
+    assert.deepEqual(await response.json(), { ok: false, error: 'unsupported content encoding' });
+  });
+});
+
+test('POST /v1/sync rejects a malformed tuple before mutating state', async () => {
+  await withServer(testServerConfig(), async (server, base) => {
+    const envelope = sampleEnvelope();
+    envelope.frames[0].metrics.counters[0][2] = '4';
+    const res = await fetch(`${base}/v1/sync`, {
+      method: 'POST',
+      headers: syncHeaders(),
+      body: gzipJson(envelope)
+    });
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /finite number/);
+    assert.equal(server.wardx.sink.frameCount, 0);
+    assert.deepEqual(server.wardx.control.aggregates('demo'), []);
+    assert.deepEqual(server.wardx.control.recentClients('demo'), []);
+    assert.deepEqual(server.wardx.control.recentLogs('demo'), []);
+  });
+});
+
+test('POST /v1/sync returns a non-sensitive 500 and reports unexpected handler failures', async () => {
+  await withServer(testServerConfig(), async (server, base) => {
+    const reports = [];
+    server.wardx.diagnostics.report = (...args) => reports.push(args);
+    server.wardx.sink.ingest = () => {
+      throw new Error('local sink detail');
+    };
+    const response = await fetch(`${base}/v1/sync`, {
+      method: 'POST',
+      headers: syncHeaders(),
+      body: gzipJson(sampleEnvelope())
+    });
+
+    assert.equal(response.status, 500);
+    const responseBody = await response.json();
+    assert.deepEqual(responseBody, { ok: false, error: 'internal' });
+    assert.doesNotMatch(JSON.stringify(responseBody), /local sink detail|test-key/);
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0][0], 'http.unexpected');
+    assert.match(reports[0][1].message, /local sink detail/);
+    assert.deepEqual(reports[0][2], { method: 'POST', path: '/v1/sync' });
   });
 });
 

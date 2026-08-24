@@ -23,6 +23,7 @@ namespace Wardx
         public int? MaxSeriesPerMetric;
         public int? MaxDimensionKeys;
         public int? MaxDimensionValueLength;
+        public int? ExperimentStateMaxSubjects;
         public int? HttpTimeoutMs;
         public double[] HistogramBuckets;
     }
@@ -47,6 +48,7 @@ namespace Wardx
         public int MaxSeriesPerMetric;
         public int MaxDimensionKeys;
         public int MaxDimensionValueLength;
+        public int ExperimentStateMaxSubjects;
         public int HttpTimeoutMs;
         public double[] HistogramBuckets;
 
@@ -60,6 +62,7 @@ namespace Wardx
             Require(options.Role, "role", missing);
             Require(options.AppVersion, "appVersion", missing);
             Require(options.Environment, "environment", missing);
+            Require(options.PrivacySalt, "privacySalt", missing);
             if (missing.Count > 0)
             {
                 throw new ArgumentException("createWardx missing required keys: " + string.Join(", ", missing.ToArray()));
@@ -93,13 +96,14 @@ namespace Wardx
                 MaxSeriesPerMetric = options.MaxSeriesPerMetric ?? SdkDefaults.MaxSeriesPerMetric,
                 MaxDimensionKeys = options.MaxDimensionKeys ?? SdkDefaults.MaxDimensionKeys,
                 MaxDimensionValueLength = options.MaxDimensionValueLength ?? SdkDefaults.MaxDimensionValueLength,
+                ExperimentStateMaxSubjects = options.ExperimentStateMaxSubjects ?? SdkDefaults.ExperimentStateMaxSubjects,
                 HttpTimeoutMs = options.HttpTimeoutMs ?? SdkDefaults.HttpTimeoutMs,
                 HistogramBuckets = options.HistogramBuckets ?? SdkDefaults.HistogramBuckets
             };
 
-            if (string.IsNullOrEmpty(settings.PrivacySalt))
+            if (settings.PrivacySalt.Length == 0)
             {
-                settings.PrivacySalt = settings.ProjectKey;
+                throw new ArgumentException("privacySalt must be a non-empty string");
             }
 
             AssertPositive(settings.AggregateIntervalMs, "aggregateIntervalMs");
@@ -107,9 +111,14 @@ namespace Wardx
             AssertPositive(settings.MaxBufferedEvents, "maxBufferedEvents");
             AssertPositive(settings.MaxBufferedLogs, "maxBufferedLogs");
             AssertPositive(settings.MaxFrameBytes, "maxFrameBytes");
+            if (settings.MaxFrameBytes < 1024)
+            {
+                throw new ArgumentException("maxFrameBytes must be at least 1024");
+            }
             AssertPositive(settings.MaxSeriesPerMetric, "maxSeriesPerMetric");
             AssertPositive(settings.MaxDimensionKeys, "maxDimensionKeys");
             AssertPositive(settings.MaxDimensionValueLength, "maxDimensionValueLength");
+            AssertPositive(settings.ExperimentStateMaxSubjects, "experimentStateMaxSubjects");
             AssertPositive(settings.HttpTimeoutMs, "httpTimeoutMs");
             AssertRange(settings.SyncJitterMin, 0, 1, "syncJitterMin");
             AssertRange(settings.SyncJitterMax, 1, 2, "syncJitterMax");

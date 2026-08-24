@@ -1,10 +1,10 @@
 # Wardx for C# / Unity
 
-C# SDK for Wardx. Same wire contract as the Node SDK: `POST /v1/sync`, JSON + gzip, header `X-Wardx-Key`.
+C# SDK for Wardx. It implements Protocol v1 over `POST /v1/sync`, JSON + gzip, and header `X-Wardx-Key`. Treat Node/C#/Unity behavior as equivalent only where shared fixtures or a real HTTP interoperability test prove it.
 
 This SDK talks to that server. See [Wardx](https://github.com/clasen/Wardx). Architecture: [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md).
 
-A measure call changes local memory only. Delivery is at-most-once. A failed sync discards that batch. Remote Config is a local read of the last snapshot.
+A measure call changes local memory only. Delivery is at-most-once. A failed sync discards that batch. Remote Config is a local read of the last snapshot. Physical frames are serialized and split to `MaxFrameBytes` with consecutive sequence numbers; an individually oversized row is counted in `wardx.internal.frame_rows_dropped`.
 
 **WARNING:** The SDK does not write a disk queue. The SDK does not retry the same frames.
 
@@ -38,7 +38,7 @@ Pin a release with `#v0.1.7`. In `Packages/manifest.json`:
 
 ## Start
 
-Required keys: `Endpoint`, `ProjectKey`, `Project`, `Role`, `AppVersion`, `Environment`. `Role` cannot be `*`. Use `unity` for a player build.
+Required keys: `Endpoint`, `ProjectKey`, `Project`, `Role`, `AppVersion`, `Environment`, `PrivacySalt`. `PrivacySalt` must be stable, non-empty, and project-specific; it is never derived from `ProjectKey`. `Role` cannot be `*`. Use `unity` for a player build. The project key authenticates only the project; client-selected `Role` is routing metadata, not authorization. Never put secrets in Remote Config.
 
 ```csharp
 using Wardx;
@@ -50,7 +50,8 @@ var wardx = WardxClient.Create(new WardxOptions
     Project = "demo",
     Role = "unity",
     AppVersion = "0.1.0",
-    Environment = "production"
+    Environment = "production",
+    PrivacySalt = "demo-subject-hash-v1"
 });
 
 wardx.Log.Info("match_started", Dims.Of("mode", "ranked"));
@@ -69,6 +70,8 @@ await wardx.ShutdownAsync();
 In Unity you can also add `WardxBehaviour` to a GameObject and set the same fields in the Inspector. `AppVersion` uses `Application.version` when the field is empty.
 
 Unity sends `sdk.name = wardx-unity` and `client.platform = unity`. A plain C# process sends `wardx-csharp` / `csharp`.
+
+Each `WardxClient.Create(...)` SDK instance creates its own `instanceId` and `sessionId`. They are not process-wide singletons or subject/journey keys.
 
 ## Signals
 
@@ -129,7 +132,7 @@ wardx.Experiment.Goal("session.duration", value: durationMs);
 
 `Identify(userId)` sets the default subject for this instance. Later `Config.Get` and `Experiment.Goal` use it. A per-call `subjectId` overrides it. `Identify(null)` clears it.
 
-Use `Identify` on a single-user process (Unity player, desktop). On a process that serves many users, pass `subjectId` on each call. Do not `Identify()` there: it is process-wide and would mix users. Use a stable account id, not the SDK `sessionId`.
+Use `Identify` on a single-user process (Unity player, desktop). On a process that serves many users, pass `subjectId` on each call. Do not share one SDK instance's default there; it would mix users. Use a stable account id, not the SDK `sessionId`.
 
 With no subject, `Get` returns Remote Config and that call is not in an experiment. `Experiment.Goal` without a subject throws.
 
@@ -152,4 +155,11 @@ Pass `new ConsoleTracer()` as `WardxOptions.Tracer` while instrumenting. It does
 
 ## Protocol
 
-See [docs/PROTOCOL.md](../../docs/PROTOCOL.md). Operational defaults match `packages/core/defaults.json`.
+See [docs/PROTOCOL.md](../../docs/PROTOCOL.md). Operational defaults match `packages/core/defaults.json`: `MaxFrameBytes` is at least `1024`, and `ExperimentStateMaxSubjects` defaults to `100000` to bound assignment/exposure state in this SDK instance.
+
+Verify the C# suite, real CLI interoperability, formatting, and SDK analyzers from the repository root:
+
+```bash
+npm run test:csharp
+npm run check:csharp
+```

@@ -1,13 +1,25 @@
-import { annotateSignal, annotateWindows, attachHypothesis, buildOnboarding, ensureRoleEntry, presentRole } from './catalog.js';
+import {
+  annotateSignal,
+  annotateWindows,
+  attachHypothesis,
+  buildOnboarding,
+  ensureRoleEntry,
+  presentRole,
+  validateCatalog
+} from './catalog.js';
+import { ConfigRepository } from '../config/ConfigRepository.js';
 import { decideExperiment } from './experimentDecision.js';
 import { persistServerConfig } from './persist.js';
 import { assertRole, assertRoles } from '../roles.js';
 import { assertExperimentKeysExist, toClientExperiment, validateExperiment } from './validateExperiment.js';
 
 export class ControlService {
-  constructor({ config, registry }) {
+  constructor({ config, registry, persistence, diagnostics, persistConfig = persistServerConfig }) {
     this.config = config;
     this.registry = registry;
+    this.persistence = persistence;
+    this.diagnostics = diagnostics;
+    this.persistConfig = persistConfig;
   }
 
   listProjects() {
@@ -34,8 +46,9 @@ export class ControlService {
   setProjectDescription(project, description) {
     if (typeof description !== 'string') throw new Error('description must be a string');
     const store = this.requireStore(project);
-    store.catalog.description = description;
-    persistServerConfig(this.config, this.registry);
+    this._commitCatalog(project, store, (catalog) => {
+      catalog.description = description;
+    });
     return { project };
   }
 
@@ -45,8 +58,9 @@ export class ControlService {
       throw new Error('description is required');
     }
     const store = this.requireStore(project);
-    store.catalog.signals[name] = description;
-    persistServerConfig(this.config, this.registry);
+    this._commitCatalog(project, store, (catalog) => {
+      catalog.signals[name] = description;
+    });
     return { project, name };
   }
 
@@ -56,8 +70,30 @@ export class ControlService {
     if (!Object.prototype.hasOwnProperty.call(store.catalog.signals, name)) {
       throw new Error(`unknown signal: ${name}`);
     }
-    delete store.catalog.signals[name];
-    persistServerConfig(this.config, this.registry);
+    this._commitCatalog(project, store, (catalog) => {
+      delete catalog.signals[name];
+    });
+    return { project, name };
+  }
+
+  setPersistLog(project, name) {
+    if (typeof name !== 'string' || name.length === 0) throw new Error('name is required');
+    const store = this.requireStore(project);
+    this._commitCatalog(project, store, (catalog) => {
+      if (!catalog.persistLogs.includes(name)) catalog.persistLogs.push(name);
+    });
+    return { project, name };
+  }
+
+  deletePersistLog(project, name) {
+    if (typeof name !== 'string' || name.length === 0) throw new Error('name is required');
+    const store = this.requireStore(project);
+    const index = store.catalog.persistLogs.indexOf(name);
+    if (index === -1) throw new Error(`unknown persist log: ${name}`);
+    this._commitCatalog(project, store, (catalog) => {
+      catalog.persistLogs.splice(index, 1);
+    });
+    if (store.aggregator.forgetPersistLog(name)) this.persistence?.mark('logStats');
     return { project, name };
   }
 
@@ -67,8 +103,9 @@ export class ControlService {
       throw new Error('description is required');
     }
     const store = this.requireStore(project);
-    ensureRoleEntry(store.catalog, role).description = description;
-    persistServerConfig(this.config, this.registry);
+    this._commitCatalog(project, store, (catalog) => {
+      ensureRoleEntry(catalog, role).description = description;
+    });
     return { project, role };
   }
 
@@ -89,10 +126,11 @@ export class ControlService {
       throw new Error('path or git is required');
     }
     const store = this.requireStore(project);
-    const entry = ensureRoleEntry(store.catalog, role);
-    if (path !== undefined) entry.path = path;
-    if (git !== undefined) entry.git = git;
-    persistServerConfig(this.config, this.registry);
+    this._commitCatalog(project, store, (catalog) => {
+      const entry = ensureRoleEntry(catalog, role);
+      if (path !== undefined) entry.path = path;
+      if (git !== undefined) entry.git = git;
+    });
     return { project, role };
   }
 
@@ -103,7 +141,7 @@ export class ControlService {
     const current = store.configRepo.snapshot();
     current.values[key] = value;
     current.keyRoles[key] = [...roles];
-    this._commit(store, current);
+    this._commit(project, store, current);
     return { version: store.configRepo.version };
   }
 
@@ -116,7 +154,7 @@ export class ControlService {
     }
     delete current.values[key];
     delete current.keyRoles[key];
-    this._commit(store, current);
+    this._commit(project, store, current);
     return { version: store.configRepo.version };
   }
 
@@ -143,10 +181,9 @@ export class ControlService {
     const index = current.experiments.findIndex((row) => row.id === client.id);
     if (index === -1) current.experiments.push(client);
     else current.experiments[index] = client;
-    if (hypothesis !== undefined) {
-      store.catalog.experiments[client.id] = { hypothesis };
-    }
-    this._commit(store, current);
+    const catalog = JSON.parse(JSON.stringify(store.catalog));
+    if (hypothesis !== undefined) catalog.experiments[client.id] = { hypothesis };
+    this._commit(project, store, current, catalog);
     return { version: store.configRepo.version };
   }
 
@@ -158,7 +195,7 @@ export class ControlService {
     const experiment = current.experiments.find((row) => row.id === id);
     if (!experiment) throw new Error(`unknown experiment: ${id}`);
     experiment.enabled = enabled;
-    this._commit(store, current);
+    this._commit(project, store, current);
     return { version: store.configRepo.version };
   }
 
@@ -177,7 +214,7 @@ export class ControlService {
       validateExperiment(experiment);
       assertExperimentKeysExist(experiment, snapshot.values, snapshot.keyRoles);
     }
-    this._commit(store, {
+    this._commit(project, store, {
       values: snapshot.values,
       keyRoles: snapshot.keyRoles,
       experiments: snapshot.experiments.map((experiment) => toClientExperiment(experiment))
@@ -252,7 +289,7 @@ export class ControlService {
     if (!changed) {
       return { version: store.configRepo.version, shippedVariant: key };
     }
-    this._commit(store, current);
+    this._commit(project, store, current);
     return { version: store.configRepo.version, shippedVariant: key };
   }
 
@@ -342,7 +379,12 @@ export class ControlService {
       if (row.exemplar) peak.exemplar = row.exemplar;
       return peak;
     });
-    const outcomes = [...counterRows, ...eventRows, ...histogramRows];
+    const logRows = store.aggregator.topPersistLogs().map((row) => ({
+      kind: 'log',
+      ...row,
+      ...annotateSignal(catalog, row.name)
+    }));
+    const outcomes = [...counterRows, ...eventRows, ...histogramRows, ...logRows];
     const clients = store.clients.list();
     const roleNames = new Set();
     for (const targets of Object.values(snapshot.keyRoles)) {
@@ -359,12 +401,14 @@ export class ControlService {
       const counters = counterRows.filter((row) => row.role === name);
       const events = eventRows.filter((row) => row.role === name);
       const histograms = histogramRows.filter((row) => row.role === name);
+      const logs = logRows.filter((row) => row.role === name);
       roles[name] = {
         ...presentRole(catalog.roles[name]),
         outcomes: [
           ...(limit === undefined || limit === null ? counters : counters.slice(0, limit)),
           ...(limit === undefined || limit === null ? events : events.slice(0, limit)),
-          ...(limit === undefined || limit === null ? histograms : histograms.slice(0, limit))
+          ...(limit === undefined || limit === null ? histograms : histograms.slice(0, limit)),
+          ...(limit === undefined || limit === null ? logs : logs.slice(0, limit))
         ],
         clients: clients.filter((row) => row.role === name)
       };
@@ -381,6 +425,7 @@ export class ControlService {
         catalogRoles: catalog.roles
       }),
       knobs,
+      persistLogs: [...catalog.persistLogs],
       roles,
       experiments: snapshot.experiments.map((experiment) => attachHypothesis(catalog, experiment))
     };
@@ -390,13 +435,34 @@ export class ControlService {
     return this.experimentStats(project, experimentId);
   }
 
-  _commit(store, snapshot) {
-    store.configRepo.replace({
+  _commitCatalog(project, store, mutate) {
+    const catalog = JSON.parse(JSON.stringify(store.catalog));
+    mutate(catalog);
+    validateCatalog(catalog, `server config.projects.${project}.catalog`);
+    const snapshot = store.configRepo.snapshot();
+    this._persist(project, snapshot, catalog);
+    store.catalog = catalog;
+  }
+
+  _commit(project, store, snapshot, catalog = store.catalog) {
+    const candidate = new ConfigRepository({
       version: store.configRepo.version + 1,
       values: snapshot.values,
       keyRoles: snapshot.keyRoles,
       experiments: snapshot.experiments
     });
-    persistServerConfig(this.config, this.registry);
+    validateCatalog(catalog, `server config.projects.${project}.catalog`);
+    this._persist(project, candidate.snapshot(), catalog);
+    store.configRepo = candidate;
+    store.catalog = catalog;
+  }
+
+  _persist(project, snapshot, catalog) {
+    try {
+      this.persistConfig(this.config, this.registry, { project, snapshot, catalog });
+    } catch (error) {
+      this.diagnostics.report('control.persistence_failed', error, { project });
+      throw error;
+    }
   }
 }

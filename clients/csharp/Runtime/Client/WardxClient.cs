@@ -15,12 +15,13 @@ namespace Wardx
         readonly Func<long> _readRssBytes;
         readonly SdkIdentity _sdk;
         readonly object _gate = new object();
+        readonly object _lifecycleGate = new object();
         readonly SemaphoreSlim _syncLock = new SemaphoreSlim(1, 1);
         readonly string _instanceId;
         readonly string _sessionId;
-        CancellationTokenSource _cts = new CancellationTokenSource();
         Action _stopScheduler;
         bool _stopped;
+        Task _shutdownTask;
 
         public LogApi Log { get; }
         public ConfigApi Config { get; }
@@ -113,23 +114,48 @@ namespace Wardx
             return EnqueueSync(new SyncFlags { Flush = true });
         }
 
-        public async Task ShutdownAsync()
+        public Task ShutdownAsync()
         {
-            if (_stopped) return;
+            lock (_lifecycleGate)
+            {
+                if (_shutdownTask == null) _shutdownTask = ShutdownCoreAsync();
+                return _shutdownTask;
+            }
+        }
+
+        async Task ShutdownCoreAsync()
+        {
             _stopped = true;
             _stopScheduler?.Invoke();
-            _cts.Cancel();
-            await EnqueueSync(new SyncFlags { Flush = true }).ConfigureAwait(false);
-            _transport.Close();
+            await SettleCurrentSync().ConfigureAwait(false);
+            using (var finalFlush = new CancellationTokenSource(_settings.HttpTimeoutMs))
+            {
+                try
+                {
+                    await RunSync(new SyncFlags { Flush = true }, finalFlush.Token).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _transport.Close();
+                }
+            }
+        }
+
+        async Task SettleCurrentSync()
+        {
+            await _syncLock.WaitAsync().ConfigureAwait(false);
+            _syncLock.Release();
         }
 
         public void Stop()
         {
-            if (_stopped) return;
-            _stopped = true;
-            _stopScheduler?.Invoke();
-            _cts.Cancel();
-            _transport.Close();
+            lock (_lifecycleGate)
+            {
+                if (_stopped) return;
+                _stopped = true;
+                _stopScheduler?.Invoke();
+                _transport.Close();
+            }
         }
 
         public void Dispose()
@@ -153,31 +179,42 @@ namespace Wardx
 
         internal Task EnqueueSync(SyncFlags flags)
         {
-            return RunSync(flags);
+            return RunBoundedSync(flags);
         }
 
-        async Task RunSync(SyncFlags flags)
+        async Task RunBoundedSync(SyncFlags flags)
         {
-            await _syncLock.WaitAsync().ConfigureAwait(false);
+            using (var timeout = new CancellationTokenSource(_settings.HttpTimeoutMs))
+            {
+                await RunSync(flags, timeout.Token).ConfigureAwait(false);
+            }
+        }
+
+        async Task RunSync(SyncFlags flags, CancellationToken transportToken)
+        {
+            var acquired = false;
             try
             {
+                await _syncLock.WaitAsync(transportToken).ConfigureAwait(false);
+                acquired = true;
                 if (_stopped && !flags.Flush) return;
-                try
-                {
-                    await SyncOnceInner(flags).ConfigureAwait(false);
-                }
-                catch
-                {
-                    lock (_gate) _core.Internal.FramesFailed += 1;
-                }
+                await SyncOnceInner(flags, transportToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                lock (_gate) _core.Internal.FramesFailed += 1;
+            }
+            catch
+            {
+                lock (_gate) _core.Internal.FramesFailed += 1;
             }
             finally
             {
-                _syncLock.Release();
+                if (acquired) _syncLock.Release();
             }
         }
 
-        async Task SyncOnceInner(SyncFlags flags)
+        async Task SyncOnceInner(SyncFlags flags, CancellationToken transportToken)
         {
             List<Frame> frames;
             lock (_gate)
@@ -205,7 +242,10 @@ namespace Wardx
             var phase = flags.Bootstrap ? "bootstrap" : flags.Flush ? "flush" : "tick";
             try
             {
-                var result = await _transport.PostAsync(compressed, _cts.Token).ConfigureAwait(false);
+                var result = await WithCancellation(
+                    _transport.PostAsync(compressed, transportToken),
+                    transportToken
+                ).ConfigureAwait(false);
                 var ms = (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
                 lock (_gate) _core.Internal.LastSyncMs = ms;
                 if (!result.Ok)
@@ -230,7 +270,6 @@ namespace Wardx
             }
             catch (OperationCanceledException)
             {
-                if (flags.Flush && _stopped) return;
                 var ms = (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
                 lock (_gate)
                 {
@@ -249,6 +288,20 @@ namespace Wardx
                 }
                 TraceSync(phase, frames.Count, bytesUncompressed, bytesCompressed, ms, false, null, false);
             }
+        }
+
+        static async Task<T> WithCancellation<T>(Task<T> task, CancellationToken cancellationToken)
+        {
+            if (task.IsCompleted) return await task.ConfigureAwait(false);
+            var canceled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using (cancellationToken.Register(() => canceled.TrySetResult(true)))
+            {
+                if (task != await Task.WhenAny(task, canceled.Task).ConfigureAwait(false))
+                {
+                    throw new OperationCanceledException(cancellationToken);
+                }
+            }
+            return await task.ConfigureAwait(false);
         }
 
         Dictionary<string, object> BuildEnvelope(List<Frame> frames)
@@ -317,6 +370,7 @@ namespace Wardx
                     Enabled = item["enabled"] != null && item["enabled"].BoolValue,
                     Allocation = item["allocation"] != null ? item["allocation"].NumberValue : 0,
                     Salt = item["salt"] != null ? item["salt"].StringValue : null,
+                    GoalMetric = item["goalMetric"] != null ? item["goalMetric"].StringValue : null,
                     Variants = ParseVariants(item["variants"])
                 };
                 if (item.Has("primaryMetric") && item["primaryMetric"].Type == JsonNode.Kind.String)

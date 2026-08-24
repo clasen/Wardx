@@ -10,7 +10,7 @@ One process, two doors. There is no admin HTTP API.
 - **Clients** speak `POST /v1/sync` (frames up, that role's Remote Config down).
 - **Agents** speak MCP on the same process (tools + `wardx://project/{name}`).
 
-A project is one product. Each SDK instance declares a `role` (`unity`, `game-server`, `desktop`, `mobile`, …). Roles share the project; series stay separate by role. A sync downloads only keys and experiments visible to that instance's role.
+A project is one product. Each SDK instance declares a `role` (`backend`, `frontend`, `desktop`, `unity`, …). Roles share the project; series stay separate by role. A sync downloads only keys and experiments visible to that instance's role. The project key authenticates the project; the client chooses `role`, so role filtering is routing metadata, not authorization. Never put secrets in Remote Config.
 
 Meaning lives in the MCP catalog. Clients never receive it. Catalog edits do not bump `configVersion`. Config and experiment edits do.
 
@@ -62,26 +62,35 @@ Propose over **existing** knobs. `variant.values` may only contain keys that alr
 
 Call `upsert_experiment` with:
 
-- `id`, `enabled`, `allocation` (0–1), `salt` (new random hex when creating; keep the salt when replacing the same id), `roles`, `variants` (`key`, `weight` ≥ 0 summing to > 0, `values`)
+- `id`, `enabled`, `allocation` (0–1), `salt` (new random hex when creating; keep the salt when replacing the same id), `goalMetric`, `roles`, `variants` (`key`, `weight` ≥ 0 summing to > 0, `values`)
 - optional `primaryMetric` (an existing outcome name)
 - optional `hypothesis` — stays on the server; clients never receive it
 - for a closable test: `goalKind` (`conversion` or `mean`), `control` (a variant key), `minExposures` (integer ≥ 1; ≥ 2 when `mean`), `confidence` (number in (0, 1)). No implicit defaults. These fields never go to clients.
 
 `set_experiment_enabled` toggles without rewriting variants. It does not ship a winner. `list_experiments` and `analyze_experiment` read previously proposed definitions. `ship_experiment` copies the winning `variant.values` into Remote Config and sets `enabled` false. Call it only when `decision.status` is `winner` (or the experiment is already shipped). Omit `variant` to ship `leadingVariant`.
 
-Assignment runs on the client, not the server. The server stores the definition and rolls up `experiment.exposure` / `experiment.goal` into lifetime totals (they survive the 1-minute window retention). When the process loaded a config file, those totals persist to `<configPath>.experiment-stats.json` and reload after a restart. Clients call `identify()` / `Identify()` on a single-user process, or pass `subjectId` per call on a multi-user process (wardx, wardx-unity, or wardx-csharp). A read with no subject returns Remote Config and does not expose. Keep the `salt` when replacing the same `id`; a new salt redistributes the population. Do not change variant weights to "roll out" a winner — that remaps existing subjects. Ship instead.
+Assignment runs on the client, not the server. The server stores the definition and rolls up an exposure and only the goal whose name equals that experiment's `goalMetric` into lifetime totals. Those totals survive the 1-minute window retention and, when a config file is loaded, persist to `<configPath>.experiment-stats.json`. There is no legacy goal-matching fallback. Clients call `identify()` / `Identify()` on a single-user process, or pass `subjectId` per call on a multi-user process (wardx, wardx-unity, or wardx-csharp). A read with no subject returns Remote Config and does not expose. Keep the `salt` when replacing the same `id`; a new salt redistributes the population. Do not change variant weights to "roll out" a winner — that remaps existing subjects. Ship instead.
 
 ## Telemetry
 
-This is in-memory development aggregation, not a production query API.
+Wardx is aggregate-first, not a per-subject query API. 1-minute windows persist to `<configPath>.aggregate-windows.json` when a config file is loaded and expire exactly at `aggregateRetentionMinutes`. The recent-client and recent-log rings are bounded and volatile. Only experiment totals and allowlisted persist-log totals have their documented lifetime rollups. Do not infer journeys, unique users, per-account history, a ledger, or general multi-day analytics. A delayed follow-up requires an external scheduler or automation to invoke the agent later.
 
-- `get_aggregates` — 1-minute windows with catalog legends. Optional `names`, `from`, `to`, `role`. Counters in a window are sums of window deltas. A gauge is the last value by timestamp. Events count by name and role; attrs are not series. Histogram `max` and `exemplar` are the window peak (a lookup key, not a player). Extra series past `aggregateMaxSeriesPerMetric` increment `cardinalityDropped`.
+- `get_aggregates` — 1-minute windows with catalog legends. Optional `names`, `from`, `to`, `role`. Counters in a window are sums of window deltas. A gauge is the last value by timestamp. Events count by name and role; attrs are not series. Histogram `max` and `exemplar` are the window peak (a lookup key, not a player). Extra series past `aggregateMaxSeriesPerMetric` increment `cardinalityDropped`. Catalog `persistLogs` names appear as `logNames` (`count` + last exemplar by role and level). Windows persist across restart for `aggregateRetentionMinutes`.
 - Volume funnel — compare step counter totals (or `eventNames`) for the same window and `role`. That is how often each step fired, not unique users and not ordered sequences. Do not invent a per-subject path. Point missing step names at the matching SDK skill (wardx, wardx-unity, or wardx-csharp).
 - Economy jump — overview histogram outcomes are ranked by `max`. Compare that `max` to a numeric cap knob (`economy.maxAward` or similar). Then `get_aggregates` on the amount, count, and size names, and `get_recent_logs` with the anomaly message or `exemplar.attrs` (`grantId`, `source`, `reason`). Fleet signal, not a player to punish. The wallet row is in the application database. Missing names → matching SDK skill (wardx use case 8, or wardx-unity / wardx-csharp).
 - `get_recent_logs` — newest-first ring (`recentLogsMax`). Filter with `level`, exact `message`, exact `attrs`, `role`, `limit`. Drill here after aggregates. A stack or provider code is just another attr.
+- Persist logs — `set_persist_log` adds an exact message name to `catalog.persistLogs`. The server keeps a lifetime count and last exemplar for that name (`kind: "log"` on the overview, sidecar `<configPath>.log-stats.json`). `delete_persist_log` removes it. Names not on the list stay in the ring only. Do not put free-text messages on this list.
 - `analyze_experiment` — definition, hypothesis, lifetime `exposures` / `goals` / `goalSum` / `goalSumSq` / `goalMean` / `rate` by variant, `primaryMetric` fleet total, and `decision`. `rate` is `goals / exposures`. For `goalKind: mean` compare `goalMean`. For `goalKind: conversion` compare `rate` — `goalMean` is 1 when every goal sends `value: 1`. `decision.status` is `collecting`, `winner`, `no_difference`, `cannot_decide`, or `shipped`. Do not call a variant the winner unless status is `winner` or `shipped`. `experiment.goal` is one conversion or one value, not an N-step funnel. One experiment should have one quantitative goal name. `primaryMetric.total` is not split by variant.
 
 Filter with `role` when comparing surfaces. Group answers by role. Prefer catalog descriptions over raw names. MCP does not read the envelope sink (`null` / `memory` / `ndjson`).
+
+## Production boundary
+
+Keep the Node listener behind a reverse proxy. The proxy owns TLS, coarse request-rate limits, compressed-body limits, finite timeouts, trusted-forwarded-header behavior, and traffic drain. It must not retry `POST /v1/sync` or log keys/bodies/subject IDs. Wardx independently bounds compressed and decoded bodies. `GET /health` is liveness only, not readiness.
+
+Rotate keys with overlap: add the new key, rolling-restart all replicas, migrate clients, then remove the old key and rolling-restart again. Config files, sidecars, and backups require service-account-only permissions. Structured diagnostics must redact credentials, bodies, subjects, and Remote Config values.
+
+Corrupt config or sidecars stop startup; never delete corrupt data to make the process boot. For backup, drain and `await server.wardx.stop()`, then copy the config plus every existing `.experiment-stats.json`, `.log-stats.json`, and `.aggregate-windows.json` sidecar as one set and record legitimate absence. Restore the complete set. Upgrade with a pre-upgrade snapshot; rollback restores the previous binary and that snapshot because no storage compatibility fallback is implied. See the server README's production operations section for authority, capacity, and recovery details.
 
 ## Changing @wardx/server
 
@@ -110,7 +119,7 @@ When the task is code in `packages/server`: keep HTTP as the client path only. C
 **User says:** "A/B test a shorter delay."
 
 1. Overview. Refuse until `onboarding.complete`.
-2. Propose over listed knobs only. Include `hypothesis`, `primaryMetric`, `goalKind: 'conversion'`, `control`, `minExposures`, and `confidence`.
+2. Propose over listed knobs only. Include `hypothesis`, `primaryMetric`, the exact conversion name as `goalMetric`, `goalKind: 'conversion'`, `control`, `minExposures`, and `confidence`.
 3. `upsert_experiment`. Later `analyze_experiment` once traffic exists. Follow `decision.status`. Ship with `ship_experiment` only when status is `winner`.
 4. If exposures stay at zero, the app is reading the knob with no subject. Point them at the matching SDK skill: `identify()` / `Identify()` on a single-user process, or `subjectId` on each `config.get` / `Config.Get` / `experiment.goal` / `Experiment.Goal` on a multi-user process.
 
@@ -118,7 +127,7 @@ When the task is code in `packages/server`: keep HTTP as the client path only. C
 
 1. Overview. Refuse until `onboarding.complete`. Confirm difficulty knobs exist (`level.*.enemyHp` or similar) and that `session.time_ms` / `session.duration` are outcomes. Missing names → matching SDK skill (wardx use cases 14 and 15, or wardx-unity / wardx-csharp).
 2. `get_aggregates` on `level.start`, `level.fail`, `level.complete`, `session.time_ms`. Funnel counts are the difficulty signal. `session.time_ms` is fleet play time.
-3. `upsert_experiment` on those knobs. `hypothesis` such as "Lower HP on level 3 increases session duration". `primaryMetric: 'session.time_ms'`. `goalKind: 'mean'`, `control`, `minExposures`, `confidence`.
+3. `upsert_experiment` on those knobs. `hypothesis` such as "Lower HP on level 3 increases session duration". `primaryMetric: 'session.time_ms'`, `goalMetric: 'session.duration'`, `goalKind: 'mean'`, `control`, `minExposures`, `confidence`.
 4. Later `analyze_experiment`: follow `decision`. Compare `goalMean` for the duration goal. Do not treat `primaryMetric.total` as a per-variant mean. `ship_experiment` when `decision.status` is `winner`.
 
 **User says:** "There are errors — go fix the file."

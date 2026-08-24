@@ -9,6 +9,7 @@
   "maxSeriesPerMetric": 1000,
   "maxDimensionKeys": 8,
   "maxDimensionValueLength": 64,
+  "experimentStateMaxSubjects": 100000,
   "httpTimeoutMs": 10000,
   "histogramBuckets": [10, 25, 50, 100, 250, 500, 1000]
 }

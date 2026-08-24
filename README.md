@@ -1,10 +1,10 @@
 # Wardx
 
-To find out what your own product is doing, you set up five services: analytics in one, remote config in another, experiments in a third, logs wherever they land. Then you paste IDs by hand between dashboards that don't talk to each other. One server is enough for that, and Wardx is that server. Your Unity app and your Node backend send it events, metrics and errors as they happen, and get back the configuration meant for them: the game sees its variables, the server sees its own. You run it on your VPS, and all your projects live inside it, kept apart from each other.
+To find out what your own product is doing, you set up five services: analytics in one, remote config in another, experiments in a third, logs wherever they land. Then you paste IDs by hand between dashboards that don't talk to each other. One server is enough for that, and Wardx is that server. Your Unity app and your Node backend send it events, metrics and errors as they happen, and get back the configuration meant for them: the app sees its variables, the backend sees its own. You run it on a server you control, and all your projects live inside it, kept apart from each other. If you have ever dumped a CSV or a JSON export into a chat to read behavior out of it, this is the next step.
 
-Hand what that server collects to an agent and it sees the product the way you do: yesterday's numbers, the last hour of errors, the config running right now. Ask it why onboarding drops off at step three and it answers with your data in front of it. Show it the account claiming rewards every four seconds and it tells you whether that's a bug of yours or someone testing the edge.
+Hand what that server collects to an agent and it sees the current retained aggregate windows, bounded recent logs, selected lifetime rollups, and the config running right now. Ask it where an onboarding volume funnel drops and it answers from aggregate counts. Show it a fleet-level reward spike and it points at the instrumented grant path. Wardx does not store per-account journeys or act as a ledger.
 
-The same channel that carries the data up carries the configuration back down, so the agent doesn't stop at the diagnosis: it changes a variable, turns it into a hypothesis, lets it run as an A/B test, and comes back three days later to look at the numbers. Optimization stays within reach. You open the chat on a Tuesday afternoon, see what moved in the funnel, and decide whether the change stays. If it didn't work, you put the variable back and try another.
+The same channel that carries the data up carries the configuration back down, so an agent can change a variable, turn it into a hypothesis, and inspect the resulting experiment totals. Wardx does not schedule a later agent run: delayed follow-up requires an external scheduler or automation. Remote Config is for non-secret runtime values only.
 
 ```text
                          AGENT
@@ -38,11 +38,11 @@ The same channel that carries the data up carries the configuration back down, s
           ▼                                     ▼
    Node SDK                          C# / Unity SDK
    wardx / @wardx/core               clients/csharp
-   role: game-server                 role: mobile
+   role: backend                     role: frontend
    metrics / config.get              same /v1/sync
 ```
 
-HTTP is the client path. Control, analysis, and visualization use MCP on the same process. There is no admin HTTP API.
+HTTP is the client path. Control, analysis, and visualization use MCP on the same process. There is no admin HTTP API. The project key authenticates a project; client-selected roles only route and separate data inside it and are not an authorization boundary.
 
 ## Packages
 
@@ -50,10 +50,24 @@ HTTP is the client path. Control, analysis, and visualization use MCP on the sam
 | --- | --- |
 | [`@wardx/server`](packages/server/README.md) | That server. Ingest, Remote Config, experiments, MCP. |
 | [`wardx`](packages/node/README.md) | Node.js SDK. |
-| [C# / Unity](clients/csharp/README.md) | Same wire contract as the Node SDK. |
+| [C# / Unity](clients/csharp/README.md) | Implements Protocol v1; cross-runtime parity is claimed only for behavior covered by shared fixtures or real HTTP tests. |
 | [`@wardx/core`](packages/core/README.md) | In-process engine. Use `wardx` unless you write a custom runtime. |
 
 Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Protocol: [docs/PROTOCOL.md](docs/PROTOCOL.md).
+
+## Verification
+
+```bash
+npm run verify
+```
+
+That merge gate runs JavaScript lint, representative public `.d.ts` consumer checks, the JavaScript suite and CLI black box, the C# suite and real C#→`wardx-server` interoperability, C# formatting/analyzers, both stress smoke profiles, and clean tarball installation with the packaged server binary.
+
+```bash
+npm run verify:release
+```
+
+The release gate adds both five-minute server profiles and the million-subject assignment check. It exits non-zero on any missed threshold.
 
 ## Agent skills
 

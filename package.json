@@ -10,13 +10,28 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test packages/core/test/*.test.js packages/node/test/*.test.js packages/server/test/*.test.js",
+    "test": "npm run test:js",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.types.json",
+    "test:js": "node --test packages/core/test/*.test.js packages/node/test/*.test.js packages/server/test/*.test.js",
+    "test:black-box": "node --test packages/server/test/black-box.test.js",
+    "test:csharp": "dotnet run --project clients/csharp/Tests/Wardx.Tests.csproj && node packages/server/test/csharp-interop.mjs",
+    "check:csharp": "dotnet format clients/csharp/Runtime/Core/Wardx.Core.csproj --verify-no-changes --no-restore --verbosity minimal && dotnet format clients/csharp/Runtime/Wardx.csproj --verify-no-changes --no-restore --verbosity minimal && dotnet format clients/csharp/Tests/Wardx.Tests.csproj --verify-no-changes --no-restore --verbosity minimal",
     "server": "node packages/server/src/cli.js config/development.json",
     "server:production": "node packages/server/src/cli.js config/production.json",
     "stress": "node packages/stress/src/index.js",
+    "stress:smoke": "node packages/stress/src/index.js D --smoke",
+    "stress:full": "node packages/stress/src/index.js D --full && node packages/stress/src/index.js G --full",
+    "pack:check": "node packages/stress/src/pack-check.js",
+    "verify": "npm run lint && npm run typecheck && npm run test:js && npm run test:csharp && npm run check:csharp && npm run stress:smoke && npm run pack:check",
+    "verify:release": "npm run verify && npm run stress:full",
     "example": "node examples/basic-node/src/index.js",
     "example:pipeline": "node examples/pipeline/src/index.js",
-    "example:errors": "node examples/errors/src/index.js",
-    "test:csharp": "dotnet run --project clients/csharp/Tests/Wardx.Tests.csproj"
+    "example:errors": "node examples/errors/src/index.js"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.9.0",
+    "typescript": "^7.0.2"
   }
 }
