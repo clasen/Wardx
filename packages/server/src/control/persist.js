@@ -21,7 +21,7 @@ function fileShape(config, registry, override) {
   const out = {
     host: config.host,
     port: config.port,
-    projectKeys: config.projectKeys,
+    credentials: config.credentials,
     sink: config.sink,
     maxRequestBytes: config.maxRequestBytes,
     maxClockSkewMs: config.maxClockSkewMs,
@@ -39,6 +39,11 @@ function fileShape(config, registry, override) {
     memorySinkMaxEnvelopes: config.memorySinkMaxEnvelopes,
     recentClientsMax: config.recentClientsMax,
     recentLogsMax: config.recentLogsMax,
+    sqlite: config.sqlite,
+    history: config.history,
+    control: config.control,
+    capacity: config.capacity,
+    experiments: config.experiments,
     projects
   };
   if (typeof config.ndjsonPath === 'string' && config.ndjsonPath.length > 0) {

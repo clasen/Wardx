@@ -15,7 +15,8 @@ test('loadServerConfig reads a JSON file', () => {
   const config = loadServerConfig(path);
   assert.equal(config.host, '127.0.0.1');
   assert.equal(config.port, 8787);
-  assert.equal(config.projectKeys.dev_project_key, 'demo');
+  assert.equal(config.credentials.dev_project_key.project, 'demo');
+  assert.deepEqual(config.credentials.dev_project_key.allowedRoles, ['client', 'game-server']);
   assert.equal(config.projects.demo.version, 1);
   assert.equal(config.recentLogsMax, 200);
   assert.equal(config.aggregateMaxSeriesPerMetric, 1000);
@@ -36,11 +37,65 @@ test('loadServerConfig reads production.json with a null sink', () => {
   assert.equal(config.aggregateMaxSeriesPerMetric, 1000);
 });
 
-test('validateServerConfig requires a project entry for each key', () => {
+test('validateServerConfig requires a project entry for each credential', () => {
+  const config = testServerConfig();
+  config.credentials['test-key'].project = 'missing';
   assert.throws(
-    () => validateServerConfig(testServerConfig({ projectKeys: { 'test-key': 'missing' } })),
+    () => validateServerConfig(config),
     /projects missing entry for missing/
   );
+});
+
+test('validateServerConfig requires scoped credential and capacity records', () => {
+  const credential = testServerConfig();
+  credential.credentials['test-key'].allowedRoles = [];
+  assert.throws(() => validateServerConfig(credential), /allowedRoles must be a non-empty array/);
+
+  const sqlite = testServerConfig();
+  delete sqlite.sqlite.maxPendingBytes;
+  assert.throws(() => validateServerConfig(sqlite), /maxPendingBytes/);
+
+  const history = testServerConfig();
+  history.history.maxQueryRows = 0;
+  assert.throws(() => validateServerConfig(history), /maxQueryRows must be an integer >= 1/);
+});
+
+test('validateServerConfig reserves fixed-horizon ledger capacity before enablement', () => {
+  const config = testServerConfig();
+  config.experiments.ledgerMaxRows = 1;
+  config.projects.demo.experiments = [{
+    id: 'capacity-v1',
+    enabled: true,
+    allocation: 1,
+    salt: 'capacity-v1',
+    goalMetric: 'message.sent',
+    assignmentUnitKind: 'subject',
+    outcomeKind: 'conversion',
+    control: 'control',
+    targetSampleSizePerVariant: 1,
+    earliestAnalysisAt: 0,
+    familyWiseAlpha: 0.05,
+    minimumEffect: 0,
+    direction: 'increase',
+    terminalRetentionMs: 1000,
+    healthThresholds: {
+      maxDroppedFrames: 0,
+      maxDuplicateExposures: 0,
+      maxDuplicateGoals: 0,
+      maxConflictingGoals: 0,
+      maxVariantConflicts: 0,
+      maxUntrustedRows: 0,
+      maxLateRows: 0,
+      maxMissingExposures: 0,
+      maxImplicitExposures: 0
+    },
+    roles: ['client'],
+    variants: [
+      { key: 'control', weight: 1, values: {} },
+      { key: 'test', weight: 1, values: {} }
+    ]
+  }];
+  assert.throws(() => validateServerConfig(config), /reserve 2 ledger rows, exceeding 1/);
 });
 
 test('validateServerConfig rejects an invalid catalog', () => {
@@ -76,6 +131,8 @@ test('validateServerConfig requires goalMetric and rejects overlapping enabled g
     allocation: 1,
     salt: 'delay-v1',
     goalMetric: 'message.sent',
+    assignmentUnitKind: 'subject',
+    terminalRetentionMs: 604800000,
     roles: ['client'],
     variants: [{ key: 'control', weight: 1, values: { 'message.delayMs': 1000 } }]
   };

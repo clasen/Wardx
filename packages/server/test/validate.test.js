@@ -57,7 +57,13 @@ test('validateEnvelope accepts the documented wire structures', () => {
       }
     ]
   };
-  assert.equal(validateEnvelope(envelope, LIMITS), null);
+  assert.equal(
+    validateEnvelope(envelope, {
+      ...LIMITS,
+      history: { ...LIMITS.history, maxAcceptedPastAgeMs: 10 * 86_400_000 }
+    }),
+    null
+  );
 });
 
 test('validateEnvelope accepts configured limits exactly', () => {
@@ -280,6 +286,8 @@ test('validateExperimentEvents accepts one matching assignment and rejects ambig
     salt: 'salt',
     roles: ['client'],
     goalMetric: 'message.sent',
+    assignmentUnitKind: 'subject',
+    terminalRetentionMs: 604800000,
     variants: [
       { key: 'control', weight: 50, values: {} },
       { key: 'fast', weight: 50, values: {} }
@@ -304,14 +312,14 @@ test('validateExperimentEvents accepts one matching assignment and rejects ambig
   const exposure = [
     now,
     'experiment.exposure',
-    { experiment: 'delay', variant: 'fast', subject: 'hashed-subject' }
+    { experiment: 'delay', variant: 'fast', subject: 'ab'.repeat(32) }
   ];
   const goal = [
     now,
     'experiment.goal',
     {
       metric: 'message.sent',
-      subject: 'hashed-subject',
+      subject: 'ab'.repeat(32),
       experiments: [{ experiment: 'delay', variant: 'fast' }]
     }
   ];

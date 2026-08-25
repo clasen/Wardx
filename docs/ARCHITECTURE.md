@@ -1,90 +1,125 @@
 # Wardx architecture
 
-One process, two doors. Both go both ways. There is no admin HTTP API.
+Wardx is one bounded process with two interfaces. SDKs use HTTP sync; agents use
+MCP stdio. There is no admin HTTP API and no supported multi-replica topology.
+See `CLUSTER_ROADMAP.md` for work deliberately outside this contract.
 
 ```text
-                         AGENT
-                  arisa.sh / Codex / Claude
-                             │
-                    MCP stdio
-                    tools + wardx://project/{name}
-                             ▼
-┌─────────────────────────────────────────────────────┐
-│              wardx-server (one process)             │
-│              N isolated projects                    │
-│                                                     │
-│   MCP ──> ControlService                            │
-│              ├── Remote Config snapshot             │
-│              ├── Experiment definitions             │
-│              ├── Aggregates                         │
-│              ├── Recent logs                        │
-│              └── Catalog                            │
-│                                                     │
-│   HTTP POST /v1/sync                                │
-│        ├── envelope store (config.sink)             │
-│        │     null | memory | ndjson                 │
-│        └── per-project ingest                       │
-│              aggregator, recent logs, clients       │
-│              config reply filtered by client.role   │
-└─────────────────────────────────────────────────────┘
-                             ▲
-                             │
-             frames up / that role's config down
-          ┌──────────────────┴──────────────────┐
-          ▼                                     ▼
-   Node SDK                          C# / Unity SDK
-   wardx / @wardx/core               clients/csharp
-   role: backend                     role: frontend
-   metrics / config.get              same /v1/sync
+SDKs -- POST /v1/sync --+
+                        v
+                 wardx-server
+                 |- bounded current aggregates and volatile rings
+                 |- scoped credentials and role-filtered config replies
+                 |- SQLite WAL authoritative state
+                    |- Remote Config, catalog, journal
+                    |- minute/hour/day aggregate tiers
+                    |- experiment ledger, totals, terminal decisions
+                        ^
+Agent -- MCP stdio ------+
 ```
 
-`@wardx/core` lives in the SDK, not in the server. The server stores the snapshot, aggregates 1-minute windows, and serves MCP. Experiment assignment and `config.get` run on the client. `identify()` sets the instance subject; a per-call `subjectId` overrides it.
+`@wardx/core` runs inside the SDK. Measurement calls perform no network or
+filesystem I/O and create no Promises. Assignment and `config.get` also run on
+the client. A sync uploads bounded frames and downloads only the configuration
+visible to that SDK role.
 
-MCP lists projects with `list_projects`. Every other tool takes a `project` name. Projects are declared in the server config (`projectKeys` + `projects`); MCP does not create them.
+## Projects, credentials, and trust
 
-A project is one product. Each SDK instance declares a `role`, an open name (`backend`, `frontend`, `desktop`, `unity`, …). Several roles share the project. They may measure similar names; series stay separate by role. Remote Config keys list the roles that receive them, or `["*"]` for every role. Experiments list the roles that assign them. A sync downloads only what that role can see.
+Projects are bootstrapped in the operational JSON config. Credentials are
+records with a non-secret label, project, allowed roles, enabled flag, and
+`trustedForDecisions`. The server authenticates the raw key before envelope
+validation, then authorizes the claimed role from the credential record. A
+credential cannot claim an undeclared role.
 
-The project key authenticates the project. `role` is client-selected routing metadata, not authorization: a client with a valid project key can claim any allowed role name. Role filtering reduces and separates payloads; it must not be used to protect backend-only values or to establish telemetry integrity. Remote Config must never contain credentials, tokens, private keys, or other secrets.
+Public-client credentials must be untrusted. Experiment decisions use only
+trusted rows emitted under the same deterministic assignment hash and preserve
+source role plus trust class. Raw credentials and raw subject identifiers never
+appear in diagnostics, MCP results, or mutation records. Remote Config is not a
+secret store even when a key is routed only to a backend role.
 
-The SDK ships names only. Meaning lives in the MCP catalog, which never goes down HTTP. Two ways to fill it, both valid: ship a predefined `catalog` in the server config, or leave descriptions empty and complete them during MCP onboarding (`set_project_description` / `set_role_description` / `set_signal`). `catalog.persistLogs` is an allowlist of exact log message names. Those names roll up as a lifetime count and last exemplar (`logNames` / overview `kind: "log"`) and survive a restart in `<configPath>.log-stats.json`. Names not on the list stay in the recent-log ring only. `get_project_overview.onboarding` lists only the remaining gaps, including undescribed roles. If `onboarding.complete` is true, the agent skips questions. If a new undescribed name or role appears later, onboarding reopens for that gap only. Each role may optionally carry `path` (checkout on this machine) and `git` (repository URL). The agent uses them when present. It does not ask for them.
+## Durable state and history
 
-The envelope store is process-wide. It is not part of ControlService. MCP does not read it. Production uses `sink: "null"` (`config/production.json`): discard envelopes after ingest. `memory` and `ndjson` are for local debugging and benchmarks. MCP reads 1-minute aggregates (persisted for exactly `aggregateRetentionMinutes` in `<configPath>.aggregate-windows.json`), the recent-log ring, and allowlisted persist-log rollups, not the envelope store.
+The operational JSON contains process settings, credentials, and the initial
+project bootstrap. On an empty database the bootstrap is written once. From
+then on, the local SQLite database at `sqlite.path` is authoritative for project
+state. Wardx uses WAL mode and configured synchronous, busy timeout,
+auto-checkpoint, checkpoint mode, batch, transaction, and queue bounds. A
+general-purpose network filesystem is unsupported.
 
-Wardx is aggregate-first. The recent-client and recent-log rings are bounded by configuration, volatile, and empty again after restart. Aggregate windows expire exactly according to `aggregateRetentionMinutes`. Only explicitly defined sources have lifetime rollups: experiment exposures/goals in `<configPath>.experiment-stats.json` and allowlisted log names in `<configPath>.log-stats.json`. Those rollups do not create journeys, unique-user history, per-account queries, a ledger, or general multi-day analytics. A delayed experiment review requires an external scheduler or automation to start the later agent run.
+Open aggregates stay in memory. General telemetry marks coalesced historical
+state and does not perform a SQLite transaction per sync. Closed one-minute
+buckets are written to SQLite, compacted deterministically to hour and day, and
+pruned only after the downstream rollup and its watermark are durable. Hour/day
+rows keep project, role, environment, app version, signal name, and declared
+dimensions. They never keep event or log attrs, histogram exemplars, instance
+IDs, or subject hashes.
 
-## Instrumentation
+`get_aggregates` returns current in-memory windows. `get_aggregate_history`
+returns bounded hour/day ranges with optional role, environment, app-version,
+and exact-name filters plus completeness metadata. Recent clients and recent
+logs are bounded volatile rings and are empty after restart.
 
-Use the cheapest signal that still answers the question.
+## Control plane
 
-- **Stability:** counters and histograms (`http.requests`, `http.duration`, queue depth). `log.error` when a request fails, with a clipped `stack` or provider `code` as an attr. Not an event per request. MCP `get_recent_logs` returns that row. If the role has `path` or `git`, the agent uses that checkout to edit the source. Wardx does not change application code. See `wardx` use case 16 and `@wardx/server` use case 8.
-- **Session time:** the app owns the play-session clock (open to close, login to logout). Do not use SDK `sessionId`. On end: histogram `session.duration` with minute-scale buckets, counter `session.time_ms` (accumulated fleet ms), counter `session.ended`, and one `experiment.goal('session.duration', { value: durationMs })`. Optional heartbeat adds only to `session.time_ms`. `analyze_experiment` compares `goalMean` by variant and returns a `decision`. Close a winner with `ship_experiment`. See `wardx` use case 14.
-- **Behavior:** a few named events (`screen.view`, `feature.use`, `match.start`) with low-cardinality attrs (`mode`, `channel`, `feature`). A shared name is one outcome. Attrs do not split it.
-- **Funnels:** volume between named steps, not a unique-user path. One event name and one counter per step (`onboarding.start` → `onboarding.profile` → `onboarding.done`, or `level.start` → `level.fail` / `level.complete`). Compare those counts in `get_aggregates`. The aggregator counts events by name and role; event attrs do not split the funnel. `sessionId` is envelope identity, not a join key. Production discards envelopes (`sink: "null"`). There is no per-subject sequence, no uniques, and no time between steps. `experiment.goal` is a one-step conversion or one quantitative value, not an N-step funnel. One experiment should have one quantitative goal name. See `wardx` use cases 7 and 15.
-- **Business:** rare events: `purchase`, `experiment.exposure`, `experiment.goal`.
-- **Economy:** counters of amount and grant count by `source`, plus a histogram of award size. Pass grant attrs to `observe(value, attrs)` so the window max carries an exemplar (a lookup key, not a series per player). A rare `coins.anomaly` event when a grant exceeds a Remote Config cap. MCP overview ranks histogram outcomes by `max` so an agent can compare that peak to the cap, then `get_recent_logs` with the exemplar attrs and open the role `path`/`git`. Per-player consistency is the game database. Wardx is at-most-once and not a ledger. See `wardx` use case 8 and `@wardx/server` use case 9.
-- **Dimensions:** `route`, `result`, `mode`, `source`. Never `userId`, email, or a unique id on a metric. Each SDK instance caps series; the server also caps series per metric name per minute (`aggregateMaxSeriesPerMetric`).
-- **Backend SDK:** if one process serves many users, increment counters in process. Do not `event()` once per user action. Give that process its own role so MCP does not mix it with a player client.
+Every catalog, config, and experiment mutation requires the current
+`expectedVersion` and a non-empty `reason`. The mutation and its bounded journal
+entry commit in one SQLite transaction before the in-memory snapshot is
+published. A stale version returns a conflict without changing state or the
+journal. `list_config_changes` returns bounded public metadata;
+`rollback_config_change` applies a retained inverse as a new version. It never
+rewrites history or exposes reversible values in overview responses.
 
-```mermaid
-flowchart LR
-  SDK["wardx SDK"]
-  Server["wardx-server"]
-  Agent["Cursor MCP"]
+MCP client identity is recorded only when available; the current stdio boundary
+does not invent a verified identity. MCP reads have configured concurrent and
+pending bounds. Config changes remain administrative operations protected by
+stdio and filesystem access; Wardx does not add RBAC or approval workflows.
 
-  SDK -->|"frames"| Server
-  Server -->|"config"| SDK
-  Agent -->|"tool call"| Server
-  Server -->|"JSON"| Agent
-```
+## Experiments
 
-**SDK ↔ HTTP.** `POST /v1/sync`: the client sends frames, `configVersion`, and `client.role`. A valid request receives `200` with `ok`, `configVersion`, and that role's `config` when the version changed. Invalid authentication, encoding, size, protocol, or routes receive the documented non-`200` response; unexpected failures receive a non-sensitive `500`. Telemetry goes up and Remote Config comes down on a successful round-trip. See [PROTOCOL.md](PROTOCOL.md) for the matrix.
+An experiment always declares `assignmentUnitKind`, `goalMetric`, and
+`terminalRetentionMs`. A closable experiment additionally pre-registers its
+complete fixed-horizon plan: outcome kind, control, target sample size per
+variant, earliest analysis time, family-wise alpha, minimum effect, direction,
+and every evidence-health threshold.
 
-**MCP ↔ agent.** stdio JSON-RPC: the agent calls tools and can read `wardx://project/{name}`. The process returns JSON: project catalog (what the product is, what keys and metrics mean), telemetry, and previously proposed experiments. The same channel writes config and new experiments over those Remote Config keys. A new value reaches the SDK on the next sync. The catalog never goes down HTTP.
+The SDK emits a SHA-256 assignment hash, never the raw unit. The SQLite ledger
+accepts the first exposure and first matching goal for each project,
+experiment, and 256-bit hash. Duplicate exposures/goals, conflicting goals,
+variant conflicts, missing exposures, untrusted rows, and late rows are counted
+without changing accepted totals. Exposure and goal provenance must match.
 
-**They meet in memory.** HTTP writes frames and reads config. MCP reads aggregates and recent logs, and writes config. The same HTTP handler also writes the envelope store. The SDK does not speak MCP. The agent does not call `/v1/sync`.
+Before both time and sample horizons, analysis is descriptive and
+`collecting`. At the horizon it uses trusted deduplicated evidence, Newcombe/
+Wilson conversion intervals or Welch inference for means, and Holm correction
+across treatments. The first terminal input and result are persisted and later
+telemetry cannot flip them. Shipping requires a persisted healthy terminal
+winner, matching `expectedVersion`, and a reason. Disablement or terminal
+analysis schedules ledger expiry; a pruned experiment with prior totals cannot
+be resumed under the old ID.
 
-## Example
+## Capacity and failure behavior
 
-1. `npm run example` flushes. Frames go up. The snapshot with `message.delayMs` comes down.
-2. In Cursor, `set_config_value` to `400`. The tool returns `{ version: 2 }`.
-3. The next SDK flush receives the new config. `get_aggregates` reads rates. `get_recent_logs` drills into a sample log row. If that role has `path` or `git`, the agent opens that checkout and edits outside MCP.
+Sync handlers, pending historical batches/bytes, experiment ledger rows, MCP
+reads, current series, rings, query ranges, and retained tiers are all bounded by
+required configuration. Above those limits Wardx rejects work with a
+non-sensitive overload response instead of building an unbounded queue. Clients
+and proxies must not retry `POST /v1/sync`; general telemetry remains
+at-most-once. Experiment evidence is the narrow exception: accepted evidence is
+committed transactionally before the sync succeeds.
+
+`GET /health` is liveness only. Graceful shutdown stops HTTP, drains accepted
+dirty history, runs the configured checkpoint, and closes SQLite. Local disk,
+proxy behavior, production hardware, and the published 5,000 sync/s target must
+be proven separately with the full-feature stress profile; deterministic tests
+do not establish deployment capacity.
+
+## Instrumentation boundary
+
+Wardx is aggregate-first. Use counters/histograms for stability, a small set of
+named events for behavior, and recent logs for drill-down. Funnels are volume
+comparisons, not per-subject paths. The experiment assignment ledger is
+non-queryable and exists only for deduplication. Wardx is not a raw event
+warehouse, billing ledger, player journey store, or authoritative economy
+database.
+
+Protocol details and HTTP status semantics are in [PROTOCOL.md](PROTOCOL.md).

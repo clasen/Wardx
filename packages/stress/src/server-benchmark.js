@@ -2,6 +2,7 @@ import http from 'node:http';
 import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { gzipJson, sampleEnvelope, testServerConfig } from '../../server/test/helpers.js';
 import { createIngestServer, listen, loadServerConfig } from '@wardx/server';
 import { report, startEventLoopProbe } from './measure.js';
@@ -15,7 +16,7 @@ const MIB = 1024 * 1024;
 export const SERVER_PROFILES = Object.freeze({
   raw: Object.freeze({
     id: 'raw',
-    label: 'raw NullSink / persistence disabled (upper bound)',
+    label: 'in-memory SQLite / NullSink (upper bound)',
     persistence: false
   }),
   persistence: Object.freeze({
@@ -109,18 +110,18 @@ function cpuPercent(before, after, elapsedMs) {
   return (usedMicros / (elapsedMs * 1000)) * 100;
 }
 
-function percentileFromSorted(values, p) {
-  if (values.length === 0) throw new Error('percentile of empty sample');
-  const index = Math.min(values.length - 1, Math.max(0, Math.ceil((p / 100) * values.length) - 1));
-  return values[index];
-}
-
 function persistenceDelta(before, after) {
   return {
     writes: after.writes - before.writes,
     writeFailures: after.writeFailures - before.writeFailures,
     writeLatencyTotalMs: after.writeLatencyMs.total - before.writeLatencyMs.total,
     writeLatencyMaxMs: after.writeLatencyMs.max,
+    pendingBatches: after.pendingBatches,
+    pendingBytes: after.pendingBytes,
+    sqliteTransactions: after.sqlite.transactions - before.sqlite.transactions,
+    sqliteTransactionFailures: after.sqlite.transactionFailures - before.sqlite.transactionFailures,
+    sqliteBusyFailures: after.sqlite.busyFailures - before.sqlite.busyFailures,
+    checkpoints: after.sqlite.checkpoints - before.sqlite.checkpoints,
     dirty: after.dirty,
     inFlight: after.inFlight
   };
@@ -135,7 +136,23 @@ function thresholdsFor(mode, rate, durationMs, config) {
   };
 }
 
-function gateResult({ mode, profile, durationMs, actualRate, errorRate, p99, loopStats, rssGrowth, disk, windows, series, thresholds }) {
+function gateResult({
+  mode,
+  profile,
+  durationMs,
+  actualRate,
+  errorRate,
+  p99,
+  loopStats,
+  rssGrowth,
+  disk,
+  windows,
+  series,
+  featureExercises,
+  burstOverloads,
+  burstUnexpected,
+  thresholds
+}) {
   const violations = [];
   if (mode === 'full' && durationMs < thresholds.minimumDurationMs) {
     violations.push(`duration ${durationMs}ms is below full gate minimum ${thresholds.minimumDurationMs}ms`);
@@ -167,6 +184,17 @@ function gateResult({ mode, profile, durationMs, actualRate, errorRate, p99, loo
       violations.push(`persistence writes ${disk.writes} exceeds coalesced bound ${thresholds.maximumWrites}`);
     }
     if (disk.writeFailures !== 0) violations.push(`persistence reported ${disk.writeFailures} write failure(s)`);
+    if (disk.sqliteTransactionFailures !== 0) {
+      violations.push(`SQLite reported ${disk.sqliteTransactionFailures} transaction failure(s)`);
+    }
+    if (disk.sqliteBusyFailures !== 0) violations.push(`SQLite reported ${disk.sqliteBusyFailures} busy failure(s)`);
+    if (disk.pendingBatches !== 0 || disk.pendingBytes !== 0) {
+      violations.push(`SQLite writer remained queued (${disk.pendingBatches} batches / ${disk.pendingBytes} bytes)`);
+    }
+    if (disk.checkpoints < 1) violations.push('persistence profile completed without a WAL checkpoint');
+    if (featureExercises < 1) violations.push('persistence profile completed without feature exercises');
+    if (burstOverloads < 1) violations.push('persistence profile did not reject an overloaded sync');
+    if (burstUnexpected !== 0) violations.push(`overload probe returned ${burstUnexpected} unexpected response(s)`);
     if (disk.writeLatencyMaxMs > thresholds.maximumDiskWriteLatencyMs) {
       violations.push(
         `maximum disk write latency ${disk.writeLatencyMaxMs.toFixed(2)}ms exceeds ${thresholds.maximumDiskWriteLatencyMs}ms`
@@ -180,9 +208,72 @@ function gateResult({ mode, profile, durationMs, actualRate, errorRate, p99, loo
 async function benchmarkConfig(profile, directory) {
   const base = testServerConfig({ sink: 'null', port: 0 });
   if (!profile.persistence) return base;
+  base.credentials['test-key'].trustedForDecisions = true;
+  base.projects.demo.experiments = [{
+    id: 'stress-evidence-v1',
+    enabled: true,
+    allocation: 1,
+    salt: 'stress-evidence-v1',
+    roles: ['client'],
+    goalMetric: 'stress.goal',
+    assignmentUnitKind: 'sync-slice',
+    terminalRetentionMs: 3_600_000,
+    variants: [
+      { key: 'control', weight: 1, values: {} },
+      { key: 'test', weight: 1, values: {} }
+    ]
+  }];
   const configPath = join(directory, 'wardx-server.json');
   await writeFile(configPath, `${JSON.stringify(base, null, 2)}\n`, 'utf8');
   return loadServerConfig(configPath);
+}
+
+function evidenceBody(step) {
+  const envelope = sampleEnvelope({ configVersion: 12 });
+  const timestamp = Date.now();
+  const subject = step.toString(16).padStart(64, '0');
+  const frame = envelope.frames[0];
+  frame.from = timestamp - 1;
+  frame.to = timestamp;
+  frame.metrics = { counters: [], gauges: [], histograms: [] };
+  frame.logs = [];
+  frame.events = [
+    [timestamp, 'experiment.exposure', {
+      experiment: 'stress-evidence-v1', variant: 'test', subject
+    }],
+    [timestamp, 'experiment.goal', {
+      metric: 'stress.goal',
+      subject,
+      experiments: [{ experiment: 'stress-evidence-v1', variant: 'test' }],
+      value: 1
+    }]
+  ];
+  return gzipJson(envelope);
+}
+
+function runLoadWorker({ port, rate, durationMs, bodies }) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./server-load-worker.js', import.meta.url), {
+      workerData: { port, rate, durationMs, bodies }
+    });
+    worker.once('message', (result) => {
+      if (result.ok) resolve(result);
+      else reject(new Error(result.error));
+    });
+    worker.once('error', reject);
+    worker.once('exit', (code) => {
+      if (code !== 0) reject(new Error(`server load worker exited with code ${code}`));
+    });
+  });
+}
+
+async function fileSize(path) {
+  try {
+    return (await stat(path)).size;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return 0;
+    throw error;
+  }
 }
 
 export async function testD({ rate, durationMs, mode = 'smoke', profile: profileName = 'raw' }) {
@@ -205,35 +296,67 @@ export async function testD({ rate, durationMs, mode = 'smoke', profile: profile
     const bodies = growingBodies(durationMs);
     const persistenceBefore = profile.persistence ? server.wardx.persistence.snapshotMetrics() : null;
     const loop = startEventLoopProbe();
-    const latencies = [];
     const memoryBefore = process.memoryUsage().rss;
     let peakRss = memoryBefore;
-    let errors = 0;
-    let networkErrors = 0;
-    let sent = 0;
-    let slice = 0;
+    let featureExercises = 0;
     const cpuBefore = process.cpuUsage();
-    const startedNs = process.hrtime.bigint();
-    const deadlineNs = startedNs + BigInt(Math.round(durationMs * 1e6));
-
-    while (process.hrtime.bigint() < deadlineNs) {
-      const sliceStartedNs = process.hrtime.bigint();
-      const batchSize = Math.max(1, Math.round((rate * SLICE_MS) / 1000));
-      const body = bodies[Math.min(slice, bodies.length - 1)];
-      const results = await Promise.all(Array.from({ length: batchSize }, () => postGzip(agent, address.port, body)));
-      for (const result of results) {
-        sent += 1;
-        latencies.push(result.ns);
-        if (result.status !== 200) errors += 1;
-        if (result.networkError) networkErrors += 1;
+    let featureError = null;
+    let featureChain = Promise.resolve();
+    const exerciseFeatures = async () => {
+      if (featureError) return;
+      try {
+        const evidence = await postGzip(agent, address.port, evidenceBody(featureExercises + 1));
+        if (evidence.status !== 200) throw new Error(`feature evidence sync returned ${evidence.status}`);
+        const currentVersion = server.wardx.control.getConfig('demo').version;
+        server.wardx.control.setValue('demo', 'message.delayMs', 1001 + featureExercises, ['client'], {
+          expectedVersion: currentVersion,
+          reason: 'stress concurrent control mutation'
+        });
+        const hour = Math.floor(Date.now() / 3_600_000) * 3_600_000;
+        server.wardx.control.aggregateHistory('demo', {
+          tier: 'hour', from: hour - 3_600_000, to: hour + 3_600_000
+        });
+        server.wardx.stateStore.checkpoint();
+        featureExercises += 1;
+      } catch (error) {
+        featureError = error;
       }
+    };
+    if (profile.persistence) featureChain = featureChain.then(exerciseFeatures);
+    const featureTimer = profile.persistence
+      ? setInterval(() => {
+          featureChain = featureChain.then(exerciseFeatures);
+        }, 5000)
+      : null;
+    featureTimer?.unref?.();
+    const memoryTimer = setInterval(() => {
       peakRss = Math.max(peakRss, process.memoryUsage().rss);
-      slice += 1;
-      const spentMs = Number(process.hrtime.bigint() - sliceStartedNs) / 1e6;
-      if (spentMs < SLICE_MS) await new Promise((resolve) => setTimeout(resolve, SLICE_MS - spentMs));
+    }, SLICE_MS);
+    memoryTimer.unref?.();
+    const load = await runLoadWorker({ port: address.port, rate, durationMs, bodies });
+    clearInterval(memoryTimer);
+    if (featureTimer) clearInterval(featureTimer);
+    await featureChain;
+    if (featureError) throw featureError;
+    const benchmarkElapsedMs = load.elapsedMs;
+    const sent = load.sent;
+    const errors = load.errors;
+    const networkErrors = load.networkErrors;
+    let burstOverloads = 0;
+    let burstUnexpected = 0;
+    if (profile.persistence) {
+      const leases = Array.from(
+        { length: config.capacity.maxConcurrentSyncHandlers },
+        () => server.wardx.syncGate.enter()
+      );
+      if (leases.some((lease) => lease === null)) throw new Error('could not saturate sync concurrency gate');
+      const overload = await postGzip(agent, address.port, bodies[0]);
+      burstOverloads = overload.status === 503 ? 1 : 0;
+      burstUnexpected = overload.status === 200 || overload.status === 503 ? 0 : 1;
+      for (const release of leases) release();
+      const recovery = await postGzip(agent, address.port, bodies[0]);
+      if (recovery.status !== 200) burstUnexpected += 1;
     }
-
-    const benchmarkElapsedMs = Number(process.hrtime.bigint() - startedNs) / 1e6;
     if (profile.persistence) await server.wardx.persistence.flush();
     const loopStats = loop.stop();
     const cpuAfter = process.cpuUsage();
@@ -245,13 +368,12 @@ export async function testD({ rate, durationMs, mode = 'smoke', profile: profile
     );
     const persistenceAfter = profile.persistence ? server.wardx.persistence.snapshotMetrics() : null;
     const disk = profile.persistence ? persistenceDelta(persistenceBefore, persistenceAfter) : null;
-    const persistenceBytes = profile.persistence ? (await stat(`${config.configPath}.aggregate-windows.json`)).size : 0;
+    const persistenceBytes = profile.persistence
+      ? (await fileSize(config.sqlite.path)) + (await fileSize(`${config.sqlite.path}-wal`))
+      : 0;
     const actualRate = sent / (benchmarkElapsedMs / 1000);
     const errorRate = sent === 0 ? 1 : errors / sent;
-    latencies.sort((a, b) => a - b);
-    const p50 = percentileFromSorted(latencies, 50) / 1e6;
-    const p95 = percentileFromSorted(latencies, 95) / 1e6;
-    const p99 = percentileFromSorted(latencies, 99) / 1e6;
+    const { p50, p95, p99 } = load;
     const rssGrowth = peakRss - memoryBefore;
     const thresholds = thresholdsFor(mode, rate, durationMs, config);
     const violations = gateResult({
@@ -266,6 +388,9 @@ export async function testD({ rate, durationMs, mode = 'smoke', profile: profile
       disk,
       windows: windowsSnapshot.length,
       series: retainedSeries,
+      featureExercises,
+      burstOverloads,
+      burstUnexpected,
       thresholds
     });
 
@@ -293,6 +418,15 @@ export async function testD({ rate, durationMs, mode = 'smoke', profile: profile
       'disk write failures': disk?.writeFailures ?? 0,
       'disk write latency total ms': disk?.writeLatencyTotalMs.toFixed(2) ?? 'disabled',
       'disk write latency max ms': disk?.writeLatencyMaxMs.toFixed(2) ?? 'disabled',
+      'pending SQLite batches': disk?.pendingBatches ?? 0,
+      'pending SQLite bytes': disk?.pendingBytes ?? 0,
+      'SQLite transactions': disk?.sqliteTransactions ?? 0,
+      'SQLite transaction failures': disk?.sqliteTransactionFailures ?? 0,
+      'SQLite busy failures': disk?.sqliteBusyFailures ?? 0,
+      'WAL checkpoints': disk?.checkpoints ?? 0,
+      'feature exercises': featureExercises,
+      'burst overload responses': burstOverloads,
+      'burst unexpected responses': burstUnexpected,
       'gate violations': violations.length
     });
     report('D thresholds', thresholds);

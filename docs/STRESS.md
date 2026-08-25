@@ -1,61 +1,50 @@
-# Wardx stress harness
-
-The MVP is not done until these tests can run. They live in `@wardx/stress` and use only Node builtins plus workspace packages.
+# Wardx stress gates
 
 ```bash
-npm install
-npm test
-node packages/stress/src/index.js --smoke
-node packages/stress/src/index.js --full
-node packages/stress/src/index.js A
-node packages/stress/src/index.js G --subjects 1000000
+npm run stress:smoke
+npm run stress:full
 ```
 
-`--smoke` is the default (short durations, smaller fleets). Server test D runs both the raw upper-bound profile and the CLI-equivalent persistence profile unless `--profile raw` or `--profile persistence` selects one. The release gate runs both server profiles for five minutes and the million-subject assignment check.
+Smoke is a short regression gate. Full mode runs for at least five minutes,
+requests 5,250 sync/s, and requires at least 5,000 measured sync/s on the
+complete single-process persistence profile.
 
-## Tests
+Test D reports requested/actual throughput, HTTP and network errors, request
+p50/p95/p99, event-loop p50/p99, CPU, RSS start/peak/growth, retained current
+state, SQLite/WAL bytes, coalesced persistence writes/latency, pending batches/
+bytes, SQLite transaction/busy failures, and checkpoints. Any threshold miss
+exits non-zero. Test G independently verifies deterministic cross-runtime
+assignment over the declared subject count.
 
-| ID | Name | What it measures |
-| --- | --- | --- |
-| A | Counter hot path | `inc()` ops/s, ns/op, RSS, event-loop delay |
-| B | Mixed instrumentation | 70% counter / 15% histogram / 10% event / 5% log at 10k–250k ops/s |
-| C | Flush spike | snapshot, `JSON.stringify`, gzip, event-loop delay |
-| D | Server ingest profiles | Raw `NullSink` upper bound and CLI-equivalent persistence: throughput, latency, errors, event-loop delay, CPU/RSS; persistence adds retained state and disk writes |
-| E | Fleet simulator | N jittered logical clients against `/v1/sync` |
-| F | Remote Config storm | version bump under traffic; clients receive the new snapshot |
-| G | Experiment consistency | 1M subjects: stability, independent FNV-1a, allocation, weights |
+The HTTP load generator runs in a dedicated worker. Wardx remains one server
+instance on its own event loop, so client request-generation work is not counted
+as server event-loop delay. The persistence profile also exercises trusted
+experiment evidence, versioned control mutations, bounded historical queries,
+forced checkpoints, deterministic overload rejection, and recovery.
 
-## Engineering targets (not benchmark results)
+Full thresholds:
 
-The values below are release targets. They are not claims that a particular Wardx version or deployment achieved them. A report must include the commit, command, Node version, hardware, duration, payload, client count, sink, `configPath` status, retention state, and observed errors/latencies.
+| Measure | Gate |
+| --- | ---: |
+| Duration | at least 300 s |
+| Actual sync rate | at least 5,000/s |
+| HTTP error rate | at most 0.1% |
+| Request p99 | at most 100 ms |
+| Event-loop p99 | at most 50 ms |
+| RSS growth | at most 512 MiB |
+| Maximum coalesced persistence latency | at most 250 ms |
+| SQLite transaction/busy failures | 0 |
+| Pending batches/bytes after flush | 0 / 0 |
 
-Client:
+The comparable reference environment is one Wardx process, at least four
+logical CPU cores and 8 GiB RAM, local SSD, loopback HTTP, Node 20 or the current
+maintained Node release, and no competing workload. NFS, shared burstable CI,
+containers below those limits, proxy/network traffic, and an active developer
+machine are different proof boundaries.
 
-- `counter.inc()` p99 < 2 µs
-- `histogram.observe()` p99 < 5 µs
-- `event()` / `log.info()` p99 < 10 µs
-- 0 network/filesystem/Promise on the hot path
-
-Runtime at 100k mixed ops/s:
-
-- extra event-loop p99 delay < 5 ms
-- no unbounded memory growth
-
-Server target for test D's CLI-equivalent persistence profile with `NullSink`, `configPath`, coalesced sidecar writes, and growing retained state:
-
-- 5,000 sync/s sustained
-- HTTP error rate < 0.1%
-- p99 < 100 ms
-
-Full mode requests 5,250 sync/s by default and gates the measured result at 5,000 sync/s. The headroom prevents a timer paced at exactly the threshold from failing solely because of scheduler drift.
-
-The 5,000 sync/s target's reference environment is one Wardx process on a dedicated machine or CI runner with at least 4 logical CPU cores, 8 GiB RAM, local SSD storage, local loopback HTTP, Node.js 20 or the current maintained Node release, and no competing workload. The raw profile has no `configPath` or sidecar writes and is only an upper bound. Neither profile includes production reverse-proxy or network overhead. Do not cite a target as an achieved result; publish measured numbers only with the exact profile, hardware, and full output.
-
-Do not add a worker thread, change the 15s sync, or replace JSON+gzip until these numbers say so.
-
-## Local ingest
-
-```bash
-npm run server
-npm run example
-```
+These are release targets, not published benchmark results. A capacity claim
+must include the exact commit, command, Node and SQLite versions, hardware and
+SSD, operational config, project/signal/dimension/app-version/experiment
+cardinality, payload sizes and rows, sync interval/client estimate, retention,
+duration, and full unedited output. Never infer production capacity from unit
+tests or a smoke run.

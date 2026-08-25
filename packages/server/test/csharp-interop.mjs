@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { testServerConfig } from './helpers.js';
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const CLI_PATH = join(REPOSITORY_ROOT, 'packages/server/src/cli.js');
@@ -13,9 +14,18 @@ const CSHARP_PROJECT = join(REPOSITORY_ROOT, 'clients/csharp/Tests/Wardx.Tests.c
 
 function config(ndjsonPath) {
   return {
+    ...testServerConfig(),
     host: '127.0.0.1',
     port: 0,
-    projectKeys: { 'black-box-key': 'demo' },
+    credentials: {
+      'black-box-key': {
+        label: 'black-box-client',
+        project: 'demo',
+        allowedRoles: ['csharp'],
+        trustedForDecisions: true,
+        enabled: true
+      }
+    },
     sink: 'ndjson',
     ndjsonPath,
     maxRequestBytes: 2097152,
@@ -54,10 +64,8 @@ function config(ndjsonPath) {
             roles: ['csharp'],
             primaryMetric: 'interop.counter',
             goalMetric: 'interop.goal',
-            goalKind: 'conversion',
-            control: 'experiment',
-            minExposures: 1,
-            confidence: 0.95,
+            assignmentUnitKind: 'subject',
+            terminalRetentionMs: 604800000,
             variants: [
               { key: 'experiment', weight: 1, values: { 'interop.remote': 'experiment' } }
             ]
@@ -150,7 +158,8 @@ async function verify() {
     assert.equal(analysis.variants[0].exposures, 1);
     assert.equal(analysis.variants[0].goals, 1);
     assert.equal(analysis.variants[0].goalSum, 2);
-    assert.equal(analysis.decision.status, 'winner');
+    assert.equal(analysis.decision.status, 'invalid');
+    assert.match(analysis.decision.reason, /descriptive experiment/);
     await client.close();
 
     const envelopes = (await readFile(ndjsonPath, 'utf8'))

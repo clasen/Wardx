@@ -1,60 +1,65 @@
 # @wardx/server internals
 
-Use this file when changing `packages/server`. HTTP remains the client path. MCP remains the control plane.
+## Main boundaries
 
-## Layout
-
-| Path | Role |
+| Path | Responsibility |
 | --- | --- |
-| `src/cli.js` | Loads `process.argv[2]`, `startServer`, MCP stdio when stdin is not a TTY |
-| `src/server.js` | `createIngestServer`, `listen`, `startServer`; awaitable `server.wardx.stop()` |
-| `src/loadConfig.js` | Required keys, no fallback path, no default values |
-| `src/ingest/` | `POST /v1/sync` body, validate, respond |
-| `src/control/ControlService.js` | Config, catalog, experiments, aggregates, logs. Overview outcomes include `topHistograms` (ranked by max). |
-| `src/control/catalog.js` | Catalog shape, onboarding gaps, protocol-signal skip |
-| `src/control/persist.js` | Rewrite loaded JSON (`config.configPath`) after mutations; sidecar paths, snapshots, hydration, and validation |
-| `src/control/PersistenceCoordinator.js` | Coalesced async sidecar writes; one write path; dirty retry state; shutdown flush |
-| `src/diagnostics.js` | Structured `stderr` or `none` diagnostic sink with non-recursive failure handling |
-| `src/mcp/tools.js` | `TOOL_DEFS` + `executeTool` |
-| `src/mcp/stdio.js` | MCP server, `MCP_INSTRUCTIONS`, `wardx://project/{name}` |
-| `src/aggregation/FrameAggregator.js` | 1-minute windows per project (persisted); lifetime experiment totals; persist-log lifetime rollups |
-| `src/control/experimentDecision.js` | `analyze_experiment` verdict and ship gate |
-| `src/projects/ProjectRegistry.js` | Isolated per-project stores |
-| `src/roles.js` | Role names, `["*"]`, per-role snapshot filter |
-| `src/sinks/` | Envelope store: `null`, `memory`, `ndjson`. MCP does not read it |
+| `src/server.js` | Construct one server, SQLite store, capacity gates, control and graceful shutdown. |
+| `src/loadConfig.js` | Closed required operational config; no defaults. |
+| `src/auth/CredentialRegistry.js` | Authenticate raw keys and authorize claimed roles. |
+| `src/ingest/` | Bounded HTTP read/validation and pre-mutation capacity checks. |
+| `src/storage/SqliteStateStore.js` | Schema v1, WAL, project state, journal, aggregate tiers, watermarks. |
+| `src/storage/ExperimentLedger.js` | Durable SHA-256 assignment dedupe, provenance, totals, terminal output/expiry. |
+| `src/aggregation/history/` | Canonical historical rows and deterministic compaction. |
+| `src/control/ControlService.js` | MCP reads/mutations, experiment gates, journal publish. |
+| `src/control/MutationJournal.js` | CAS, audit-safe reversible entry, rollback-as-new-version. |
+| `src/control/PersistenceCoordinator.js` | Coalesced minute writes, restart scans, compaction, retention, metrics. |
+| `src/mcp/` | Public schemas, bounded reads, stdio resources/tools. |
 
-Exports: `createIngestServer`, `listen`, `startServer`, `loadServerConfig`, `ControlService`, `executeTool`, `TOOL_DEFS`, `FrameAggregator`, `ConfigRepository`, sinks.
+## Contracts
 
-`server.wardx` on the HTTP server is `{ config, registry, control, sink, persistence, diagnostics, stop }`. Embedded callers await `stop()`.
+- No admin HTTP route and no multi-process/shared-SQLite mode.
+- Operational JSON owns settings/credentials and bootstraps an empty DB. SQLite
+  owns project state thereafter. Do not add sidecar or compatibility fallback.
+- Every config/catalog/experiment mutation uses `expectedVersion` and `reason`.
+  Commit project state and one journal entry atomically before `_publish`.
+- Credential trust comes only from `CredentialRegistry`; never from wire data.
+- General history is preflighted then coalesced. Experiment evidence is
+  transactionally accepted before HTTP success.
+- Historical rows exclude attrs, exemplars, instance IDs, and subject hashes.
+- Source retention requires durable downstream bucket plus watermark.
+- Fixed-horizon plans are all-or-none and immutable after trusted exposure.
+  Terminal analysis is first-write-wins.
+- Current aggregates/rings are memory-only. Hour/day history and experiment
+  evidence survive restart.
+- All bounds live in config: sync handlers, pending SQLite batches/bytes,
+  write batch, transaction/busy/checkpoint policy, history ranges/rows/
+  retention/cardinality, journal, MCP reads, and ledger rows.
 
-## Contracts not to break
+## Required config groups
 
-- No admin HTTP routes. New control operations are MCP tools (and `executeTool` cases) plus tests.
-- `projectKeys` maps ingest key → project name. MCP tools take the name. The key authenticates the project; client-selected roles are routing metadata, not authorization. Remote Config never contains secrets.
-- Catalog fields never go down `/v1/sync`. `toClientExperiment` / `toWireExperiment` strip `hypothesis` and, on the wire, `roles`, `goalKind`, `control`, `minExposures`, `confidence`, and `shippedVariant`.
-- Catalog persist does not increment `version`. `_commit` increments `version` then persists.
-- `loadServerConfig` throws if the path is missing. Do not add fallback defaults for required config keys.
-- `variant.values` keys must already exist and be visible to `experiment.roles` (`assertExperimentKeysExist`).
-- Protocol names `wardx.internal.*`, `experiment.exposure`, `experiment.goal` stay out of onboarding gap lists (`isProtocolSignal`).
-- Envelope sink is process-wide and outside ControlService. Production uses `sink: "null"`.
-- Experiment lifetime totals persist at `<configPath>.experiment-stats.json` when `configPath` is set. The sidecar is not part of the client snapshot. A corrupt sidecar is a startup error and is never silently discarded.
-- Catalog `persistLogs` is an allowlist of exact log message names. Lifetime count + last exemplar persist at `<configPath>.log-stats.json` under the same rules. MCP `set_persist_log` / `delete_persist_log` mutate the allowlist without bumping `version`.
-- 1-minute aggregate windows persist at `<configPath>.aggregate-windows.json` under the same rules and expire exactly at `aggregateRetentionMinutes`. The bounded recent-client and recent-log rings do not persist.
+Top-level required groups include `credentials`, `sqlite`, `history`, `control`,
+`capacity`, `experiments`, and `projects`, in addition to HTTP/envelope/sink/
+current-window settings. See `REQUIRED*` in `src/loadConfig.js`; never duplicate
+that list here in code or add a fallback.
 
-## Config file keys
+Each credential contains `label`, `project`, `allowedRoles`,
+`trustedForDecisions`, and `enabled`. Each project contains `version`, `values`,
+`keyRoles`, `experiments`, and optional `catalog`. Every experiment has
+`goalMetric`, `assignmentUnitKind`, `terminalRetentionMs`, roles, and variants.
 
-Required: `host`, `port`, `projectKeys`, `sink`, `maxRequestBytes`, `maxClockSkewMs`, `maxFramesPerEnvelope`, `maxItemsPerEnvelope`, `maxNameBytes`, `maxDimensionKeys`, `maxDimensionValueLength`, `maxAttributeKeys`, `maxAttributeValueLength`, `aggregateRetentionMinutes`, `aggregateMaxSeriesPerMetric`, `memorySinkMaxEnvelopes`, `recentClientsMax`, `recentLogsMax`, `persistenceFlushIntervalMs`, `diagnostics`, `projects`. No required key has a fallback. `diagnostics.sink` is `stderr` or `none`.
-
-`ndjsonPath` is required when `sink` is `ndjson`. Each `projects.<name>` requires `version`, `values`, `keyRoles`, `experiments`; every experiment requires `goalMetric`. Optional `catalog`: `description`, `roles`, `signals`, `persistLogs` (exact log message names), `experiments` (id → `{ hypothesis }`). Experiment lifetime totals are not in this file; they live at `<configPath>.experiment-stats.json`. Allowlisted log rollups live at `<configPath>.log-stats.json`. 1-minute windows live at `<configPath>.aggregate-windows.json`.
-
-The config is authoritative for keys/catalog/definitions. Experiment and persist-log sidecars are authoritative for their lifetime rollups. Aggregate windows are retained only for `aggregateRetentionMinutes` and are not rebuildable inside Wardx with `sink: "null"`. Back up and restore all four files as one stopped snapshot. Startup crashes on corruption. Do not add recovery fallbacks or compatibility readers.
-
-This repo: `config/development.json` (memory sink), `config/production.json` (null sink). CLI: `npm run server`.
-
-## Verify
+## Verification
 
 ```bash
-npm test
+npm run lint
+npm run typecheck
+npm run test:js
+npm run test:csharp
+npm run check:csharp
+npm run stress:smoke
+npm run pack:check
 ```
 
-Server tests live in `packages/server/test/*.test.js`. Prefer `executeTool` for MCP-shaped assertions and `createIngestServer` + `fetch` for ingest. Helpers: `packages/server/test/helpers.js`.
+Use focused server tests first. Socket tests need loopback capability. The
+release gate adds the five-minute full-feature workload; its result is hardware
+evidence, not a deterministic unit-test claim.

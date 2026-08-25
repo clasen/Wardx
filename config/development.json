@@ -1,8 +1,14 @@
 {
   "host": "127.0.0.1",
   "port": 8787,
-  "projectKeys": {
-    "dev_project_key": "demo"
+  "credentials": {
+    "dev_project_key": {
+      "label": "demo-client",
+      "project": "demo",
+      "allowedRoles": ["client", "game-server"],
+      "trustedForDecisions": true,
+      "enabled": true
+    }
   },
   "sink": "memory",
   "ndjsonPath": "wardx-dev.ndjson",
@@ -22,6 +28,35 @@
   "memorySinkMaxEnvelopes": 10000,
   "recentClientsMax": 100,
   "recentLogsMax": 200,
+  "sqlite": {
+    "path": "wardx-dev.sqlite",
+    "journalMode": "WAL",
+    "synchronous": "NORMAL",
+    "busyTimeoutMs": 5000,
+    "walAutoCheckpointPages": 1000,
+    "checkpointMode": "PASSIVE",
+    "maxWriteBatchRows": 1000,
+    "transactionTimeoutMs": 5000,
+    "maxPendingBatches": 32,
+    "maxPendingBytes": 67108864
+  },
+  "history": {
+    "clockSkewAllowanceMs": 300000,
+    "maxAcceptedPastAgeMs": 3600000,
+    "aggregateHourlyRetentionHours": 720,
+    "aggregateDailyRetentionDays": 365,
+    "maxAppVersionsPerProjectRoleTier": 20,
+    "maxQueryBuckets": 744,
+    "maxQueryRows": 10000,
+    "compactionIntervalMs": 60000
+  },
+  "control": {
+    "journalCapacity": 1000,
+    "maxConcurrentMcpReads": 8,
+    "maxPendingMcpReads": 32
+  },
+  "capacity": { "maxConcurrentSyncHandlers": 256 },
+  "experiments": { "ledgerMaxRows": 1000000 },
   "projects": {
     "demo": {
       "version": 1,
@@ -45,6 +80,8 @@
           "salt": "3ad8f9",
           "primaryMetric": "message.sent",
           "goalMetric": "message.sent",
+          "assignmentUnitKind": "subject",
+          "terminalRetentionMs": 604800000,
           "roles": ["client"],
           "variants": [
             {

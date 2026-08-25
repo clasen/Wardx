@@ -8,15 +8,112 @@ const EXPERIMENT_KEYS = new Set([
   'roles',
   'primaryMetric',
   'goalMetric',
-  'goalKind',
+  'assignmentUnitKind',
+  'outcomeKind',
   'control',
-  'minExposures',
-  'confidence',
+  'targetSampleSizePerVariant',
+  'earliestAnalysisAt',
+  'familyWiseAlpha',
+  'minimumEffect',
+  'direction',
+  'terminalRetentionMs',
+  'healthThresholds',
   'shippedVariant',
   'hypothesis',
   'variants'
 ]);
 const VARIANT_KEYS = new Set(['key', 'weight', 'values']);
+export const FIXED_HORIZON_FIELDS = Object.freeze([
+  'outcomeKind',
+  'control',
+  'targetSampleSizePerVariant',
+  'earliestAnalysisAt',
+  'familyWiseAlpha',
+  'minimumEffect',
+  'direction',
+  'healthThresholds'
+]);
+export const HEALTH_THRESHOLD_FIELDS = Object.freeze([
+  'maxDroppedFrames',
+  'maxDuplicateExposures',
+  'maxDuplicateGoals',
+  'maxConflictingGoals',
+  'maxVariantConflicts',
+  'maxUntrustedRows',
+  'maxLateRows',
+  'maxMissingExposures',
+  'maxImplicitExposures'
+]);
+
+export function hasFixedHorizonPlan(experiment) {
+  return FIXED_HORIZON_FIELDS.some((field) => experiment[field] !== undefined);
+}
+
+function assertRequiredFixedHorizonFields(experiment) {
+  for (const field of FIXED_HORIZON_FIELDS) {
+    if (experiment[field] === undefined) throw new Error(`experiment.${field} is required for a fixed-horizon plan`);
+  }
+}
+
+function assertHealthThresholds(thresholds) {
+  if (!thresholds || typeof thresholds !== 'object' || Array.isArray(thresholds)) {
+    throw new Error('experiment.healthThresholds must be an object');
+  }
+  const allowed = new Set(HEALTH_THRESHOLD_FIELDS);
+  for (const field of Object.keys(thresholds)) {
+    if (!allowed.has(field)) throw new Error(`experiment.healthThresholds unknown key: ${field}`);
+  }
+  for (const field of HEALTH_THRESHOLD_FIELDS) {
+    if (thresholds[field] === undefined) throw new Error(`experiment.healthThresholds.${field} is required`);
+    if (!Number.isInteger(thresholds[field]) || thresholds[field] < 0) {
+      throw new Error(`experiment.healthThresholds.${field} must be an integer >= 0`);
+    }
+  }
+}
+
+export function assertFixedHorizonPlan(experiment, variantKeys) {
+  if (!hasFixedHorizonPlan(experiment)) return false;
+  assertRequiredFixedHorizonFields(experiment);
+  if (experiment.outcomeKind !== 'conversion' && experiment.outcomeKind !== 'mean') {
+    throw new Error('experiment.outcomeKind must be conversion or mean');
+  }
+  if (typeof experiment.control !== 'string' || experiment.control.length === 0) {
+    throw new Error('experiment.control must be a non-empty string');
+  }
+  if (!Number.isInteger(experiment.targetSampleSizePerVariant) || experiment.targetSampleSizePerVariant < 1) {
+    throw new Error('experiment.targetSampleSizePerVariant must be an integer >= 1');
+  }
+  if (experiment.outcomeKind === 'mean' && experiment.targetSampleSizePerVariant < 2) {
+    throw new Error('experiment.targetSampleSizePerVariant must be >= 2 when outcomeKind is mean');
+  }
+  if (!Number.isInteger(experiment.earliestAnalysisAt) || experiment.earliestAnalysisAt < 0) {
+    throw new Error('experiment.earliestAnalysisAt must be an integer >= 0');
+  }
+  if (
+    typeof experiment.familyWiseAlpha !== 'number' ||
+    !Number.isFinite(experiment.familyWiseAlpha) ||
+    experiment.familyWiseAlpha <= 0 ||
+    experiment.familyWiseAlpha >= 1
+  ) {
+    throw new Error('experiment.familyWiseAlpha must be a number in (0, 1)');
+  }
+  if (
+    typeof experiment.minimumEffect !== 'number' ||
+    !Number.isFinite(experiment.minimumEffect) ||
+    experiment.minimumEffect < 0
+  ) {
+    throw new Error('experiment.minimumEffect must be a finite number >= 0');
+  }
+  if (!['increase', 'decrease', 'two-sided'].includes(experiment.direction)) {
+    throw new Error('experiment.direction must be increase, decrease, or two-sided');
+  }
+  assertHealthThresholds(experiment.healthThresholds);
+  if (variantKeys !== undefined) {
+    if (variantKeys.size < 2) throw new Error('fixed-horizon experiment requires at least two variants');
+    if (!variantKeys.has(experiment.control)) throw new Error('experiment.control must be a variant key');
+  }
+  return true;
+}
 
 export function validateExperiment(experiment) {
   if (!experiment || typeof experiment !== 'object' || Array.isArray(experiment)) {
@@ -46,43 +143,21 @@ export function validateExperiment(experiment) {
   if (typeof experiment.goalMetric !== 'string' || experiment.goalMetric.length === 0) {
     throw new Error('experiment.goalMetric is required');
   }
+  if (typeof experiment.assignmentUnitKind !== 'string' || experiment.assignmentUnitKind.length === 0) {
+    throw new Error('experiment.assignmentUnitKind is required and must be a non-empty string');
+  }
+  if (!Number.isInteger(experiment.terminalRetentionMs) || experiment.terminalRetentionMs < 1) {
+    throw new Error('experiment.terminalRetentionMs is required and must be an integer >= 1');
+  }
   if (experiment.primaryMetric !== undefined) {
     if (typeof experiment.primaryMetric !== 'string' || experiment.primaryMetric.length === 0) {
       throw new Error('experiment.primaryMetric must be a non-empty string');
-    }
-  }
-  if (experiment.goalKind !== undefined) {
-    if (experiment.goalKind !== 'conversion' && experiment.goalKind !== 'mean') {
-      throw new Error('experiment.goalKind must be conversion or mean');
-    }
-  }
-  if (experiment.control !== undefined) {
-    if (typeof experiment.control !== 'string' || experiment.control.length === 0) {
-      throw new Error('experiment.control must be a non-empty string');
-    }
-  }
-  if (experiment.minExposures !== undefined) {
-    if (!Number.isInteger(experiment.minExposures) || experiment.minExposures < 1) {
-      throw new Error('experiment.minExposures must be an integer >= 1');
-    }
-  }
-  if (experiment.confidence !== undefined) {
-    if (
-      typeof experiment.confidence !== 'number' ||
-      !Number.isFinite(experiment.confidence) ||
-      experiment.confidence <= 0 ||
-      experiment.confidence >= 1
-    ) {
-      throw new Error('experiment.confidence must be a number in (0, 1)');
     }
   }
   if (experiment.shippedVariant !== undefined) {
     if (typeof experiment.shippedVariant !== 'string' || experiment.shippedVariant.length === 0) {
       throw new Error('experiment.shippedVariant must be a non-empty string');
     }
-  }
-  if (experiment.goalKind === 'mean' && experiment.minExposures !== undefined && experiment.minExposures < 2) {
-    throw new Error('experiment.minExposures must be >= 2 when goalKind is mean');
   }
   if (!Array.isArray(experiment.variants) || experiment.variants.length === 0) {
     throw new Error('experiment.variants must be a non-empty array');
@@ -114,9 +189,7 @@ export function validateExperiment(experiment) {
   if (totalWeight <= 0) {
     throw new Error('experiment variant weights must sum to > 0');
   }
-  if (experiment.control !== undefined && !keys.has(experiment.control)) {
-    throw new Error(`experiment.control must be a variant key`);
-  }
+  assertFixedHorizonPlan(experiment, keys);
   if (experiment.shippedVariant !== undefined && !keys.has(experiment.shippedVariant)) {
     throw new Error(`experiment.shippedVariant must be a variant key`);
   }
@@ -158,10 +231,12 @@ export function toClientExperiment(experiment) {
     }))
   };
   if (experiment.primaryMetric !== undefined) out.primaryMetric = experiment.primaryMetric;
-  if (experiment.goalKind !== undefined) out.goalKind = experiment.goalKind;
-  if (experiment.control !== undefined) out.control = experiment.control;
-  if (experiment.minExposures !== undefined) out.minExposures = experiment.minExposures;
-  if (experiment.confidence !== undefined) out.confidence = experiment.confidence;
+  out.assignmentUnitKind = experiment.assignmentUnitKind;
+  out.terminalRetentionMs = experiment.terminalRetentionMs;
+  for (const field of FIXED_HORIZON_FIELDS) {
+    if (experiment[field] === undefined) continue;
+    out[field] = field === 'healthThresholds' ? { ...experiment[field] } : experiment[field];
+  }
   if (experiment.shippedVariant !== undefined) out.shippedVariant = experiment.shippedVariant;
   return out;
 }
@@ -169,10 +244,9 @@ export function toClientExperiment(experiment) {
 export function toWireExperiment(experiment) {
   const out = toClientExperiment(experiment);
   delete out.roles;
-  delete out.goalKind;
-  delete out.control;
-  delete out.minExposures;
-  delete out.confidence;
+  delete out.assignmentUnitKind;
+  delete out.terminalRetentionMs;
+  for (const field of FIXED_HORIZON_FIELDS) delete out[field];
   delete out.shippedVariant;
   return out;
 }

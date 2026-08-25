@@ -586,7 +586,7 @@ The volume funnel `level.start` → `level.fail` / `level.complete` is the diffi
 
 Call `experiment.goal('session.duration', { value: durationMs })` when the play session ends (use case 14).
 
-From MCP, after onboarding: `upsert_experiment` on the existing keys (`level.3.enemyHp`, …) with a hypothesis such as "Lower HP on level 3 increases session duration", `primaryMetric: 'session.time_ms'`, `goalMetric: 'session.duration'`, `goalKind: 'mean'`, `control`, `minExposures`, `confidence`, and variants that only change those keys. Later `analyze_experiment`: follow `decision` and compare `goalMean` for the duration goal. `ship_experiment` when status is `winner`. Compare the funnel counts with `get_aggregates`. See `@wardx/server` use case 7.
+From MCP, after onboarding: `upsert_experiment` on the existing keys (`level.3.enemyHp`, …) with a hypothesis such as "Lower HP on level 3 increases session duration", `primaryMetric: 'session.time_ms'`, `goalMetric: 'session.duration'`, `assignmentUnitKind: 'session'`, `outcomeKind: 'mean'`, and the complete fixed-horizon sample/time/alpha/effect/direction/health policy. Later `analyze_experiment` uses only trusted, server-deduplicated evidence; follow its persisted terminal `decision` and compare `goalMean`. `ship_experiment` additionally requires the current `expectedVersion` and a reason. Compare current funnel counts with `get_aggregates` and completed baselines with `get_aggregate_history`.
 
 ## Use case 16: Surface an error so an agent can open the source
 

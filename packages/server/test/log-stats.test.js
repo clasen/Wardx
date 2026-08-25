@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -64,14 +64,21 @@ test('loadLogStats returns empty when the sidecar is missing', () => {
   }
 });
 
-test('allowlisted log rollups persist across ingest server restarts', async () => {
+test('allowlisted historical log counts persist without attrs across restarts', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'wardx-'));
   const path = join(dir, 'server.json');
-  writeFileSync(path, `${JSON.stringify(testServerConfig({ port: 0 }), null, 2)}\n`);
+  const config = testServerConfig({ port: 0 });
+  config.history.clockSkewAllowanceMs = 1;
+  config.history.maxAcceptedPastAgeMs = 3_600_000;
+  writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
+  const now = Date.now() - 600_000;
+  const hourFrom = Math.floor(now / 3_600_000) * 3_600_000;
   try {
     const first = loadServerConfig(path);
     await withServer(first, async (server, base) => {
-      executeTool(server.wardx.control, 'set_persist_log', { project: 'demo', name: 'payment_failed' });
+      executeTool(server.wardx.control, 'set_persist_log', {
+        project: 'demo', name: 'payment_failed', expectedVersion: 12, reason: 'retain payment failure count'
+      });
       const res = await fetch(`${base}/v1/sync`, {
         method: 'POST',
         headers: {
@@ -79,14 +86,11 @@ test('allowlisted log rollups persist across ingest server restarts', async () =
           'content-encoding': 'gzip',
           'x-wardx-key': 'test-key'
         },
-        body: gzipJson(persistLogEnvelope())
+        body: gzipJson(persistLogEnvelope(now))
       });
       assert.equal(res.status, 200);
       await server.wardx.persistence.flush();
-      const saved = JSON.parse(readFileSync(logStatsPath(path), 'utf8'));
-      assert.equal(saved.projects.demo.payment_failed.client.error.count, 1);
-      assert.equal(saved.projects.demo.payment_failed.client.error.exemplar.attrs.code, 'timeout');
-      assert.equal(saved.projects.demo.match_started, undefined);
+      assert.equal(existsSync(logStatsPath(path)), false);
       const windows = executeTool(server.wardx.control, 'get_aggregates', { project: 'demo' });
       const row = windows.windows[0].logNames.find((item) => item.name === 'payment_failed');
       assert.equal(row.count, 1);
@@ -103,11 +107,14 @@ test('allowlisted log rollups persist across ingest server restarts', async () =
     const second = loadServerConfig(path);
     const restarted = createIngestServer(second);
     const overview = executeTool(restarted.wardx.control, 'get_project_overview', { project: 'demo' });
-    const outcome = overview.roles.client.outcomes.find(
-      (item) => item.kind === 'log' && item.name === 'payment_failed'
-    );
-    assert.equal(outcome.count, 1);
-    assert.equal(outcome.exemplar.attrs.stack, 'PaymentError: timeout');
+    assert.deepEqual(overview.persistLogs, ['payment_failed']);
+    const history = executeTool(restarted.wardx.control, 'get_aggregate_history', {
+      project: 'demo', tier: 'hour', from: hourFrom, to: hourFrom + 3_600_000,
+      role: 'client', names: ['payment_failed']
+    });
+    assert.equal(history.buckets[0].rows[0].count, 1);
+    assert.equal(history.buckets[0].rows[0].level, 'error');
+    assert.equal(history.buckets[0].rows[0].attrs, undefined);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -142,7 +149,9 @@ test('delete_persist_log drops lifetime stats from the sidecar', async () => {
   writeFileSync(path, `${JSON.stringify(testServerConfig({ port: 0 }), null, 2)}\n`);
   try {
     await withServer(loadServerConfig(path), async (server, base) => {
-      executeTool(server.wardx.control, 'set_persist_log', { project: 'demo', name: 'payment_failed' });
+      executeTool(server.wardx.control, 'set_persist_log', {
+        project: 'demo', name: 'payment_failed', expectedVersion: 12, reason: 'retain payment failures'
+      });
       const res = await fetch(`${base}/v1/sync`, {
         method: 'POST',
         headers: {
@@ -154,11 +163,11 @@ test('delete_persist_log drops lifetime stats from the sidecar', async () => {
       });
       assert.equal(res.status, 200);
       await server.wardx.persistence.flush();
-      executeTool(server.wardx.control, 'delete_persist_log', { project: 'demo', name: 'payment_failed' });
-      server.wardx.persistence.mark('logStats');
+      executeTool(server.wardx.control, 'delete_persist_log', {
+        project: 'demo', name: 'payment_failed', expectedVersion: 13, reason: 'stop retaining payment failures'
+      });
       await server.wardx.persistence.flush();
-      const saved = JSON.parse(readFileSync(logStatsPath(path), 'utf8'));
-      assert.deepEqual(saved.projects.demo, {});
+      assert.equal(existsSync(logStatsPath(path)), false);
       const overview = executeTool(server.wardx.control, 'get_project_overview', { project: 'demo' });
       assert.equal(
         overview.roles.client.outcomes.find((item) => item.kind === 'log'),
@@ -170,13 +179,14 @@ test('delete_persist_log drops lifetime stats from the sidecar', async () => {
   }
 });
 
-test('createIngestServer rejects a corrupt log-stats sidecar', () => {
+test('createIngestServer ignores a corrupt obsolete log-stats sidecar', () => {
   const dir = mkdtempSync(join(tmpdir(), 'wardx-'));
   const path = join(dir, 'server.json');
   writeFileSync(path, `${JSON.stringify(testServerConfig({ port: 0 }), null, 2)}\n`);
   writeFileSync(logStatsPath(path), `${JSON.stringify({ nope: true })}\n`);
   try {
-    assert.throws(() => createIngestServer(loadServerConfig(path)), /unknown key: nope/);
+    const server = createIngestServer(loadServerConfig(path));
+    server.wardx.stateStore.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

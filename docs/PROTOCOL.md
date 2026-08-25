@@ -11,7 +11,10 @@ Content-Encoding: gzip
 X-Wardx-Key: <project key>
 ```
 
-Delivery is **at-most-once**. A failed sync discards the batch. There is no disk queue and no retry of the same frames.
+General telemetry delivery is **at-most-once**. A failed sync discards the batch;
+there is no client disk queue and no retry of the same frames. Experiment
+exposure/goal evidence is the explicit exception: the server transactionally
+commits accepted deduplicated evidence before returning success.
 
 ## Request
 
@@ -35,7 +38,12 @@ Delivery is **at-most-once**. A failed sync discards the batch. There is no disk
 
 `client.instanceId` and `client.sessionId` belong to one SDK instance. Starting another SDK instance in the same process creates another pair; neither identifier is a process-wide singleton or a subject/journey key.
 
-`client.role` is a non-empty name for this SDK instance inside the project: `backend`, `frontend`, `desktop`, `unity`, and so on. It is not a closed list. `*` is reserved and rejected. Several roles may sync to the same project. They may emit similar metric names; the server keeps series separate by role. The project key authenticates only the project. Because the client selects `role`, role filtering is routing metadata, not authorization. Never put secrets in Remote Config, including values limited to a backend-looking role.
+`client.role` is a non-empty name for this SDK instance inside the project:
+`backend`, `frontend`, `desktop`, `unity`, and so on. `*` is reserved and
+rejected. The credential record authenticates the project and declares the
+roles that key may claim; a valid but out-of-scope role receives `403`. Several
+roles may sync to the same project and similar metric names remain separate.
+Role-filtered Remote Config is still not a secret store.
 
 `frames` may be empty on bootstrap so the client can fetch Remote Config immediately.
 
@@ -112,9 +120,11 @@ Error responses use `{ "ok": false, "error": "..." }`:
 | --- | --- |
 | `400` | Malformed gzip/JSON/protocol data, invalid fields, or project mismatch. |
 | `401` | Missing or unknown `X-Wardx-Key`. |
+| `403` | The authenticated credential cannot claim `client.role`. |
 | `404` | Route or method not found. |
 | `413` | Compressed request body or decoded envelope exceeds `maxRequestBytes`. |
 | `415` | Unsupported `Content-Encoding`. |
+| `503` | A configured sync or persistence capacity bound is full. The response is non-sensitive. |
 | `500` | Non-sensitive internal failure. Details go only to the configured diagnostic sink. |
 
 Only an absent/identity encoding and `gzip` are supported. Proxies must not transform an unsupported encoding into an accepted one.
@@ -132,7 +142,7 @@ If `bucket >= allocation`, the subject is not in the experiment and receives the
 
 Otherwise variants are chosen from cumulative `weight / totalWeight * allocation` thresholds. Exposure is emitted once per session as event `experiment.exposure` with a hashed subject, never the raw `subjectId`.
 
-Every experiment snapshot has one non-empty `goalMetric`. A goal is emitted only for an assignment already exposed in this SDK instance and only when the goal call's name equals that assignment's `goalMetric`. One call cannot attach unrelated concurrent experiments, and there is no legacy match-all behavior. Assignment/exposure state is bounded by the SDK's required `experimentStateMaxSubjects` setting (default `100000`); eviction may allow a later exposure for that subject in the same long-running SDK instance, but deterministic variant assignment does not change.
+Every experiment snapshot has one non-empty `goalMetric`. A goal is emitted only for an assignment already exposed in this SDK instance and only when the goal call's name equals that assignment's `goalMetric`. One call cannot attach unrelated concurrent experiments, and there is no match-all behavior. Assignment/exposure state is bounded by the SDK's required `experimentStateMaxSubjects` setting (default `100000`); eviction may emit a duplicate exposure, which the server ledger counts without changing accepted totals.
 
 `subjectHash = SHA-256(UTF8(projectSalt) || 0x00 || UTF8(subjectId))` as 64 lowercase hex digits. The separator prevents ambiguous concatenation. Node and C# require an explicit non-empty `privacySalt`; they never reuse the project credential. Both implementations use the same bytes and output.
 
@@ -156,14 +166,21 @@ Client operational values live in `packages/core/defaults.json`. Sync delay is `
 
 ## Server
 
-Ingest process: authenticate `X-Wardx-Key` → map key to project → gunzip if needed → parse → validate → sink → 1-minute in-memory aggregation for that project → compare that project's config version → respond.
+Ingest process: authenticate `X-Wardx-Key` → map it to a project → bound and
+decode the body → validate the envelope → authorize `client.role` → preflight
+historical and experiment capacity → transactionally accept experiment evidence
+when present → update the sink/current in-memory aggregates and coalesced minute
+history → compare that project's config version → respond.
 
 HTTP:
 
 - `POST /v1/sync`
 - `GET /health`
 
-`GET /health` proves only that the process can answer HTTP at that moment. It does not prove sidecar writability, durable persistence, Remote Config correctness, downstream reachability, or capacity, and it is not a readiness contract.
+`GET /health` proves only that the process can answer HTTP at that moment. It
+does not prove SQLite writability, durable persistence, Remote Config
+correctness, downstream reachability, or capacity, and it is not a readiness
+contract.
 
 Remote Config, experiments, aggregates, recent logs, and analysis are MCP tools on the ingest process. There is no admin HTTP API. Each project has its own snapshot, aggregator, recent-client ring, and recent-log ring. Aggregates, clients, and logs are tagged with the sender's role. MCP `get_project_overview` groups them by role.
 

@@ -4,6 +4,9 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gzipSync } from 'node:zlib';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
@@ -72,24 +75,6 @@ function waitForPort(stderr) {
   });
 }
 
-function waitForExit(child) {
-  return new Promise((resolvePromise, reject) => {
-    const timeout = setTimeout(() => {
-      child.kill('SIGKILL');
-      reject(new Error('packaged server did not stop after SIGTERM'));
-    }, 10_000);
-    child.once('error', reject);
-    child.once('close', (code, signal) => {
-      clearTimeout(timeout);
-      if (code === 0 || code === 143 || signal === 'SIGTERM') {
-        resolvePromise();
-        return;
-      }
-      reject(new Error(`packaged server stopped with ${signal ? `signal ${signal}` : `exit ${code}`}`));
-    });
-  });
-}
-
 async function assertInstalledCopies(projectDirectory) {
   const installedProject = await realpath(projectDirectory);
   for (const packageInfo of PACKAGES) {
@@ -127,32 +112,206 @@ async function verifyImports(projectDirectory) {
   });
 }
 
+async function callTool(client, name, args) {
+  const result = await client.callTool({ name, arguments: args });
+  assert.equal(result.isError, undefined, result.content?.[0]?.text);
+  return JSON.parse(result.content[0].text);
+}
+
+function envelope(role, frames, instanceId) {
+  return {
+    protocol: 1,
+    project: 'demo',
+    sdk: { name: 'wardx-pack-check', version: '1.0.0' },
+    client: {
+      instanceId,
+      sessionId: `${instanceId}-session`,
+      role,
+      appVersion: '1.0.0',
+      environment: 'pack-check',
+      platform: 'node'
+    },
+    configVersion: 0,
+    frames
+  };
+}
+
+async function sync(endpoint, body) {
+  return fetch(`${endpoint}/v1/sync`, {
+    method: 'POST',
+    headers: { 'content-encoding': 'gzip', 'x-wardx-key': 'pack-check-trusted-key' },
+    body: gzipSync(JSON.stringify(body))
+  });
+}
+
+async function connectPackagedServer(binary, configPath, projectDirectory, clientName) {
+  const transport = new StdioClientTransport({
+    command: binary,
+    args: [configPath],
+    cwd: projectDirectory,
+    stderr: 'pipe'
+  });
+  let stderr = '';
+  transport.stderr.on('data', (chunk) => {
+    stderr += chunk.toString('utf8');
+  });
+  const portPromise = waitForPort(transport.stderr);
+  const client = new Client({ name: clientName, version: '1.0.0' });
+  try {
+    const [, port] = await Promise.all([client.connect(transport), portPromise]);
+    return { client, endpoint: `http://127.0.0.1:${port}`, stderr: () => stderr };
+  } catch (error) {
+    await client.close().catch(() => {});
+    error.message = `${error.message}\npackaged server stderr:\n${stderr}`;
+    throw error;
+  }
+}
+
 async function verifyPackagedBinary(projectDirectory) {
   const sourceConfig = JSON.parse(await readFile(join(REPOSITORY_ROOT, 'config/production.json'), 'utf8'));
   const configPath = join(projectDirectory, 'wardx-server.json');
+  sourceConfig.credentials = {
+    'pack-check-trusted-key': {
+      label: 'pack-check-verifier',
+      project: 'demo',
+      allowedRoles: ['trusted'],
+      trustedForDecisions: true,
+      enabled: true
+    }
+  };
+  sourceConfig.history.clockSkewAllowanceMs = 1;
+  sourceConfig.history.maxAcceptedPastAgeMs = 604800000;
+  sourceConfig.history.compactionIntervalMs = 10;
+  sourceConfig.projects.demo.experiments = [];
+  sourceConfig.projects.demo.values['pack.variant'] = 'control';
+  sourceConfig.projects.demo.keyRoles['pack.variant'] = ['trusted'];
   await writeFile(
     configPath,
     `${JSON.stringify({ ...sourceConfig, host: '127.0.0.1', port: 0, sink: 'null' }, null, 2)}\n`,
     'utf8'
   );
   const binary = join(projectDirectory, 'node_modules', '.bin', process.platform === 'win32' ? 'wardx-server.cmd' : 'wardx-server');
-  const child = spawn(binary, [configPath], {
-    cwd: projectDirectory,
-    env: { ...process.env, NODE_PATH: '' },
-    stdio: ['ignore', 'pipe', 'pipe']
-  });
-  const exit = waitForExit(child);
+  const first = await connectPackagedServer(binary, configPath, projectDirectory, 'wardx-pack-check-first');
+  const currentDay = Math.floor(Date.now() / 86_400_000) * 86_400_000;
   try {
-    const port = await waitForPort(child.stderr);
-    const response = await fetch(`http://127.0.0.1:${port}/health`);
+    const response = await fetch(`${first.endpoint}/health`);
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { ok: true });
-    child.kill('SIGTERM');
-    await exit;
+    const experiment = {
+      id: 'pack-terminal-v1',
+      enabled: true,
+      allocation: 1,
+      salt: 'pack-terminal-v1',
+      roles: ['trusted'],
+      goalMetric: 'pack.goal',
+      assignmentUnitKind: 'subject',
+      outcomeKind: 'conversion',
+      control: 'control',
+      targetSampleSizePerVariant: 10,
+      earliestAnalysisAt: 0,
+      familyWiseAlpha: 0.05,
+      minimumEffect: 0,
+      direction: 'increase',
+      terminalRetentionMs: 604800000,
+      healthThresholds: {
+        maxDroppedFrames: 0,
+        maxDuplicateExposures: 0,
+        maxDuplicateGoals: 0,
+        maxConflictingGoals: 0,
+        maxVariantConflicts: 0,
+        maxUntrustedRows: 0,
+        maxLateRows: 0,
+        maxMissingExposures: 0,
+        maxImplicitExposures: 0
+      },
+      variants: [
+        { key: 'control', weight: 1, values: { 'pack.variant': 'control' } },
+        { key: 'winner', weight: 1, values: { 'pack.variant': 'winner' } }
+      ]
+    };
+    const mutation = await callTool(first.client, 'upsert_experiment', {
+      project: 'demo',
+      experiment,
+      expectedVersion: 1,
+      reason: 'packaged artifact terminal persistence check'
+    });
+    assert.equal(mutation.version, 2);
+    const now = Date.now();
+    const events = [];
+    for (let index = 0; index < 10; index++) {
+      const control = `1${index.toString(16).padStart(63, '0')}`;
+      const winner = `2${index.toString(16).padStart(63, '0')}`;
+      events.push([now, 'experiment.exposure', { experiment: experiment.id, variant: 'control', subject: control }]);
+      events.push([now, 'experiment.exposure', { experiment: experiment.id, variant: 'winner', subject: winner }]);
+      events.push([now, 'experiment.goal', {
+        metric: experiment.goalMetric,
+        subject: winner,
+        experiments: [{ experiment: experiment.id, variant: 'winner' }],
+        value: 1
+      }]);
+    }
+    const evidence = await sync(first.endpoint, envelope('trusted', [{
+      seq: 1,
+      from: now - 1,
+      to: now,
+      metrics: { counters: [], gauges: [], histograms: [] },
+      events,
+      logs: []
+    }], 'pack-evidence'));
+    assert.equal(evidence.status, 200);
+    assert.equal(
+      (await callTool(first.client, 'analyze_experiment', { project: 'demo', experimentId: experiment.id })).decision.status,
+      'winner'
+    );
+    for (const [daysAgo, value] of [[2, 2], [1, 3]]) {
+      const timestamp = currentDay - daysAgo * 86_400_000 + 1000;
+      const historical = await sync(first.endpoint, envelope('trusted', [{
+        seq: 1,
+        from: timestamp,
+        to: timestamp + 1,
+        metrics: { counters: [['pack.history', null, value]], gauges: [], histograms: [] },
+        events: [],
+        logs: []
+      }], `pack-history-${daysAgo}`));
+      assert.equal(historical.status, 200);
+    }
   } catch (error) {
-    child.kill('SIGKILL');
-    await exit.catch(() => {});
+    error.message = `${error.message}\npackaged server stderr:\n${first.stderr()}`;
     throw error;
+  } finally {
+    await first.client.close().catch(() => {});
+  }
+
+  sourceConfig.history.maxAcceptedPastAgeMs = 1;
+  await writeFile(
+    configPath,
+    `${JSON.stringify({ ...sourceConfig, host: '127.0.0.1', port: 0, sink: 'null' }, null, 2)}\n`,
+    'utf8'
+  );
+  const restarted = await connectPackagedServer(binary, configPath, projectDirectory, 'wardx-pack-check-restart');
+  try {
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 300));
+    const persistedConfig = await callTool(restarted.client, 'get_config', { project: 'demo' });
+    assert.equal(persistedConfig.version, 2);
+    const analysis = await callTool(restarted.client, 'analyze_experiment', {
+      project: 'demo', experimentId: 'pack-terminal-v1'
+    });
+    assert.equal(analysis.decision.status, 'winner');
+    const history = await callTool(restarted.client, 'get_aggregate_history', {
+      project: 'demo',
+      tier: 'day',
+      from: currentDay - 2 * 86_400_000,
+      to: currentDay,
+      role: 'trusted',
+      names: ['pack.history']
+    });
+    assert.deepEqual(history.buckets.map((bucket) => bucket.rows[0].value), [2, 3]);
+    assert.equal(history.completeness.allFinalized, true);
+  } catch (error) {
+    error.message = `${error.message}\nrestarted packaged server stderr:\n${restarted.stderr()}`;
+    throw error;
+  } finally {
+    await restarted.client.close().catch(() => {});
   }
 }
 
@@ -173,14 +332,16 @@ export async function checkPackages() {
       `${JSON.stringify({ name: 'wardx-packed-artifact-check', private: true, type: 'module', dependencies }, null, 2)}\n`,
       'utf8'
     );
-    await run(NPM, ['install', '--ignore-scripts', '--no-audit', '--no-fund'], {
+    await run(NPM, ['install', '--no-audit', '--no-fund', '--ignore-scripts=false'], {
       cwd: projectDirectory,
       env: npmEnvironment
     });
     await assertInstalledCopies(projectDirectory);
     await verifyImports(projectDirectory);
     await verifyPackagedBinary(projectDirectory);
-    process.stdout.write('pack:check passed: tarballs installed cleanly and packaged wardx-server served /health\n');
+    process.stdout.write(
+      'pack:check passed: clean tarballs persisted MCP config, terminal evidence, and two historical days across restart\n'
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

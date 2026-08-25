@@ -1,6 +1,7 @@
 import { gunzipSync } from 'node:zlib';
 import { PayloadTooLargeError, readBody } from './readBody.js';
 import { validateEnvelope, validateExperimentEvents } from './validate.js';
+import { CredentialAuthorizationError } from '../auth/CredentialRegistry.js';
 
 function json(res, status, body) {
   const payload = typeof body === 'string' ? body : JSON.stringify(body);
@@ -11,18 +12,56 @@ function json(res, status, body) {
   res.end(payload);
 }
 
-function projectForKey(config, key) {
-  return config.projectKeys[key];
+function experimentEvents(envelope) {
+  const events = [];
+  for (const frame of envelope.frames) {
+    for (const row of frame.events) {
+      const name = row[1];
+      const attrs = row[2];
+      if (name === 'experiment.exposure') {
+        events.push({
+          kind: 'exposure',
+          experiment: attrs.experiment,
+          variant: attrs.variant,
+          assignmentHash: attrs.subject,
+          timestamp: row[0]
+        });
+      } else if (name === 'experiment.goal') {
+        const assignment = attrs.experiments[0];
+        events.push({
+          kind: 'goal',
+          experiment: assignment.experiment,
+          variant: assignment.variant,
+          assignmentHash: attrs.subject,
+          timestamp: row[0],
+          value: attrs.value === undefined ? 1 : attrs.value
+        });
+      }
+    }
+  }
+  return events;
 }
 
-export function createSyncHandler({ config, registry, sink, persistence, diagnostics }) {
+export function createSyncHandler({
+  config,
+  registry,
+  credentials,
+  sink,
+  persistence,
+  experimentLedger,
+  diagnostics
+}) {
   return async function handleSync(req, res) {
     const key = req.headers['x-wardx-key'];
-    const project = typeof key === 'string' ? projectForKey(config, key) : undefined;
-    if (!project) {
+    let credential;
+    try {
+      credential = credentials.authenticate(key);
+    } catch (error) {
+      if (!(error instanceof CredentialAuthorizationError)) throw error;
       json(res, 401, { ok: false, error: 'unauthorized' });
       return;
     }
+    const project = credential.project;
     const store = registry.get(project);
     if (!store) {
       json(res, 400, { ok: false, error: 'unknown project' });
@@ -69,6 +108,15 @@ export function createSyncHandler({ config, registry, sink, persistence, diagnos
       json(res, 400, { ok: false, error: invalid });
       return;
     }
+    let source;
+    try {
+      source = credentials.authorize(credential, body.client.role);
+    } catch (error) {
+      if (!(error instanceof CredentialAuthorizationError)) throw error;
+      diagnostics.report('ingest.role_rejected', error, { project, credentialLabel: credential.label });
+      json(res, 403, { ok: false, error: 'role not allowed' });
+      return;
+    }
     if (body.project !== project) {
       json(res, 400, { ok: false, error: 'project does not match key' });
       return;
@@ -79,11 +127,41 @@ export function createSyncHandler({ config, registry, sink, persistence, diagnos
       json(res, 400, { ok: false, error: invalidExperiments });
       return;
     }
+    let preparedHistory;
+    try {
+      preparedHistory = store.history.prepare(body, store.catalog.persistLogs);
+    } catch (error) {
+      diagnostics.report('ingest.history_rejected', error, { project, credentialLabel: source.label });
+      json(res, 400, { ok: false, error: error.message });
+      return;
+    }
+    const historyCapacity = persistence.canAcceptHistory(store.history, preparedHistory);
+    if (!historyCapacity.accepted) {
+      diagnostics.report('ingest.persistence_overloaded', new Error('SQLite pending history limit reached'), {
+        project,
+        pendingBatches: historyCapacity.batches,
+        pendingBytes: historyCapacity.bytes
+      });
+      json(res, 503, { ok: false, error: 'overloaded' });
+      return;
+    }
+    const evidence = experimentLedger.ingestBatch(project, experimentEvents(body), source);
+    const rejectedEvidence = evidence.find(
+      (result) => result.status === 'variant_conflict' || result.status === 'missing_exposure'
+    );
+    if (rejectedEvidence) {
+      diagnostics.report('ingest.experiment_rejected', new Error(rejectedEvidence.status), {
+        project,
+        credentialLabel: source.label,
+        experiment: rejectedEvidence.experiment
+      });
+      json(res, 400, { ok: false, error: rejectedEvidence.status.replaceAll('_', ' ') });
+      return;
+    }
     sink.ingest(body);
-    const changed = store.aggregator.ingest(body, store.catalog.persistLogs);
-    if (changed.experiments) persistence.mark('experimentStats');
-    if (changed.persistLogs) persistence.mark('logStats');
-    if (changed.windows) persistence.mark('aggregateWindows');
+    store.history.commit(preparedHistory);
+    store.aggregator.ingest(body, store.catalog.persistLogs, source);
+    if (preparedHistory.updates.length > 0) persistence.mark('history');
     store.clients.touch(body.client);
     store.logs.ingest(body);
     const includeConfig = body.configVersion !== store.configRepo.version;

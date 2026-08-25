@@ -3,6 +3,7 @@ import { RecentClients } from '../clients/RecentClients.js';
 import { ConfigRepository } from '../config/ConfigRepository.js';
 import { normalizeCatalog } from '../control/catalog.js';
 import { RecentLogs } from '../logs/RecentLogs.js';
+import { HistoryAccumulator } from '../aggregation/history/index.js';
 
 export class ProjectRegistry {
   constructor(config) {
@@ -13,6 +14,11 @@ export class ProjectRegistry {
         aggregator: new FrameAggregator(config),
         clients: new RecentClients(config.recentClientsMax),
         logs: new RecentLogs(config.recentLogsMax),
+        history: new HistoryAccumulator({
+          project: name,
+          clockSkewAllowanceMs: config.history.clockSkewAllowanceMs,
+          maxAppVersionsPerProjectRoleTier: config.history.maxAppVersionsPerProjectRoleTier
+        }),
         catalog: normalizeCatalog(snapshot.catalog)
       });
     }

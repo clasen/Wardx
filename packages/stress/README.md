@@ -38,7 +38,7 @@ CLI flags:
 | Flag | Description |
 | --- | --- |
 | `--smoke` | Short durations. Smaller fleets. |
-| `--full` | SDD windows. |
+| `--full` | Five-minute release windows. |
 | `--rate <n>` | Operations per second or syncs per second. Smoke default is `1000`; full default is `5250` so the 5000/s gate measures capacity instead of timer-perfect pacing. |
 | `--duration <ms>` | Duration in milliseconds. Smoke default is `2000`. Full default is `300000`. |
 | `--clients <n>` | Logical clients for test E. Smoke default is `200`. Full default is `10000`. |
@@ -96,9 +96,14 @@ node packages/stress/src/index.js D --smoke --rate 1000 --duration 2000
 node packages/stress/src/index.js D --full --profile persistence
 ```
 
-The `raw` profile uses `NullSink` without `configPath` and is labeled only as an upper bound. The `persistence` profile writes a real config, reloads it through `loadServerConfig` as the CLI does, retains four minute windows, grows metric series during the run, and flushes the coalesced persistence coordinator before evaluation.
+The `raw` profile is a current-window upper-bound view. The `persistence` profile writes a real operational config, opens local SQLite in WAL mode, retains and grows historical/current series, and flushes the coalesced persistence coordinator before evaluation.
 
-Both profiles report syncs per second, HTTP/network errors, CPU, start/peak/growth RSS, event-loop p50/p99, and request p50/p95/p99. The persistence profile additionally reports retained windows and series, sidecar size, disk write count and failures, and total/maximum write latency from the production persistence coordinator.
+Both profiles use a dedicated load-generator worker so client HTTP work does not
+consume the server event loop being measured. They report syncs per second,
+HTTP/network errors, CPU, start/peak/growth RSS, event-loop p50/p99, and request
+p50/p95/p99. The persistence profile additionally reports SQLite/WAL size,
+coalesced writes and latency, pending batches/bytes, transaction/busy failures,
+checkpoints, feature exercises, and overload recovery.
 
 The published 5,000 sync/s target belongs to the `persistence` profile, not the raw upper bound. Its reference environment is one Wardx process on a dedicated machine or CI runner with at least 4 logical CPU cores, 8 GiB RAM, local SSD storage, local loopback HTTP, Node.js 20 or the current maintained Node release, and no competing workload. Results from network filesystems, shared burstable runners, containers with lower CPU/memory limits, or active developer machines are not comparable performance evidence.
 
@@ -109,7 +114,7 @@ Gate thresholds are explicit:
 | Smoke | 50% of requested rate | 0 | 1000 ms | 500 ms | 256 MiB | 1000 ms |
 | Full | 5000 sync/s for at least 5 minutes (5250/s requested by default) | 0.1% | 100 ms | 50 ms | 512 MiB | 250 ms |
 
-The persistence profile also requires at least four retained windows and series, at least one successful write, no write failure, a clean coordinator after flush, and no more than `3 * (ceil(duration / persistenceFlushIntervalMs) + 1)` writes. The factor of three is the fixed set of aggregate-window, experiment-stat, and retained-log sidecars that one coalesced flush may write. Any missed threshold throws and makes the process exit non-zero.
+The persistence profile also requires at least four retained windows and series, at least one successful coalesced write, no persistence or SQLite transaction/busy failure, zero pending batches/bytes after flush, and a clean coordinator. Any missed threshold throws and makes the process exit non-zero.
 
 ## Use case 5: Simulate a client fleet
 
@@ -169,9 +174,9 @@ Server target for test D's CLI-equivalent persistence profile with `NullSink` an
 - HTTP error rate less than 0.1%
 - p99 less than 100 ms
 
-Test D's raw profile excludes sidecar persistence and disk latency. It remains useful as a ceiling but cannot support a production throughput claim.
+Test D's raw profile remains only a ceiling. Only the complete SQLite persistence profile can support a single-node product capacity claim, and only with the declared hardware and full output.
 
-Do not add a worker thread, change the 15 s sync, or replace JSON and gzip until these numbers say so.
+Do not add a worker thread to the server, change the 15 s sync, or replace JSON and gzip until these numbers say so. The harness load-generator worker is measurement isolation, not server parallelism.
 
 ## Related packages
 

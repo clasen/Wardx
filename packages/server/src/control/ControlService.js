@@ -9,17 +9,91 @@ import {
 } from './catalog.js';
 import { ConfigRepository } from '../config/ConfigRepository.js';
 import { decideExperiment } from './experimentDecision.js';
-import { persistServerConfig } from './persist.js';
 import { assertRole, assertRoles } from '../roles.js';
 import { assertExperimentKeysExist, toClientExperiment, validateExperiment } from './validateExperiment.js';
+import { MutationConflictError, MutationJournal } from './MutationJournal.js';
+import { applyControlStateChange, diffControlState } from './ControlStateChange.js';
+import { SqliteMutationRepository } from '../storage/SqliteMutationRepository.js';
+
+function materialize(normalized) {
+  const catalog = structuredClone(normalized.catalog);
+  catalog.persistLogs = Object.keys(catalog.persistLogsByName).sort();
+  delete catalog.persistLogsByName;
+  return {
+    snapshot: {
+      values: structuredClone(normalized.values),
+      keyRoles: structuredClone(normalized.keyRoles),
+      experiments: Object.values(normalized.experimentsById).map((experiment) => structuredClone(experiment))
+    },
+    catalog
+  };
+}
+
+function mutationOptions(options) {
+  if (!options || typeof options !== 'object' || Array.isArray(options)) {
+    throw new Error('mutation options are required');
+  }
+  return options;
+}
+
+const HEALTH_FIELDS = [
+  'duplicateExposures',
+  'duplicateGoals',
+  'conflictingGoals',
+  'variantConflicts',
+  'untrustedRows',
+  'lateRows',
+  'missingExposures',
+  'implicitExposures'
+];
+
+function aggregateEvidence(rows, trustedOnly) {
+  const byVariant = new Map();
+  for (const row of rows) {
+    if (trustedOnly && row.trustClass !== 'trusted') continue;
+    let total = byVariant.get(row.key);
+    if (!total) {
+      total = { key: row.key, exposures: 0, goals: 0, goalSum: 0, goalSumSq: 0 };
+      byVariant.set(row.key, total);
+    }
+    total.exposures += row.exposures;
+    total.goals += row.goals;
+    total.goalSum += row.goalSum;
+    total.goalSumSq += row.goalSumSq;
+  }
+  return [...byVariant.values()].map((row) => ({
+    ...row,
+    goalMean: row.goals > 0 ? row.goalSum / row.goals : 0,
+    rate: row.exposures > 0 ? row.goals / row.exposures : 0
+  }));
+}
+
+function evidenceHealth(rows) {
+  const health = { droppedFrames: 0 };
+  for (const field of HEALTH_FIELDS) health[field] = 0;
+  for (const row of rows) {
+    for (const field of HEALTH_FIELDS) health[field] += row[field];
+  }
+  return health;
+}
 
 export class ControlService {
-  constructor({ config, registry, persistence, diagnostics, persistConfig = persistServerConfig }) {
+  constructor({ config, registry, persistence, diagnostics, stateStore, experimentLedger }) {
     this.config = config;
     this.registry = registry;
     this.persistence = persistence;
     this.diagnostics = diagnostics;
-    this.persistConfig = persistConfig;
+    this.stateStore = stateStore;
+    this.experimentLedger = experimentLedger;
+    this.mutationRepository = new SqliteMutationRepository({
+      store: stateStore,
+      capacity: config.control.journalCapacity
+    });
+    this.mutationJournal = new MutationJournal({
+      repository: this.mutationRepository,
+      capacity: config.control.journalCapacity,
+      applyChange: applyControlStateChange
+    });
   }
 
   listProjects() {
@@ -43,73 +117,73 @@ export class ControlService {
     return this.requireStore(project).catalog;
   }
 
-  setProjectDescription(project, description) {
+  setProjectDescription(project, description, options) {
     if (typeof description !== 'string') throw new Error('description must be a string');
     const store = this.requireStore(project);
-    this._commitCatalog(project, store, (catalog) => {
+    const result = this._commitCatalog(project, store, (catalog) => {
       catalog.description = description;
-    });
-    return { project };
+    }, options, 'set_project_description', ['description']);
+    return { project, ...result };
   }
 
-  setSignal(project, name, description) {
+  setSignal(project, name, description, options) {
     if (typeof name !== 'string' || name.length === 0) throw new Error('name is required');
     if (typeof description !== 'string' || description.length === 0) {
       throw new Error('description is required');
     }
     const store = this.requireStore(project);
-    this._commitCatalog(project, store, (catalog) => {
+    const result = this._commitCatalog(project, store, (catalog) => {
       catalog.signals[name] = description;
-    });
-    return { project, name };
+    }, options, 'set_signal', [name]);
+    return { project, name, ...result };
   }
 
-  deleteSignal(project, name) {
+  deleteSignal(project, name, options) {
     if (typeof name !== 'string' || name.length === 0) throw new Error('name is required');
     const store = this.requireStore(project);
     if (!Object.prototype.hasOwnProperty.call(store.catalog.signals, name)) {
       throw new Error(`unknown signal: ${name}`);
     }
-    this._commitCatalog(project, store, (catalog) => {
+    const result = this._commitCatalog(project, store, (catalog) => {
       delete catalog.signals[name];
-    });
-    return { project, name };
+    }, options, 'delete_signal', [name]);
+    return { project, name, ...result };
   }
 
-  setPersistLog(project, name) {
+  setPersistLog(project, name, options) {
     if (typeof name !== 'string' || name.length === 0) throw new Error('name is required');
     const store = this.requireStore(project);
-    this._commitCatalog(project, store, (catalog) => {
+    const result = this._commitCatalog(project, store, (catalog) => {
       if (!catalog.persistLogs.includes(name)) catalog.persistLogs.push(name);
-    });
-    return { project, name };
+    }, options, 'set_persist_log', [name]);
+    return { project, name, ...result };
   }
 
-  deletePersistLog(project, name) {
+  deletePersistLog(project, name, options) {
     if (typeof name !== 'string' || name.length === 0) throw new Error('name is required');
     const store = this.requireStore(project);
     const index = store.catalog.persistLogs.indexOf(name);
     if (index === -1) throw new Error(`unknown persist log: ${name}`);
-    this._commitCatalog(project, store, (catalog) => {
+    const result = this._commitCatalog(project, store, (catalog) => {
       catalog.persistLogs.splice(index, 1);
-    });
-    if (store.aggregator.forgetPersistLog(name)) this.persistence?.mark('logStats');
-    return { project, name };
+    }, options, 'delete_persist_log', [name]);
+    store.aggregator.forgetPersistLog(name);
+    return { project, name, ...result };
   }
 
-  setRoleDescription(project, role, description) {
+  setRoleDescription(project, role, description, options) {
     assertRole(role);
     if (typeof description !== 'string' || description.length === 0) {
       throw new Error('description is required');
     }
     const store = this.requireStore(project);
-    this._commitCatalog(project, store, (catalog) => {
+    const result = this._commitCatalog(project, store, (catalog) => {
       ensureRoleEntry(catalog, role).description = description;
-    });
-    return { project, role };
+    }, options, 'set_role_description', [role]);
+    return { project, role, ...result };
   }
 
-  setRoleSource(project, role, source) {
+  setRoleSource(project, role, source, options) {
     assertRole(role);
     if (!source || typeof source !== 'object' || Array.isArray(source)) {
       throw new Error('source must be an object');
@@ -126,36 +200,35 @@ export class ControlService {
       throw new Error('path or git is required');
     }
     const store = this.requireStore(project);
-    this._commitCatalog(project, store, (catalog) => {
+    const result = this._commitCatalog(project, store, (catalog) => {
       const entry = ensureRoleEntry(catalog, role);
       if (path !== undefined) entry.path = path;
       if (git !== undefined) entry.git = git;
-    });
-    return { project, role };
+    }, options, 'set_role_source', [role]);
+    return { project, role, ...result };
   }
 
-  setValue(project, key, value, roles) {
+  setValue(project, key, value, roles, options) {
     if (typeof key !== 'string' || key.length === 0) throw new Error('key is required');
     assertRoles(roles, 'roles');
-    const store = this.requireStore(project);
-    const current = store.configRepo.snapshot();
-    current.values[key] = value;
-    current.keyRoles[key] = [...roles];
-    this._commit(project, store, current);
-    return { version: store.configRepo.version };
+    this.requireStore(project);
+    return this._mutate(project, options, 'set_config_value', [key], (state) => {
+      state.values[key] = structuredClone(value);
+      state.keyRoles[key] = [...roles];
+    });
   }
 
-  deleteValue(project, key) {
+  deleteValue(project, key, options) {
     if (typeof key !== 'string' || key.length === 0) throw new Error('key is required');
-    const store = this.requireStore(project);
-    const current = store.configRepo.snapshot();
+    this.requireStore(project);
+    const current = this.mutationRepository.read(project).state;
     if (!Object.prototype.hasOwnProperty.call(current.values, key)) {
       throw new Error(`unknown config key: ${key}`);
     }
-    delete current.values[key];
-    delete current.keyRoles[key];
-    this._commit(project, store, current);
-    return { version: store.configRepo.version };
+    return this._mutate(project, options, 'delete_config_value', [key], (state) => {
+      delete state.values[key];
+      delete state.keyRoles[key];
+    });
   }
 
   listExperiments(project) {
@@ -165,7 +238,7 @@ export class ControlService {
     );
   }
 
-  upsertExperiment(project, experiment) {
+  upsertExperiment(project, experiment, options) {
     validateExperiment(experiment);
     const hypothesis = experiment.hypothesis;
     if (hypothesis !== undefined) {
@@ -175,32 +248,51 @@ export class ControlService {
     }
     const client = toClientExperiment(experiment);
     delete client.shippedVariant;
-    const store = this.requireStore(project);
-    const current = store.configRepo.snapshot();
+    this.requireStore(project);
+    const current = this.mutationRepository.read(project).state;
     assertExperimentKeysExist(client, current.values, current.keyRoles);
-    const index = current.experiments.findIndex((row) => row.id === client.id);
-    if (index === -1) current.experiments.push(client);
-    else current.experiments[index] = client;
-    const catalog = JSON.parse(JSON.stringify(store.catalog));
-    if (hypothesis !== undefined) catalog.experiments[client.id] = { hypothesis };
-    this._commit(project, store, current, catalog);
-    return { version: store.configRepo.version };
+    const existing = current.experimentsById[client.id];
+    if (existing && this.experimentLedger.hasTrustedExposure(project, client.id)) {
+      const mutable = new Set(['enabled', 'shippedVariant']);
+      const before = Object.fromEntries(Object.entries(existing).filter(([key]) => !mutable.has(key)));
+      const after = Object.fromEntries(Object.entries(client).filter(([key]) => !mutable.has(key)));
+      if (JSON.stringify(before) !== JSON.stringify(after)) {
+        throw new Error(`experiment ${client.id} plan is immutable after the first trusted exposure`);
+      }
+    }
+    return this._mutate(project, options, 'upsert_experiment', [client.id], (state) => {
+      state.experimentsById[client.id] = client;
+      if (hypothesis !== undefined) state.catalog.experiments[client.id] = { hypothesis };
+    });
   }
 
-  setExperimentEnabled(project, id, enabled) {
+  setExperimentEnabled(project, id, enabled, options) {
     if (typeof id !== 'string' || id.length === 0) throw new Error('experiment id is required');
     if (typeof enabled !== 'boolean') throw new Error('enabled must be a boolean');
-    const store = this.requireStore(project);
-    const current = store.configRepo.snapshot();
-    const experiment = current.experiments.find((row) => row.id === id);
+    this.requireStore(project);
+    const current = this.mutationRepository.read(project).state;
+    const experiment = current.experimentsById[id];
     if (!experiment) throw new Error(`unknown experiment: ${id}`);
-    experiment.enabled = enabled;
-    this._commit(project, store, current);
-    return { version: store.configRepo.version };
+    if (enabled && experiment.shippedVariant) {
+      throw new Error(`experiment ${id} was shipped and cannot be re-enabled`);
+    }
+    if (
+      enabled &&
+      this.experimentLedger.hasAnyEvidence(project, id) &&
+      !this.experimentLedger.hasAssignmentRows(project, id)
+    ) {
+      throw new Error(`experiment ${id} evidence retention expired; use a new experiment id`);
+    }
+    const result = this._mutate(project, options, 'set_experiment_enabled', [id], (state) => {
+      state.experimentsById[id].enabled = enabled;
+    });
+    if (enabled) this.experimentLedger.clearExpiry(project, id);
+    else this.experimentLedger.scheduleExpiry(project, id, Date.now() + experiment.terminalRetentionMs);
+    return result;
   }
 
-  replaceSnapshot(project, snapshot) {
-    const store = this.requireStore(project);
+  replaceSnapshot(project, snapshot, options) {
+    this.requireStore(project);
     if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
       throw new Error('config snapshot must be an object');
     }
@@ -214,12 +306,13 @@ export class ControlService {
       validateExperiment(experiment);
       assertExperimentKeysExist(experiment, snapshot.values, snapshot.keyRoles);
     }
-    this._commit(project, store, {
-      values: snapshot.values,
-      keyRoles: snapshot.keyRoles,
-      experiments: snapshot.experiments.map((experiment) => toClientExperiment(experiment))
+    return this._mutate(project, options, 'replace_snapshot', ['*'], (state) => {
+      state.values = structuredClone(snapshot.values);
+      state.keyRoles = structuredClone(snapshot.keyRoles);
+      state.experimentsById = Object.fromEntries(
+        snapshot.experiments.map((experiment) => [experiment.id, toClientExperiment(experiment)])
+      );
     });
-    return { version: store.configRepo.version };
   }
 
   aggregates(project, filter = {}) {
@@ -234,11 +327,49 @@ export class ControlService {
     }
     const store = this.requireStore(project);
     const definition = store.configRepo.experiments.find((row) => row.id === experimentId) || null;
-    const variants = store.aggregator.experimentStats(experimentId);
+    const provenance = this.experimentLedger.totals(project, experimentId);
+    const variants = aggregateEvidence(provenance, true);
+    const telemetryVariants = aggregateEvidence(provenance, false);
+    const health = evidenceHealth(provenance);
+    const persistedDecision = this.experimentLedger.readTerminalDecision(project, experimentId);
+    let decision;
+    if (persistedDecision) {
+      if (definition) {
+        this.experimentLedger.persistTerminalDecisionAndScheduleExpiry(
+          project,
+          experimentId,
+          persistedDecision,
+          persistedDecision.terminalInput.analysisAt + definition.terminalRetentionMs
+        );
+      }
+      decision = definition?.shippedVariant
+        ? { ...persistedDecision, status: 'shipped', shippedVariant: definition.shippedVariant }
+        : persistedDecision;
+    } else if (variants.every((row) => row.exposures === 0 && row.goals === 0)) {
+      decision = {
+        status: 'cannot_decide',
+        next: definition?.outcomeKind ? 'collect' : 'configure',
+        reason: 'no trusted eligible experiment evidence',
+        leadingVariant: null,
+        comparisons: []
+      };
+    } else {
+      decision = decideExperiment(definition, variants, { analysisAt: Date.now(), health });
+      if (decision.status !== 'collecting' && decision.terminalInput) {
+        decision = this.experimentLedger.persistTerminalDecisionAndScheduleExpiry(
+          project,
+          experimentId,
+          decision,
+          decision.terminalInput.analysisAt + definition.terminalRetentionMs
+        );
+      }
+    }
     const result = {
       experiment: definition ? attachHypothesis(store.catalog, definition) : null,
       variants,
-      decision: decideExperiment(definition, variants)
+      telemetryVariants,
+      evidence: { eligibleTrustClass: 'trusted', provenance, health },
+      decision
     };
     if (definition && definition.primaryMetric) {
       result.primaryMetric = {
@@ -250,7 +381,7 @@ export class ControlService {
     return result;
   }
 
-  shipExperiment(project, experimentId, variant) {
+  shipExperiment(project, experimentId, variant, options) {
     if (typeof experimentId !== 'string' || experimentId.length === 0) {
       throw new Error('experiment id is required');
     }
@@ -261,36 +392,32 @@ export class ControlService {
     }
     const analysis = this.experimentStats(project, experimentId);
     if (!analysis.experiment) throw new Error(`unknown experiment: ${experimentId}`);
-    const decision = analysis.decision;
+    const decision = this.experimentLedger.readTerminalDecision(project, experimentId);
+    if (!decision || decision.status !== 'winner' || decision.evidenceHealth?.healthy !== true) {
+      throw new Error(`experiment ${experimentId} is not ready to ship: persisted healthy terminal winner required`);
+    }
     let key = variant === undefined || variant === null ? undefined : variant;
     if (key === undefined) {
-      if (decision.status === 'shipped') key = analysis.experiment.shippedVariant;
-      else if (decision.status === 'winner') key = decision.leadingVariant;
-      else throw new Error(`experiment ${experimentId} is not ready to ship: ${decision.reason}`);
-    } else if (decision.status === 'shipped') {
-      if (key !== analysis.experiment.shippedVariant) {
-        throw new Error(`experiment ${experimentId} already shipped ${analysis.experiment.shippedVariant}`);
-      }
-    } else if (decision.status !== 'winner' || key !== decision.leadingVariant) {
+      key = decision.leadingVariant;
+    } else if (key !== decision.leadingVariant) {
       throw new Error(`experiment ${experimentId} is not ready to ship: ${decision.reason}`);
     }
     const chosen = analysis.experiment.variants.find((row) => row.key === key);
     if (!chosen) throw new Error(`unknown variant: ${key}`);
     const store = this.requireStore(project);
     const current = store.configRepo.snapshot();
-    const experiment = current.experiments.find((row) => row.id === experimentId);
-    let changed = experiment.enabled !== false || experiment.shippedVariant !== key;
-    for (const [name, value] of Object.entries(chosen.values)) {
-      if (current.values[name] !== value) changed = true;
-      current.values[name] = value;
+    const currentExperiment = current.experiments.find((row) => row.id === experimentId);
+    if (currentExperiment?.enabled === false && currentExperiment.shippedVariant === key) {
+      mutationOptions(options);
+      return { version: current.version, shippedVariant: key };
     }
-    experiment.enabled = false;
-    experiment.shippedVariant = key;
-    if (!changed) {
-      return { version: store.configRepo.version, shippedVariant: key };
-    }
-    this._commit(project, store, current);
-    return { version: store.configRepo.version, shippedVariant: key };
+    const result = this._mutate(project, options, 'ship_experiment', [experimentId, ...Object.keys(chosen.values)], (state) => {
+      for (const [name, value] of Object.entries(chosen.values)) state.values[name] = structuredClone(value);
+      state.experimentsById[experimentId].enabled = false;
+      state.experimentsById[experimentId].shippedVariant = key;
+    });
+    this.experimentLedger.scheduleExpiry(project, experimentId, Date.now() + analysis.experiment.terminalRetentionMs);
+    return { ...result, shippedVariant: key };
   }
 
   recentClients(project) {
@@ -427,7 +554,12 @@ export class ControlService {
       knobs,
       persistLogs: [...catalog.persistLogs],
       roles,
-      experiments: snapshot.experiments.map((experiment) => attachHypothesis(catalog, experiment))
+      experiments: snapshot.experiments.map((experiment) => attachHypothesis(catalog, experiment)),
+      history: {
+        tiers: ['hour', 'day'],
+        maxBuckets: this.config.history.maxQueryBuckets,
+        maxRows: this.config.history.maxQueryRows
+      }
     };
   }
 
@@ -435,34 +567,136 @@ export class ControlService {
     return this.experimentStats(project, experimentId);
   }
 
-  _commitCatalog(project, store, mutate) {
-    const catalog = JSON.parse(JSON.stringify(store.catalog));
-    mutate(catalog);
-    validateCatalog(catalog, `server config.projects.${project}.catalog`);
-    const snapshot = store.configRepo.snapshot();
-    this._persist(project, snapshot, catalog);
-    store.catalog = catalog;
-  }
-
-  _commit(project, store, snapshot, catalog = store.catalog) {
-    const candidate = new ConfigRepository({
-      version: store.configRepo.version + 1,
-      values: snapshot.values,
-      keyRoles: snapshot.keyRoles,
-      experiments: snapshot.experiments
+  aggregateHistory(project, filter) {
+    const store = this.requireStore(project);
+    if (!filter || (filter.tier !== 'hour' && filter.tier !== 'day')) {
+      throw new Error('history tier must be hour or day');
+    }
+    if (!Number.isInteger(filter.from) || !Number.isInteger(filter.to) || filter.to <= filter.from) {
+      throw new Error('history from and to must be bounded integer timestamps with to > from');
+    }
+    if (filter.role !== undefined) assertRole(filter.role);
+    if (filter.names !== undefined) {
+      if (!Array.isArray(filter.names) || filter.names.some((name) => typeof name !== 'string' || name.length === 0)) {
+        throw new Error('history names must be an array of non-empty strings');
+      }
+    }
+    const buckets = this.stateStore.queryHistory({
+      project,
+      ...filter,
+      limit: this.config.history.maxQueryRows
     });
-    validateCatalog(catalog, `server config.projects.${project}.catalog`);
-    this._persist(project, candidate.snapshot(), catalog);
-    store.configRepo = candidate;
-    store.catalog = catalog;
+    for (const bucket of buckets) {
+      bucket.rows = bucket.rows.map((row) => ({ ...row, ...annotateSignal(store.catalog, row.name) }));
+    }
+    const sourceTier = filter.tier === 'hour' ? 'minute' : 'hour';
+    return {
+      project,
+      tier: filter.tier,
+      from: filter.from,
+      to: filter.to,
+      buckets,
+      completeness: {
+        dropCount: buckets.reduce((sum, bucket) => sum + bucket.dropCount, 0),
+        newestCompactedSourceWatermark: this.stateStore.readWatermark(project, sourceTier, filter.tier),
+        allFinalized: buckets.every((bucket) => bucket.finalized)
+      }
+    };
   }
 
-  _persist(project, snapshot, catalog) {
+  listConfigChanges(project, { after = 0, limit = 100 } = {}) {
+    this.requireStore(project);
+    if (!Number.isInteger(after) || after < 0) throw new Error('after must be an integer >= 0');
+    if (!Number.isInteger(limit) || limit < 1 || limit > this.config.control.journalCapacity) {
+      throw new Error(`limit must be an integer between 1 and ${this.config.control.journalCapacity}`);
+    }
+    const all = this.mutationJournal.list(project);
+    return {
+      currentVersion: all.currentVersion,
+      oldestAvailableVersion: all.oldestAvailableVersion,
+      changes: all.changes.slice(after, after + limit),
+      next: after + limit < all.changes.length ? after + limit : null
+    };
+  }
+
+  rollbackConfigChange(project, changeId, options) {
+    const settings = mutationOptions(options);
     try {
-      this.persistConfig(this.config, this.registry, { project, snapshot, catalog });
+      const result = this.mutationJournal.rollback({
+        project,
+        changeId,
+        expectedVersion: settings.expectedVersion,
+        reason: settings.reason,
+        clientIdentity: settings.clientIdentity
+      });
+      this._publish(project);
+      return result;
     } catch (error) {
-      this.diagnostics.report('control.persistence_failed', error, { project });
+      if (!(error instanceof MutationConflictError)) {
+        this.diagnostics.report('control.persistence_failed', error, { project });
+      }
       throw error;
     }
+  }
+
+  _commitCatalog(project, _store, mutate, options, operation, affectedNames) {
+    return this._mutate(project, options, operation, affectedNames, (state) => {
+      const catalog = materialize(state).catalog;
+      mutate(catalog);
+      state.catalog = structuredClone(catalog);
+      state.catalog.persistLogsByName = Object.fromEntries(catalog.persistLogs.map((name) => [name, true]));
+      delete state.catalog.persistLogs;
+    });
+  }
+
+  _mutate(project, options, operation, affectedNames, mutate) {
+    const settings = mutationOptions(options);
+    const before = this.mutationRepository.read(project).state;
+    const after = structuredClone(before);
+    mutate(after);
+    const candidate = materialize(after);
+    new ConfigRepository({ version: settings.expectedVersion + 1, ...candidate.snapshot });
+    validateCatalog(candidate.catalog, `server config.projects.${project}.catalog`);
+    const snapshots = this.registry.names().map((name) =>
+      name === project ? candidate.snapshot : this.requireStore(name).configRepo.snapshot()
+    );
+    const reservedExperimentRows = snapshots
+      .flatMap((snapshot) => snapshot.experiments)
+      .filter((experiment) => experiment.enabled && experiment.targetSampleSizePerVariant !== undefined)
+      .reduce((total, experiment) => total + experiment.targetSampleSizePerVariant * experiment.variants.length, 0);
+    if (reservedExperimentRows > this.config.experiments.ledgerMaxRows) {
+      throw new Error(
+        `enabled experiment plans reserve ${reservedExperimentRows} ledger rows, exceeding ${this.config.experiments.ledgerMaxRows}`
+      );
+    }
+    const forward = diffControlState(before, after);
+    const inverse = diffControlState(after, before);
+    try {
+      const result = this.mutationJournal.commit({
+        project,
+        expectedVersion: settings.expectedVersion,
+        reason: settings.reason,
+        operation,
+        affectedNames,
+        clientIdentity: settings.clientIdentity,
+        forward,
+        inverse
+      });
+      this._publish(project);
+      return result;
+    } catch (error) {
+      if (!(error instanceof MutationConflictError)) {
+        this.diagnostics.report('control.persistence_failed', error, { project });
+      }
+      throw error;
+    }
+  }
+
+  _publish(project) {
+    const current = this.mutationRepository.read(project);
+    const { snapshot, catalog } = materialize(current.state);
+    const store = this.requireStore(project);
+    store.configRepo = new ConfigRepository({ version: current.version, ...snapshot });
+    store.catalog = catalog;
   }
 }

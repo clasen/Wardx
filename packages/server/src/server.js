@@ -1,7 +1,6 @@
 import http from 'node:http';
 import { ControlService } from './control/ControlService.js';
 import { PersistenceCoordinator } from './control/PersistenceCoordinator.js';
-import { hydrateAggregateWindows, hydrateExperimentStats, hydrateLogStats } from './control/persist.js';
 import { createDiagnostics } from './diagnostics.js';
 import { createSyncHandler, json } from './ingest/syncHandler.js';
 import { loadServerConfig, validateServerConfig } from './loadConfig.js';
@@ -9,6 +8,12 @@ import { ProjectRegistry } from './projects/ProjectRegistry.js';
 import { MemorySink } from './sinks/MemorySink.js';
 import { NdjsonSink } from './sinks/NdjsonSink.js';
 import { NullSink } from './sinks/NullSink.js';
+import { CredentialRegistry } from './auth/CredentialRegistry.js';
+import { ConcurrencyGate } from './capacity/ConcurrencyGate.js';
+import { dirname, isAbsolute, resolve } from 'node:path';
+import { SqliteStateStore } from './storage/SqliteStateStore.js';
+import { ExperimentLedger } from './storage/ExperimentLedger.js';
+import { normalizeCatalog } from './control/catalog.js';
 
 function createSink(config) {
   if (config.sink === 'null') return new NullSink();
@@ -17,17 +22,96 @@ function createSink(config) {
   throw new Error(`unknown sink: ${config.sink}`);
 }
 
+function sqlitePath(config) {
+  if (isAbsolute(config.sqlite.path) || !config.configPath) return config.sqlite.path;
+  return resolve(dirname(config.configPath), config.sqlite.path);
+}
+
+function createStateStore(config) {
+  return new SqliteStateStore({
+    path: sqlitePath(config),
+    settings: {
+      synchronous: config.sqlite.synchronous,
+      busyTimeoutMs: config.sqlite.busyTimeoutMs,
+      walAutoCheckpointPages: config.sqlite.walAutoCheckpointPages,
+      checkpointMode: config.sqlite.checkpointMode,
+      maxWriteBatch: config.sqlite.maxWriteBatchRows,
+      transactionTimeoutMs: config.sqlite.transactionTimeoutMs,
+      maxHistoryBuckets: config.history.maxQueryBuckets,
+      maxHistoryRows: Math.max(config.history.maxQueryRows, config.control.journalCapacity)
+    }
+  });
+}
+
+function hydrateAuthoritativeState(config, stateStore) {
+  for (const [project, bootstrap] of Object.entries(config.projects)) {
+    const stored = stateStore.readProjectState(project);
+    if (!stored) {
+      stateStore.saveProjectState({
+        project,
+        version: bootstrap.version,
+        state: {
+          values: bootstrap.values,
+          keyRoles: bootstrap.keyRoles,
+          experiments: bootstrap.experiments
+        },
+        catalog: normalizeCatalog(bootstrap.catalog)
+      });
+      continue;
+    }
+    config.projects[project] = {
+      version: stored.version,
+      values: stored.state.values,
+      keyRoles: stored.state.keyRoles,
+      experiments: stored.state.experiments,
+      catalog: stored.catalog
+    };
+  }
+}
+
+function hydrateHistoricalState(config, stateStore, registry) {
+  for (const project of registry.names()) {
+    const buckets = [];
+    for (const tier of ['minute', 'hour', 'day']) {
+      let afterFrom = -1;
+      while (true) {
+        const starts = stateStore.listBucketStarts({
+          project,
+          tier,
+          afterFrom,
+          limit: config.sqlite.maxWriteBatchRows
+        });
+        for (const from of starts) buckets.push(stateStore.readBucket(project, tier, from));
+        if (starts.length < config.sqlite.maxWriteBatchRows) break;
+        afterFrom = starts.at(-1);
+      }
+    }
+    registry.get(project).history.seed(buckets);
+  }
+}
+
 export function createIngestServer(configInput) {
   const config = validateServerConfig(configInput);
+  const stateStore = createStateStore(config);
+  hydrateAuthoritativeState(config, stateStore);
   const registry = new ProjectRegistry(config);
-  hydrateExperimentStats(config, registry);
-  hydrateLogStats(config, registry);
-  hydrateAggregateWindows(config, registry);
+  hydrateHistoricalState(config, stateStore, registry);
+  const credentials = new CredentialRegistry(config.credentials);
+  const syncGate = new ConcurrencyGate(config.capacity.maxConcurrentSyncHandlers);
   const diagnostics = createDiagnostics(config);
-  const persistence = new PersistenceCoordinator({ config, registry, diagnostics });
+  const persistence = new PersistenceCoordinator({ config, registry, diagnostics, stateStore });
+  const experimentLedger = new ExperimentLedger({ store: stateStore, maxRows: config.experiments.ledgerMaxRows });
   const sink = createSink(config);
-  const control = new ControlService({ config, registry, persistence, diagnostics });
-  const handleSync = createSyncHandler({ config, registry, sink, persistence, diagnostics });
+  const control = new ControlService({ config, registry, persistence, diagnostics, stateStore, experimentLedger });
+  const handleSync = createSyncHandler({
+    config,
+    registry,
+    credentials,
+    sink,
+    persistence,
+    experimentLedger,
+    diagnostics
+  });
 
   const server = http.createServer((req, res) => {
     const host = req.headers.host || `${config.host}:${config.port}`;
@@ -38,7 +122,17 @@ export function createIngestServer(configInput) {
         return;
       }
       if (url.pathname === '/v1/sync' && req.method === 'POST') {
-        await handleSync(req, res);
+        const leave = syncGate.enter();
+        if (!leave) {
+          diagnostics.report('ingest.overloaded', new Error('concurrent sync limit reached'));
+          json(res, 503, { ok: false, error: 'overloaded' });
+          return;
+        }
+        try {
+          await handleSync(req, res);
+        } finally {
+          leave();
+        }
         return;
       }
       json(res, 404, { ok: false, error: 'not found' });
@@ -56,12 +150,25 @@ export function createIngestServer(configInput) {
       if (server.listening) {
         await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
       }
-      await persistence.flush();
+      await persistence.close();
       if (typeof sink.close === 'function') await sink.close();
+      stateStore.close();
     })();
     return stopPromise;
   }
-  server.wardx = { config, registry, control, sink, persistence, diagnostics, stop };
+  server.wardx = {
+    config,
+    registry,
+    credentials,
+    control,
+    sink,
+    persistence,
+    stateStore,
+    experimentLedger,
+    diagnostics,
+    syncGate,
+    stop
+  };
   return server;
 }
 

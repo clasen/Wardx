@@ -6,9 +6,23 @@ import { test } from 'node:test';
 import { PersistenceCoordinator, writeJsonAtomic } from '../src/control/PersistenceCoordinator.js';
 import { aggregateWindowsPath, experimentStatsPath, logStatsPath } from '../src/control/persist.js';
 import { ProjectRegistry } from '../src/projects/ProjectRegistry.js';
+import { SqliteStateStore } from '../src/storage/SqliteStateStore.js';
 import { sampleEnvelope, testServerConfig } from './helpers.js';
 
 const diagnostics = { report() {} };
+
+function sqliteSettings(config) {
+  return {
+    synchronous: config.sqlite.synchronous,
+    busyTimeoutMs: config.sqlite.busyTimeoutMs,
+    walAutoCheckpointPages: config.sqlite.walAutoCheckpointPages,
+    checkpointMode: config.sqlite.checkpointMode,
+    maxWriteBatch: config.sqlite.maxWriteBatchRows,
+    transactionTimeoutMs: config.sqlite.transactionTimeoutMs,
+    maxHistoryBuckets: config.history.maxQueryBuckets,
+    maxHistoryRows: config.history.maxQueryRows
+  };
+}
 
 function deferred() {
   let resolve;
@@ -115,13 +129,13 @@ test('PersistenceCoordinator flush persists the final aggregate, log, and experi
         to: now,
         metrics: { counters: [['requests', null, 1]], gauges: [], histograms: [] },
         events: [
-          [now, 'experiment.exposure', { experiment: 'delay', variant: 'fast', subject: 'subject-hash' }],
+          [now, 'experiment.exposure', { experiment: 'delay', variant: 'fast', subject: 'ab'.repeat(32) }],
           [
             now,
             'experiment.goal',
             {
               metric: 'message.sent',
-              subject: 'subject-hash',
+              subject: 'ab'.repeat(32),
               experiments: [{ experiment: 'delay', variant: 'fast' }]
             }
           ]
@@ -162,6 +176,59 @@ test('writeJsonAtomic keeps the previous file when rename is interrupted', async
     await access(temporary);
     assert.deepEqual(JSON.parse(await readFile(temporary, 'utf8')), { next: true });
   } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('PersistenceCoordinator restart scan compacts persisted minutes through hour and day', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'wardx-history-restart-'));
+  const sqlitePath = join(directory, 'state.sqlite');
+  const config = testServerConfig({
+    persistenceFlushIntervalMs: 1,
+    sqlite: { ...testServerConfig().sqlite, path: sqlitePath, maxWriteBatchRows: 2 },
+    history: {
+      ...testServerConfig().history,
+      clockSkewAllowanceMs: 1,
+      maxAcceptedPastAgeMs: 1,
+      aggregateHourlyRetentionHours: 720,
+      aggregateDailyRetentionDays: 365,
+      compactionIntervalMs: 60_000
+    }
+  });
+  const from = Date.UTC(2026, 7, 20);
+  const row = {
+    kind: 'counter', name: 'requests', role: 'api', environment: 'production', appVersion: '1.0.0',
+    dimensions: null, value: 4
+  };
+  let store = new SqliteStateStore({ path: sqlitePath, settings: sqliteSettings(config) });
+  store.saveBuckets('minute', [
+    { project: 'demo', tier: 'minute', from, to: from + 60_000, finalized: true, dropCount: 0, rows: [row] },
+    {
+      project: 'demo', tier: 'minute', from: from + 60_000, to: from + 120_000,
+      finalized: true, dropCount: 0, rows: [{ ...row, value: 6 }]
+    }
+  ]);
+  store.close();
+
+  store = new SqliteStateStore({ path: sqlitePath, settings: sqliteSettings(config) });
+  const coordinator = new PersistenceCoordinator({
+    config,
+    registry: new ProjectRegistry(config),
+    diagnostics,
+    stateStore: store
+  });
+  try {
+    await coordinator.flush();
+    assert.equal(store.readBucket('demo', 'hour', from).rows[0].value, 10);
+    assert.equal(store.readBucket('demo', 'hour', from).finalized, true);
+    assert.equal(store.readBucket('demo', 'day', from).rows[0].value, 10);
+    assert.equal(store.readBucket('demo', 'day', from).finalized, true);
+    assert.equal(store.readWatermark('demo', 'minute', 'hour'), from + 3_600_000);
+    assert.equal(store.readWatermark('demo', 'hour', 'day'), from + 86_400_000);
+    assert.equal(coordinator.snapshotMetrics().historyCompactions, 2);
+  } finally {
+    await coordinator.close();
+    store.close();
     await rm(directory, { recursive: true, force: true });
   }
 });

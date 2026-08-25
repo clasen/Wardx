@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { loadServerConfig } from '../src/loadConfig.js';
 import { executeTool } from '../src/mcp/tools.js';
-import { ControlService, createIngestServer, listen } from '../src/server.js';
+import { createIngestServer, listen } from '../src/server.js';
 import { gzipJson, sampleEnvelope, testServerConfig } from './helpers.js';
 
 const DELAY_EXPERIMENT = {
@@ -15,6 +15,8 @@ const DELAY_EXPERIMENT = {
   salt: '3ad8f9',
   primaryMetric: 'message.sent',
   goalMetric: 'message.sent',
+  assignmentUnitKind: 'subject',
+  terminalRetentionMs: 604800000,
   roles: ['client'],
   variants: [
     { key: 'control', weight: 50, values: { 'message.delayMs': 1000 } },
@@ -33,15 +35,30 @@ async function withServer(config, fn) {
   }
 }
 
+function mutate(control, method, project, ...args) {
+  return control[method](project, ...args, {
+    expectedVersion: control.getConfig(project).version,
+    reason: `test ${method}`
+  });
+}
+
+function executeMutation(control, name, args) {
+  return executeTool(control, name, {
+    ...args,
+    expectedVersion: control.getConfig(args.project).version,
+    reason: `test ${name}`
+  });
+}
+
 test('ControlService upserts experiments and increments version', () => {
   const server = createIngestServer(testServerConfig());
   const control = server.wardx.control;
   assert.equal(control.getConfig('demo').version, 12);
-  control.upsertExperiment('demo', DELAY_EXPERIMENT);
+  mutate(control, 'upsertExperiment', 'demo', DELAY_EXPERIMENT);
   const snapshot = control.getConfig('demo');
   assert.equal(snapshot.version, 13);
   assert.equal(snapshot.experiments[0].id, 'message-delay-v1');
-  control.setExperimentEnabled('demo', 'message-delay-v1', false);
+  mutate(control, 'setExperimentEnabled', 'demo', 'message-delay-v1', false);
   assert.equal(control.getConfig('demo').experiments[0].enabled, false);
   assert.equal(control.getConfig('demo').version, 14);
 });
@@ -51,64 +68,88 @@ test('ControlService deleteValue rejects a missing key', () => {
   assert.throws(() => server.wardx.control.deleteValue('demo', 'missing'), /unknown config key/);
 });
 
-test('ControlService persists mutations to the config file', () => {
+test('ControlService persists mutations to SQLite without rewriting operational config', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'wardx-'));
   const path = join(dir, 'server.json');
-  writeFileSync(path, `${JSON.stringify(testServerConfig({ port: 0 }), null, 2)}\n`);
+  const input = testServerConfig({ port: 0 });
+  input.sqlite.path = join(dir, 'state.sqlite');
+  writeFileSync(path, `${JSON.stringify(input, null, 2)}\n`);
   try {
+    const beforeFile = readFileSync(path, 'utf8');
     const config = loadServerConfig(path);
     const server = createIngestServer(config);
-    server.wardx.control.setValue('demo', 'message.delayMs', 250, ['client']);
-    const saved = JSON.parse(readFileSync(path, 'utf8'));
-    assert.equal(saved.projects.demo.values['message.delayMs'], 250);
-    assert.equal(saved.projects.demo.version, 13);
-    assert.equal(saved.aggregateMaxSeriesPerMetric, 1000);
-    assert.equal(saved.configPath, undefined);
+    mutate(server.wardx.control, 'setValue', 'demo', 'message.delayMs', 250, ['client']);
+    await server.wardx.stop();
+    assert.equal(readFileSync(path, 'utf8'), beforeFile);
+    const restarted = createIngestServer(loadServerConfig(path));
+    assert.equal(restarted.wardx.control.getConfig('demo').values['message.delayMs'], 250);
+    assert.equal(restarted.wardx.control.getConfig('demo').version, 13);
+    await restarted.wardx.stop();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
 test('ControlService does not publish config or catalog when durable commit fails', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'wardx-'));
-  const path = join(dir, 'server.json');
-  writeFileSync(path, `${JSON.stringify(testServerConfig({ port: 0 }), null, 2)}\n`);
-  try {
-    const server = createIngestServer(loadServerConfig(path));
-    const beforeConfig = server.wardx.control.getConfig('demo');
-    const beforeCatalog = JSON.parse(JSON.stringify(server.wardx.control.getCatalog('demo')));
-    const beforeFile = readFileSync(path, 'utf8');
-    const reports = [];
-    const failing = new ControlService({
-      config: server.wardx.config,
-      registry: server.wardx.registry,
-      persistence: server.wardx.persistence,
-      diagnostics: { report(...args) { reports.push(args); } },
-      persistConfig() {
-        throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
-      }
-    });
+  const server = createIngestServer(testServerConfig());
+  const control = server.wardx.control;
+  const beforeConfig = control.getConfig('demo');
+  const beforeCatalog = structuredClone(control.getCatalog('demo'));
+  const reports = [];
+  control.diagnostics = { report(...args) { reports.push(args); } };
+  server.wardx.stateStore.commitProjectMutation = () => {
+    throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+  };
 
-    assert.throws(() => failing.setValue('demo', 'message.delayMs', 250, ['client']), /disk full/);
-    assert.deepEqual(failing.getConfig('demo'), beforeConfig);
-    assert.equal(readFileSync(path, 'utf8'), beforeFile);
+  assert.throws(
+    () => mutate(control, 'setValue', 'demo', 'message.delayMs', 250, ['client']),
+    /disk full/
+  );
+  assert.deepEqual(control.getConfig('demo'), beforeConfig);
+  assert.throws(() => mutate(control, 'setProjectDescription', 'demo', 'not published'), /disk full/);
+  assert.deepEqual(control.getCatalog('demo'), beforeCatalog);
+  assert.equal(reports.length, 2);
+  assert.deepEqual(reports.map((entry) => entry[0]), ['control.persistence_failed', 'control.persistence_failed']);
+  assert.ok(reports.every((entry) => entry[1].code === 'ENOSPC'));
+});
 
-    assert.throws(() => failing.setProjectDescription('demo', 'not published'), /disk full/);
-    assert.deepEqual(failing.getCatalog('demo'), beforeCatalog);
-    assert.equal(readFileSync(path, 'utf8'), beforeFile);
-    assert.equal(reports.length, 2);
-    assert.deepEqual(reports.map((entry) => entry[0]), ['control.persistence_failed', 'control.persistence_failed']);
-    assert.ok(reports.every((entry) => entry[1].code === 'ENOSPC'));
-    assert.ok(reports.every((entry) => entry[2].project === 'demo'));
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+test('optimistic mutations journal once, conflict cleanly, and rollback as a new version', () => {
+  const server = createIngestServer(testServerConfig());
+  const control = server.wardx.control;
+  const first = control.setValue('demo', 'message.delayMs', 250, ['client'], {
+    expectedVersion: 12,
+    reason: 'lower message delay'
+  });
+  assert.equal(first.version, 13);
+  assert.throws(
+    () => control.setValue('demo', 'message.delayMs', 100, ['client'], {
+      expectedVersion: 12,
+      reason: 'stale writer'
+    }),
+    (error) => error.code === 'version_conflict' && error.currentVersion === 13
+  );
+  assert.equal(control.getConfig('demo').values['message.delayMs'], 250);
+  const beforeRollback = control.listConfigChanges('demo');
+  assert.equal(beforeRollback.changes.length, 1);
+  assert.equal(beforeRollback.changes[0].reason, 'lower message delay');
+  assert.equal(JSON.stringify(beforeRollback).includes('test-key'), false);
+
+  const rolledBack = control.rollbackConfigChange('demo', first.changeId, {
+    expectedVersion: 13,
+    reason: 'restore the previous delay'
+  });
+  assert.equal(rolledBack.version, 14);
+  assert.equal(control.getConfig('demo').values['message.delayMs'], 1000);
+  const afterRollback = control.listConfigChanges('demo');
+  assert.equal(afterRollback.changes.length, 2);
+  assert.equal(afterRollback.changes[1].operation, 'rollback_config_change');
+  assert.equal(afterRollback.changes[1].rolledBackChangeId, first.changeId);
 });
 
 test('aggregator rolls up experiment exposure and goals', async () => {
   const now = Date.now();
   await withServer(testServerConfig(), async (server, base) => {
-    server.wardx.control.upsertExperiment('demo', DELAY_EXPERIMENT);
+    mutate(server.wardx.control, 'upsertExperiment', 'demo', DELAY_EXPERIMENT);
     const envelope = sampleEnvelope({
       frames: [
         {
@@ -121,13 +162,13 @@ test('aggregator rolls up experiment exposure and goals', async () => {
             histograms: []
           },
           events: [
-            [now - 900, 'experiment.exposure', { experiment: 'message-delay-v1', variant: 'fast', subject: 'abcd1234' }],
+            [now - 900, 'experiment.exposure', { experiment: 'message-delay-v1', variant: 'fast', subject: 'ab'.repeat(32) }],
             [
               now - 800,
               'experiment.goal',
               {
                 metric: 'message.sent',
-                subject: 'abcd1234',
+                subject: 'ab'.repeat(32),
                 experiments: [{ experiment: 'message-delay-v1', variant: 'fast' }],
                 value: 1
               }
@@ -151,11 +192,13 @@ test('aggregator rolls up experiment exposure and goals', async () => {
     assert.equal(windows[0].eventNames.find((row) => row.name === 'purchase').count, 1);
     const analysis = server.wardx.control.analyzeExperiment('demo', 'message-delay-v1');
     assert.equal(analysis.experiment.id, 'message-delay-v1');
-    const fast = analysis.variants.find((row) => row.key === 'fast');
+    const fast = analysis.telemetryVariants.find((row) => row.key === 'fast');
     assert.equal(fast.exposures, 1);
     assert.equal(fast.goals, 1);
     assert.equal(fast.goalSum, 1);
     assert.equal(fast.goalMean, 1);
+    assert.equal(analysis.variants.length, 0);
+    assert.equal(analysis.decision.status, 'cannot_decide');
     assert.equal(analysis.primaryMetric.name, 'message.sent');
     assert.equal(analysis.primaryMetric.total, 4);
     const clients = server.wardx.control.recentClients('demo');
@@ -169,7 +212,7 @@ test('executeTool exposes control operations without HTTP', () => {
   const server = createIngestServer(testServerConfig());
   const control = server.wardx.control;
   assert.deepEqual(executeTool(control, 'list_projects'), { projects: ['demo'] });
-  executeTool(control, 'set_config_value', {
+  executeMutation(control, 'set_config_value', {
     project: 'demo',
     key: 'chat.enabled',
     value: false,
@@ -177,10 +220,10 @@ test('executeTool exposes control operations without HTTP', () => {
   });
   const snapshot = executeTool(control, 'get_config', { project: 'demo' });
   assert.equal(snapshot.values['chat.enabled'], false);
-  executeTool(control, 'upsert_experiment', { project: 'demo', experiment: DELAY_EXPERIMENT });
+  executeMutation(control, 'upsert_experiment', { project: 'demo', experiment: DELAY_EXPERIMENT });
   const listed = executeTool(control, 'list_experiments', { project: 'demo' });
   assert.equal(listed.experiments.length, 1);
-  executeTool(control, 'set_signal', {
+  executeMutation(control, 'set_signal', {
     project: 'demo',
     name: 'message.sent',
     description: 'Chat messages that left the client after the delay'
@@ -194,7 +237,7 @@ test('executeTool exposes control operations without HTTP', () => {
   assert.throws(() => executeTool(control, 'nope'), /unknown tool/);
 });
 
-test('catalog mutations persist without bumping configVersion', () => {
+test('catalog mutations persist atomically in SQLite and bump configVersion', () => {
   const dir = mkdtempSync(join(tmpdir(), 'wardx-'));
   const path = join(dir, 'server.json');
   writeFileSync(path, `${JSON.stringify(testServerConfig({ port: 0 }), null, 2)}\n`);
@@ -203,41 +246,37 @@ test('catalog mutations persist without bumping configVersion', () => {
     const server = createIngestServer(config);
     const control = server.wardx.control;
     assert.equal(control.getConfig('demo').version, 12);
-    control.setProjectDescription('demo', 'Demo chat app.');
-    control.setRoleDescription('demo', 'unity', 'Player client.');
-    control.setRoleSource('demo', 'unity', {
+    mutate(control, 'setProjectDescription', 'demo', 'Demo chat app.');
+    mutate(control, 'setRoleDescription', 'demo', 'unity', 'Player client.');
+    mutate(control, 'setRoleSource', 'demo', 'unity', {
       path: '/src/alfa-unity',
       git: 'https://github.com/acme/alfa-unity'
     });
-    control.setSignal('demo', 'message.delayMs', 'Milliseconds to wait before sending a chat message');
-    assert.equal(control.getConfig('demo').version, 12);
+    mutate(control, 'setSignal', 'demo', 'message.delayMs', 'Milliseconds to wait before sending a chat message');
+    assert.equal(control.getConfig('demo').version, 16);
     const saved = JSON.parse(readFileSync(path, 'utf8'));
     assert.equal(saved.projects.demo.version, 12);
-    assert.equal(saved.projects.demo.catalog.description, 'Demo chat app.');
-    assert.equal(saved.projects.demo.catalog.roles.unity.description, 'Player client.');
-    assert.equal(saved.projects.demo.catalog.roles.unity.path, '/src/alfa-unity');
-    assert.equal(saved.projects.demo.catalog.roles.unity.git, 'https://github.com/acme/alfa-unity');
+    assert.equal(control.getCatalog('demo').description, 'Demo chat app.');
+    assert.equal(control.getCatalog('demo').roles.unity.description, 'Player client.');
+    assert.equal(control.getCatalog('demo').roles.unity.path, '/src/alfa-unity');
+    assert.equal(control.getCatalog('demo').roles.unity.git, 'https://github.com/acme/alfa-unity');
     const overview = executeTool(control, 'get_project_overview', { project: 'demo' });
     assert.equal(overview.roles.unity.path, '/src/alfa-unity');
     assert.equal(overview.roles.unity.git, 'https://github.com/acme/alfa-unity');
     assert.throws(
-      () => executeTool(control, 'set_role_source', { project: 'demo', role: 'unity' }),
+      () => executeMutation(control, 'set_role_source', { project: 'demo', role: 'unity' }),
       /path or git is required/
     );
     assert.equal(
-      saved.projects.demo.catalog.signals['message.delayMs'],
+      control.getCatalog('demo').signals['message.delayMs'],
       'Milliseconds to wait before sending a chat message'
     );
-    executeTool(control, 'set_persist_log', { project: 'demo', name: 'payment_failed' });
-    assert.equal(control.getConfig('demo').version, 12);
-    const after = JSON.parse(readFileSync(path, 'utf8'));
-    assert.deepEqual(after.projects.demo.catalog.persistLogs, ['payment_failed']);
-    executeTool(control, 'set_persist_log', { project: 'demo', name: 'payment_failed' });
+    executeMutation(control, 'set_persist_log', { project: 'demo', name: 'payment_failed' });
     assert.deepEqual(control.getCatalog('demo').persistLogs, ['payment_failed']);
-    executeTool(control, 'delete_persist_log', { project: 'demo', name: 'payment_failed' });
-    assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')).projects.demo.catalog.persistLogs, []);
+    executeMutation(control, 'delete_persist_log', { project: 'demo', name: 'payment_failed' });
+    assert.deepEqual(control.getCatalog('demo').persistLogs, []);
     assert.throws(
-      () => executeTool(control, 'delete_persist_log', { project: 'demo', name: 'payment_failed' }),
+      () => executeMutation(control, 'delete_persist_log', { project: 'demo', name: 'payment_failed' }),
       /unknown persist log: payment_failed/
     );
   } finally {
@@ -249,7 +288,7 @@ test('overview splits knobs and outcomes and marks undescribed names', async () 
   const now = Date.now();
   await withServer(testServerConfig(), async (server, base) => {
     const control = server.wardx.control;
-    control.setSignal('demo', 'message.delayMs', 'Milliseconds to wait before sending a chat message');
+    mutate(control, 'setSignal', 'demo', 'message.delayMs', 'Milliseconds to wait before sending a chat message');
     await fetch(`${base}/v1/sync`, {
       method: 'POST',
       headers: {
@@ -325,9 +364,9 @@ test('overview ranks histogram peaks by max and keeps the exemplar', async () =>
     }),
     async (server, base) => {
       const control = server.wardx.control;
-      control.setSignal('demo', 'economy.maxAward', 'Largest legal coin grant');
-      control.setSignal('demo', 'coins.award_size', 'Distribution of coin grant amounts');
-      control.setRoleSource('demo', 'game-server', { path: '/src/game-server' });
+      mutate(control, 'setSignal', 'demo', 'economy.maxAward', 'Largest legal coin grant');
+      mutate(control, 'setSignal', 'demo', 'coins.award_size', 'Distribution of coin grant amounts');
+      mutate(control, 'setRoleSource', 'demo', 'game-server', { path: '/src/game-server' });
       await fetch(`${base}/v1/sync`, {
         method: 'POST',
         headers: {
@@ -445,12 +484,12 @@ test('overview onboarding completes after catalog answers and skips protocol nam
     assert.equal(before.onboarding.complete, false);
     assert.equal(before.onboarding.undescribedOutcomes.includes('wardx.internal.frames_sent'), false);
     assert.equal(before.onboarding.undescribedOutcomes.includes('experiment.exposure'), false);
-    control.setProjectDescription('demo', 'Demo chat app.');
-    control.setRoleDescription('demo', 'client', 'Player-facing client.');
-    control.setSignal('demo', 'message.delayMs', 'Milliseconds to wait before sending a chat message');
-    control.setSignal('demo', 'chat.enabled', 'Whether chat is available');
-    control.setSignal('demo', 'message.sent', 'Chat messages that left the client after the delay');
-    control.setSignal('demo', 'purchase', 'A completed in-app purchase');
+    mutate(control, 'setProjectDescription', 'demo', 'Demo chat app.');
+    mutate(control, 'setRoleDescription', 'demo', 'client', 'Player-facing client.');
+    mutate(control, 'setSignal', 'demo', 'message.delayMs', 'Milliseconds to wait before sending a chat message');
+    mutate(control, 'setSignal', 'demo', 'chat.enabled', 'Whether chat is available');
+    mutate(control, 'setSignal', 'demo', 'message.sent', 'Chat messages that left the client after the delay');
+    mutate(control, 'setSignal', 'demo', 'purchase', 'A completed in-app purchase');
     const after = executeTool(control, 'get_project_overview', { project: 'demo' });
     assert.deepEqual(after.onboarding, {
       complete: true,
@@ -539,7 +578,7 @@ test('upsertExperiment rejects unknown Remote Config keys', () => {
   const server = createIngestServer(testServerConfig());
   assert.throws(
     () =>
-      server.wardx.control.upsertExperiment('demo', {
+      mutate(server.wardx.control, 'upsertExperiment', 'demo', {
         ...DELAY_EXPERIMENT,
         variants: [{ key: 'fast', weight: 1, values: { 'missing.key': 1 } }]
       }),
@@ -550,7 +589,7 @@ test('upsertExperiment rejects unknown Remote Config keys', () => {
 test('upsertExperiment hypothesis stays off the client snapshot', async () => {
   await withServer(testServerConfig(), async (server, base) => {
     const control = server.wardx.control;
-    control.upsertExperiment('demo', {
+    mutate(control, 'upsertExperiment', 'demo', {
       ...DELAY_EXPERIMENT,
       hypothesis: 'Shorter delay increases messages sent'
     });
@@ -580,7 +619,7 @@ test('get_recent_logs returns recent rows of every level', async () => {
   const now = Date.now();
   await withServer(testServerConfig({ recentLogsMax: 10 }), async (server, base) => {
     const control = server.wardx.control;
-    control.setSignal('demo', 'payment_failed', 'One failed charge with provider code and stack');
+    mutate(control, 'setSignal', 'demo', 'payment_failed', 'One failed charge with provider code and stack');
     await fetch(`${base}/v1/sync`, {
       method: 'POST',
       headers: {
@@ -768,7 +807,7 @@ test('upsertExperiment rejects a key not visible to experiment.roles', () => {
   const server = createIngestServer(testServerConfig());
   assert.throws(
     () =>
-      server.wardx.control.upsertExperiment('demo', {
+      mutate(server.wardx.control, 'upsertExperiment', 'demo', {
         ...DELAY_EXPERIMENT,
         roles: ['game-server']
       }),
@@ -785,50 +824,60 @@ test('createMcpServer constructs an SDK server', async () => {
 
 const SHIPPABLE = {
   ...DELAY_EXPERIMENT,
-  goalKind: 'conversion',
+  outcomeKind: 'conversion',
   control: 'control',
-  minExposures: 50,
-  confidence: 0.95,
+  targetSampleSizePerVariant: 50,
+  earliestAnalysisAt: 0,
+  familyWiseAlpha: 0.05,
+  minimumEffect: 0,
+  direction: 'increase',
+  healthThresholds: {
+    maxDroppedFrames: 0,
+    maxDuplicateExposures: 0,
+    maxDuplicateGoals: 0,
+    maxConflictingGoals: 0,
+    maxVariantConflicts: 0,
+    maxUntrustedRows: 0,
+    maxLateRows: 0,
+    maxMissingExposures: 0,
+    maxImplicitExposures: 0
+  },
   hypothesis: 'Shorter delay increases messages sent'
 };
 
-function ingestVariant(aggregator, variant, exposures, goals, now = Date.now()) {
+function assignmentHash(variant, index) {
+  const prefix = variant === 'control' ? '1' : '2';
+  return `${prefix}${index.toString(16).padStart(63, '0')}`;
+}
+
+function ingestVariant(ledger, variant, exposures, goals, now = Date.now()) {
   const events = [];
   for (let i = 0; i < exposures; i++) {
-    events.push([now, 'experiment.exposure', { experiment: SHIPPABLE.id, variant, subject: `subject-${variant}-${i}` }]);
+    events.push({
+      kind: 'exposure',
+      timestamp: now,
+      experiment: SHIPPABLE.id,
+      variant,
+      assignmentHash: assignmentHash(variant, i)
+    });
   }
   for (let i = 0; i < goals; i++) {
-    events.push([
-      now,
-      'experiment.goal',
-      {
-        metric: SHIPPABLE.goalMetric,
-        subject: `subject-${variant}-${i}`,
-        experiments: [{ experiment: SHIPPABLE.id, variant }],
-        value: 1
-      }
-    ]);
+    events.push({
+      kind: 'goal',
+      timestamp: now,
+      experiment: SHIPPABLE.id,
+      variant,
+      assignmentHash: assignmentHash(variant, i),
+      value: 1
+    });
   }
-  aggregator.ingest(
-    sampleEnvelope({
-      frames: [
-        {
-          seq: 1,
-          from: now,
-          to: now + 1,
-          metrics: { counters: [], gauges: [], histograms: [] },
-          events,
-          logs: []
-        }
-      ]
-    })
-  );
+  ledger.ingestBatch('demo', events, { role: 'game-server', trustedForDecisions: true });
 }
 
 test('analyze_experiment is cannot_decide without a close policy', () => {
   const server = createIngestServer(testServerConfig());
   const control = server.wardx.control;
-  control.upsertExperiment('demo', DELAY_EXPERIMENT);
+  mutate(control, 'upsertExperiment', 'demo', DELAY_EXPERIMENT);
   const analysis = executeTool(control, 'analyze_experiment', {
     project: 'demo',
     experimentId: 'message-delay-v1'
@@ -840,17 +889,16 @@ test('analyze_experiment is cannot_decide without a close policy', () => {
 test('ship_experiment copies the winner and disables the experiment', async () => {
   await withServer(testServerConfig(), async (server, base) => {
     const control = server.wardx.control;
-    control.upsertExperiment('demo', SHIPPABLE);
-    const aggregator = server.wardx.registry.get('demo').aggregator;
-    ingestVariant(aggregator, 'control', 50, 10);
-    ingestVariant(aggregator, 'fast', 50, 40);
+    mutate(control, 'upsertExperiment', 'demo', SHIPPABLE);
+    ingestVariant(server.wardx.experimentLedger, 'control', 50, 10);
+    ingestVariant(server.wardx.experimentLedger, 'fast', 50, 40);
     const analysis = executeTool(control, 'analyze_experiment', {
       project: 'demo',
       experimentId: 'message-delay-v1'
     });
     assert.equal(analysis.decision.status, 'winner');
     assert.equal(analysis.decision.leadingVariant, 'fast');
-    const shipped = executeTool(control, 'ship_experiment', {
+    const shipped = executeMutation(control, 'ship_experiment', {
       project: 'demo',
       experimentId: 'message-delay-v1'
     });
@@ -859,8 +907,8 @@ test('ship_experiment copies the winner and disables the experiment', async () =
     assert.equal(snapshot.values['message.delayMs'], 400);
     assert.equal(snapshot.experiments[0].enabled, false);
     assert.equal(snapshot.experiments[0].shippedVariant, 'fast');
-    assert.equal(snapshot.experiments[0].goalKind, 'conversion');
-    const again = executeTool(control, 'ship_experiment', {
+    assert.equal(snapshot.experiments[0].outcomeKind, 'conversion');
+    const again = executeMutation(control, 'ship_experiment', {
       project: 'demo',
       experimentId: 'message-delay-v1'
     });
@@ -884,20 +932,20 @@ test('ship_experiment copies the winner and disables the experiment', async () =
 test('ship_experiment refuses while collecting', () => {
   const server = createIngestServer(testServerConfig());
   const control = server.wardx.control;
-  control.upsertExperiment('demo', SHIPPABLE);
-  ingestVariant(server.wardx.registry.get('demo').aggregator, 'control', 10, 4);
-  ingestVariant(server.wardx.registry.get('demo').aggregator, 'fast', 12, 8);
+  mutate(control, 'upsertExperiment', 'demo', SHIPPABLE);
+  ingestVariant(server.wardx.experimentLedger, 'control', 10, 4);
+  ingestVariant(server.wardx.experimentLedger, 'fast', 12, 8);
   const analysis = control.analyzeExperiment('demo', 'message-delay-v1');
   assert.equal(analysis.decision.status, 'collecting');
   assert.throws(
-    () => executeTool(control, 'ship_experiment', { project: 'demo', experimentId: 'message-delay-v1' }),
+    () => executeMutation(control, 'ship_experiment', { project: 'demo', experimentId: 'message-delay-v1' }),
     /not ready to ship/
   );
 });
 
 test('close-policy fields stay off the client wire', async () => {
   await withServer(testServerConfig(), async (server, base) => {
-    server.wardx.control.upsertExperiment('demo', SHIPPABLE);
+    mutate(server.wardx.control, 'upsertExperiment', 'demo', SHIPPABLE);
     const res = await fetch(`${base}/v1/sync`, {
       method: 'POST',
       headers: {
@@ -911,10 +959,11 @@ test('close-policy fields stay off the client wire', async () => {
     const experiment = json.config.experiments[0];
     assert.equal(experiment.id, 'message-delay-v1');
     assert.equal(experiment.goalMetric, 'message.sent');
-    assert.equal(experiment.goalKind, undefined);
+    assert.equal(experiment.assignmentUnitKind, undefined);
+    assert.equal(experiment.outcomeKind, undefined);
     assert.equal(experiment.control, undefined);
-    assert.equal(experiment.minExposures, undefined);
-    assert.equal(experiment.confidence, undefined);
+    assert.equal(experiment.targetSampleSizePerVariant, undefined);
+    assert.equal(experiment.familyWiseAlpha, undefined);
     assert.equal(experiment.shippedVariant, undefined);
     assert.equal(experiment.hypothesis, undefined);
   });

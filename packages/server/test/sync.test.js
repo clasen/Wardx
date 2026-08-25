@@ -45,6 +45,23 @@ test('POST /v1/sync accepts gzip frames and returns config when versions differ'
   });
 });
 
+test('POST /v1/sync rejects bounded historical persistence overload before mutation', async () => {
+  const config = testServerConfig();
+  config.sqlite.maxPendingBytes = 1;
+  await withServer(config, async (server, base) => {
+    const response = await fetch(`${base}/v1/sync`, {
+      method: 'POST',
+      headers: syncHeaders(),
+      body: gzipJson(sampleEnvelope())
+    });
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { ok: false, error: 'overloaded' });
+    assert.equal(server.wardx.sink.frameCount, 0);
+    assert.deepEqual(server.wardx.control.aggregates('demo'), []);
+    assert.equal(server.wardx.experimentLedger.totals('demo', 'missing').length, 0);
+  });
+});
+
 test('POST /v1/sync bounds decoded gzip bytes and distinguishes corrupt gzip', async () => {
   const oversized = sampleEnvelope({
     client: { role: 'client'.repeat(100) },
@@ -166,7 +183,10 @@ test('POST /v1/sync omits config when versions match', async () => {
 
 test('ControlService setValue bumps version for subsequent syncs', async () => {
   await withServer(testServerConfig(), async (server, base) => {
-    const result = server.wardx.control.setValue('demo', 'message.delayMs', 400, ['client']);
+    const result = server.wardx.control.setValue('demo', 'message.delayMs', 400, ['client'], {
+      expectedVersion: 12,
+      reason: 'test update'
+    });
     assert.equal(result.version, 13);
     const res = await fetch(`${base}/v1/sync`, {
       method: 'POST',
@@ -202,7 +222,22 @@ test('one-minute aggregator merges counters per project', async () => {
 
 test('telemetry and config are isolated per project', async () => {
   const config = testServerConfig({
-    projectKeys: { 'test-key': 'demo', 'other-key': 'other' },
+    credentials: {
+      'test-key': {
+        label: 'demo-client',
+        project: 'demo',
+        allowedRoles: ['client'],
+        trustedForDecisions: false,
+        enabled: true
+      },
+      'other-key': {
+        label: 'other-client',
+        project: 'other',
+        allowedRoles: ['client'],
+        trustedForDecisions: false,
+        enabled: true
+      }
+    },
     projects: {
       demo: {
         version: 12,
@@ -254,6 +289,22 @@ test('POST /v1/sync rejects missing client.role', async () => {
     assert.equal(res.status, 400);
     const json = await res.json();
     assert.equal(json.error, 'client.role is required');
+  });
+});
+
+test('POST /v1/sync rejects a role outside the credential scope without mutation', async () => {
+  const config = testServerConfig();
+  config.credentials['test-key'].allowedRoles = ['client'];
+  await withServer(config, async (server, base) => {
+    const res = await fetch(`${base}/v1/sync`, {
+      method: 'POST',
+      headers: syncHeaders(),
+      body: gzipJson(sampleEnvelope({ client: { role: 'game-server' } }))
+    });
+    assert.equal(res.status, 403);
+    assert.deepEqual(await res.json(), { ok: false, error: 'role not allowed' });
+    assert.deepEqual(server.wardx.control.aggregates('demo'), []);
+    assert.deepEqual(server.wardx.control.recentClients('demo'), []);
   });
 });
 

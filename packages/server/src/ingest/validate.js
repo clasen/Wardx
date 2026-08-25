@@ -92,20 +92,21 @@ function validateCounter(row, label, limits) {
   return null;
 }
 
-function validateTimestamp(value, label, latestTimestamp) {
+function validateTimestamp(value, label, earliestTimestamp, latestTimestamp) {
   if (!isFiniteNumber(value)) return `${label} must be a finite timestamp`;
+  if (value < earliestTimestamp) return `${label} exceeds history.maxAcceptedPastAgeMs`;
   if (value > latestTimestamp) return `${label} exceeds maxClockSkewMs`;
   return null;
 }
 
-function validateGauge(row, label, limits, latestTimestamp) {
+function validateGauge(row, label, limits, earliestTimestamp, latestTimestamp) {
   if (!Array.isArray(row) || row.length !== 4) return `${label} must be a 4-item tuple`;
   const invalidName = validateNonEmptyString(row[0], `${label}[0]`, limits.maxNameBytes);
   if (invalidName) return invalidName;
   const invalidDims = validateDimensions(row[1], `${label}[1]`, limits);
   if (invalidDims) return invalidDims;
   if (!isFiniteNumber(row[2])) return `${label}[2] must be a finite number`;
-  return validateTimestamp(row[3], `${label}[3]`, latestTimestamp);
+  return validateTimestamp(row[3], `${label}[3]`, earliestTimestamp, latestTimestamp);
 }
 
 function validateHistogramBody(body, label, limits) {
@@ -155,18 +156,18 @@ function validateHistogram(row, label, limits) {
   return validateHistogramBody(row[2], `${label}[2]`, limits);
 }
 
-function validateEvent(row, label, limits, latestTimestamp) {
+function validateEvent(row, label, limits, earliestTimestamp, latestTimestamp) {
   if (!Array.isArray(row) || row.length !== 3) return `${label} must be a 3-item tuple`;
-  const invalidTimestamp = validateTimestamp(row[0], `${label}[0]`, latestTimestamp);
+  const invalidTimestamp = validateTimestamp(row[0], `${label}[0]`, earliestTimestamp, latestTimestamp);
   if (invalidTimestamp) return invalidTimestamp;
   const invalidName = validateNonEmptyString(row[1], `${label}[1]`, limits.maxNameBytes);
   if (invalidName) return invalidName;
   return validateAttrs(row[2], `${label}[2]`, limits);
 }
 
-function validateLog(row, label, limits, latestTimestamp) {
+function validateLog(row, label, limits, earliestTimestamp, latestTimestamp) {
   if (!Array.isArray(row) || row.length !== 4) return `${label} must be a 4-item tuple`;
-  const invalidTimestamp = validateTimestamp(row[0], `${label}[0]`, latestTimestamp);
+  const invalidTimestamp = validateTimestamp(row[0], `${label}[0]`, earliestTimestamp, latestTimestamp);
   if (invalidTimestamp) return invalidTimestamp;
   if (!LOG_LEVELS.has(row[1])) return `${label}[1] must be a supported log level`;
   const invalidMessage = validateNonEmptyString(row[2], `${label}[2]`, limits.maxNameBytes);
@@ -228,6 +229,7 @@ export function validateEnvelope(body, limits) {
     return `frames must contain at most ${limits.maxFramesPerEnvelope} items`;
   }
   const latestTimestamp = Date.now() + limits.maxClockSkewMs;
+  const earliestTimestamp = Date.now() - limits.history.maxAcceptedPastAgeMs;
   let itemCount = 0;
   for (let i = 0; i < body.frames.length; i++) {
     const frame = body.frames[i];
@@ -236,9 +238,9 @@ export function validateEnvelope(body, limits) {
     const invalidFrameKey = unknownKey(frame, new Set(['seq', 'from', 'to', 'metrics', 'events', 'logs']), label);
     if (invalidFrameKey) return invalidFrameKey;
     if (!Number.isInteger(frame.seq) || frame.seq < 1) return `${label}.seq must be an integer >= 1`;
-    const invalidFrom = validateTimestamp(frame.from, `${label}.from`, latestTimestamp);
+    const invalidFrom = validateTimestamp(frame.from, `${label}.from`, earliestTimestamp, latestTimestamp);
     if (invalidFrom) return invalidFrom;
-    const invalidTo = validateTimestamp(frame.to, `${label}.to`, latestTimestamp);
+    const invalidTo = validateTimestamp(frame.to, `${label}.to`, earliestTimestamp, latestTimestamp);
     if (invalidTo) return invalidTo;
     if (frame.from > frame.to) return `${label}.from must be <= to`;
     if (!isObject(frame.metrics)) return `${label}.metrics is required`;
@@ -265,7 +267,7 @@ export function validateEnvelope(body, limits) {
     );
     if (invalidCounters) return invalidCounters;
     const invalidGauges = validateRows(frame.metrics.gauges, `${label}.metrics.gauges`, (row, rowLabel) =>
-      validateGauge(row, rowLabel, limits, latestTimestamp)
+      validateGauge(row, rowLabel, limits, earliestTimestamp, latestTimestamp)
     );
     if (invalidGauges) return invalidGauges;
     const invalidHistograms = validateRows(
@@ -275,11 +277,11 @@ export function validateEnvelope(body, limits) {
     );
     if (invalidHistograms) return invalidHistograms;
     const invalidEvents = validateRows(frame.events, `${label}.events`, (row, rowLabel) =>
-      validateEvent(row, rowLabel, limits, latestTimestamp)
+      validateEvent(row, rowLabel, limits, earliestTimestamp, latestTimestamp)
     );
     if (invalidEvents) return invalidEvents;
     const invalidLogs = validateRows(frame.logs, `${label}.logs`, (row, rowLabel) =>
-      validateLog(row, rowLabel, limits, latestTimestamp)
+      validateLog(row, rowLabel, limits, earliestTimestamp, latestTimestamp)
     );
     if (invalidLogs) return invalidLogs;
   }
@@ -305,8 +307,10 @@ export function validateExperimentEvents(body, experiments) {
           const invalid = validateNonEmptyString(attrs[key], `${label}.${key}`);
           if (invalid) return invalid;
         }
-        const definition = byId.get(attrs.experiment);
-        if (!definition) return `${label}.experiment is unknown`;
+        if (!/^[0-9a-f]{64}$/.test(attrs.subject)) return `${label}.subject must be a 256-bit lowercase hex hash`;
+      const definition = byId.get(attrs.experiment);
+      if (!definition) return `${label}.experiment is unknown`;
+      if (!definition.enabled) return `${label}.experiment is disabled`;
         if (!roleSees(definition.roles, role)) return `${label}.experiment is not visible to client.role`;
         if (!definition.variants.some((variant) => variant.key === attrs.variant)) {
           return `${label}.variant is unknown`;
@@ -319,6 +323,7 @@ export function validateExperimentEvents(body, experiments) {
         const invalid = validateNonEmptyString(attrs[key], `${label}.${key}`);
         if (invalid) return invalid;
       }
+      if (!/^[0-9a-f]{64}$/.test(attrs.subject)) return `${label}.subject must be a 256-bit lowercase hex hash`;
       if (!Array.isArray(attrs.experiments) || attrs.experiments.length !== 1) {
         return `${label}.experiments must contain exactly one assignment`;
       }
@@ -339,6 +344,7 @@ export function validateExperimentEvents(body, experiments) {
       }
       const definition = byId.get(assignment.experiment);
       if (!definition) return `${label}.experiments[0].experiment is unknown`;
+      if (!definition.enabled) return `${label}.experiments[0].experiment is disabled`;
       if (!roleSees(definition.roles, role)) return `${label}.experiments[0].experiment is not visible to client.role`;
       if (definition.goalMetric !== attrs.metric) return `${label}.metric does not match experiment.goalMetric`;
       if (!definition.variants.some((variant) => variant.key === assignment.variant)) {

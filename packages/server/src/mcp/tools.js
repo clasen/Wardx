@@ -19,6 +19,14 @@ const ROLES = {
     'Role names that receive this key or assign this experiment. Use ["*"] for every role that syncs.'
 };
 
+const EXPECTED_VERSION = {
+  type: 'integer',
+  minimum: 0,
+  description: 'Current project config version required for optimistic concurrency.'
+};
+
+const REASON = { type: 'string', minLength: 1, description: 'Non-empty reason retained in the mutation journal.' };
+
 export const TOOL_DEFS = [
   {
     name: 'list_projects',
@@ -50,9 +58,11 @@ export const TOOL_DEFS = [
       type: 'object',
       properties: {
         project: PROJECT,
-        description: { type: 'string' }
+        description: { type: 'string' },
+        expectedVersion: EXPECTED_VERSION,
+        reason: REASON
       },
-      required: ['project', 'description'],
+      required: ['project', 'description', 'expectedVersion', 'reason'],
       additionalProperties: false
     }
   },
@@ -65,9 +75,11 @@ export const TOOL_DEFS = [
       properties: {
         project: PROJECT,
         role: ROLE,
-        description: { type: 'string', minLength: 1 }
+        description: { type: 'string', minLength: 1 },
+        expectedVersion: EXPECTED_VERSION,
+        reason: REASON
       },
-      required: ['project', 'role', 'description'],
+      required: ['project', 'role', 'description', 'expectedVersion', 'reason'],
       additionalProperties: false
     }
   },
@@ -89,9 +101,11 @@ export const TOOL_DEFS = [
           type: 'string',
           minLength: 1,
           description: 'Git remote URL for this role\'s source, when it is not a local checkout.'
-        }
+        },
+        expectedVersion: EXPECTED_VERSION,
+        reason: REASON
       },
-      required: ['project', 'role'],
+      required: ['project', 'role', 'expectedVersion', 'reason'],
       additionalProperties: false
     }
   },
@@ -104,9 +118,11 @@ export const TOOL_DEFS = [
       properties: {
         project: PROJECT,
         name: { type: 'string', minLength: 1 },
-        description: { type: 'string', minLength: 1 }
+        description: { type: 'string', minLength: 1 },
+        expectedVersion: EXPECTED_VERSION,
+        reason: REASON
       },
-      required: ['project', 'name', 'description'],
+      required: ['project', 'name', 'description', 'expectedVersion', 'reason'],
       additionalProperties: false
     }
   },
@@ -117,9 +133,11 @@ export const TOOL_DEFS = [
       type: 'object',
       properties: {
         project: PROJECT,
-        name: { type: 'string', minLength: 1 }
+        name: { type: 'string', minLength: 1 },
+        expectedVersion: EXPECTED_VERSION,
+        reason: REASON
       },
-      required: ['project', 'name'],
+      required: ['project', 'name', 'expectedVersion', 'reason'],
       additionalProperties: false
     }
   },
@@ -131,9 +149,11 @@ export const TOOL_DEFS = [
       type: 'object',
       properties: {
         project: PROJECT,
-        name: { type: 'string', minLength: 1, description: 'Exact log message to persist.' }
+        name: { type: 'string', minLength: 1, description: 'Exact log message to persist.' },
+        expectedVersion: EXPECTED_VERSION,
+        reason: REASON
       },
-      required: ['project', 'name'],
+      required: ['project', 'name', 'expectedVersion', 'reason'],
       additionalProperties: false
     }
   },
@@ -145,9 +165,11 @@ export const TOOL_DEFS = [
       type: 'object',
       properties: {
         project: PROJECT,
-        name: { type: 'string', minLength: 1 }
+        name: { type: 'string', minLength: 1 },
+        expectedVersion: EXPECTED_VERSION,
+        reason: REASON
       },
-      required: ['project', 'name'],
+      required: ['project', 'name', 'expectedVersion', 'reason'],
       additionalProperties: false
     }
   },
@@ -171,9 +193,11 @@ export const TOOL_DEFS = [
         project: PROJECT,
         key: { type: 'string', minLength: 1 },
         value: {},
-        roles: ROLES
+        roles: ROLES,
+        expectedVersion: EXPECTED_VERSION,
+        reason: REASON
       },
-      required: ['project', 'key', 'value', 'roles'],
+      required: ['project', 'key', 'value', 'roles', 'expectedVersion', 'reason'],
       additionalProperties: false
     }
   },
@@ -184,9 +208,11 @@ export const TOOL_DEFS = [
       type: 'object',
       properties: {
         project: PROJECT,
-        key: { type: 'string', minLength: 1 }
+        key: { type: 'string', minLength: 1 },
+        expectedVersion: EXPECTED_VERSION,
+        reason: REASON
       },
-      required: ['project', 'key'],
+      required: ['project', 'key', 'expectedVersion', 'reason'],
       additionalProperties: false
     }
   },
@@ -203,7 +229,7 @@ export const TOOL_DEFS = [
   {
     name: 'upsert_experiment',
     description:
-      'Propose or replace an experiment. experiment.roles lists which client roles assign it. variant.values may only contain Remote Config keys visible to those roles. Optional hypothesis stays on the server. For a closable test set goalKind, control, minExposures, and confidence. Bumps configVersion.',
+      'Propose or replace an experiment. experiment.roles lists which client roles assign it. variant.values may only contain Remote Config keys visible to those roles. Optional hypothesis stays on the server. A closable test declares the complete fixed-horizon plan and evidence-health thresholds before enablement. Bumps configVersion.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -223,23 +249,57 @@ export const TOOL_DEFS = [
               description: 'Exact experiment.goal metric name for this experiment.'
             },
             hypothesis: { type: 'string', minLength: 1 },
-            goalKind: {
+            assignmentUnitKind: {
+              type: 'string',
+              minLength: 1,
+              description: 'Stable deduplication unit kind, for example account or session.'
+            },
+            outcomeKind: {
               type: 'string',
               enum: ['conversion', 'mean'],
               description: 'conversion compares goals/exposures. mean compares goalMean. Required to ship.'
             },
             control: { type: 'string', minLength: 1, description: 'Baseline variant key. Required to ship.' },
-            minExposures: {
+            targetSampleSizePerVariant: {
               type: 'integer',
               minimum: 1,
-              description:
-                'Minimum exposures (conversion) or goals (mean) per variant before a winner can be declared. No implicit default.'
+              description: 'Fixed sample horizon per variant.'
             },
-            confidence: {
+            earliestAnalysisAt: { type: 'integer', minimum: 0 },
+            familyWiseAlpha: {
               type: 'number',
               exclusiveMinimum: 0,
               exclusiveMaximum: 1,
-              description: 'Confidence for the lift interval, exclusive of 0 and 1. Required to ship.'
+              description: 'Pre-registered family-wise alpha.'
+            },
+            minimumEffect: { type: 'number', minimum: 0 },
+            direction: { type: 'string', enum: ['increase', 'decrease', 'two-sided'] },
+            terminalRetentionMs: { type: 'integer', minimum: 1 },
+            healthThresholds: {
+              type: 'object',
+              properties: {
+                maxDroppedFrames: { type: 'integer', minimum: 0 },
+                maxDuplicateExposures: { type: 'integer', minimum: 0 },
+                maxDuplicateGoals: { type: 'integer', minimum: 0 },
+                maxConflictingGoals: { type: 'integer', minimum: 0 },
+                maxVariantConflicts: { type: 'integer', minimum: 0 },
+                maxUntrustedRows: { type: 'integer', minimum: 0 },
+                maxLateRows: { type: 'integer', minimum: 0 },
+                maxMissingExposures: { type: 'integer', minimum: 0 },
+                maxImplicitExposures: { type: 'integer', minimum: 0 }
+              },
+              required: [
+                'maxDroppedFrames',
+                'maxDuplicateExposures',
+                'maxDuplicateGoals',
+                'maxConflictingGoals',
+                'maxVariantConflicts',
+                'maxUntrustedRows',
+                'maxLateRows',
+                'maxMissingExposures',
+                'maxImplicitExposures'
+              ],
+              additionalProperties: false
             },
             variants: {
               type: 'array',
@@ -256,11 +316,23 @@ export const TOOL_DEFS = [
               }
             }
           },
-          required: ['id', 'enabled', 'allocation', 'salt', 'roles', 'goalMetric', 'variants'],
+          required: [
+            'id',
+            'enabled',
+            'allocation',
+            'salt',
+            'roles',
+            'goalMetric',
+            'assignmentUnitKind',
+            'terminalRetentionMs',
+            'variants'
+          ],
           additionalProperties: false
-        }
+        },
+        expectedVersion: EXPECTED_VERSION,
+        reason: REASON
       },
-      required: ['project', 'experiment'],
+      required: ['project', 'experiment', 'expectedVersion', 'reason'],
       additionalProperties: false
     }
   },
@@ -273,9 +345,11 @@ export const TOOL_DEFS = [
       properties: {
         project: PROJECT,
         id: { type: 'string', minLength: 1 },
-        enabled: { type: 'boolean' }
+        enabled: { type: 'boolean' },
+        expectedVersion: EXPECTED_VERSION,
+        reason: REASON
       },
-      required: ['project', 'id', 'enabled'],
+      required: ['project', 'id', 'enabled', 'expectedVersion', 'reason'],
       additionalProperties: false
     }
   },
@@ -288,9 +362,11 @@ export const TOOL_DEFS = [
       properties: {
         project: PROJECT,
         experimentId: { type: 'string', minLength: 1 },
-        variant: { type: 'string', minLength: 1, description: 'Must be the winning variant. Omit to ship leadingVariant.' }
+        variant: { type: 'string', minLength: 1, description: 'Must be the winning variant. Omit to ship leadingVariant.' },
+        expectedVersion: EXPECTED_VERSION,
+        reason: REASON
       },
-      required: ['project', 'experimentId'],
+      required: ['project', 'experimentId', 'expectedVersion', 'reason'],
       additionalProperties: false
     }
   },
@@ -308,6 +384,54 @@ export const TOOL_DEFS = [
         role: ROLE
       },
       required: ['project'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'get_aggregate_history',
+    description: 'Read bounded closed hourly or daily aggregate history with completeness metadata.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: PROJECT,
+        tier: { type: 'string', enum: ['hour', 'day'] },
+        from: { type: 'integer' },
+        to: { type: 'integer' },
+        role: ROLE,
+        environment: { type: 'string', minLength: 1 },
+        appVersion: { type: 'string', minLength: 1 },
+        names: { type: 'array', items: { type: 'string', minLength: 1 } }
+      },
+      required: ['project', 'tier', 'from', 'to'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'list_config_changes',
+    description: 'List the bounded durable Remote Config mutation journal.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: PROJECT,
+        after: { type: 'integer', minimum: 0 },
+        limit: { type: 'integer', minimum: 1 }
+      },
+      required: ['project'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'rollback_config_change',
+    description: 'Apply the inverse of one retained change as a new version and journal entry.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: PROJECT,
+        changeId: { type: 'string', minLength: 1 },
+        expectedVersion: EXPECTED_VERSION,
+        reason: REASON
+      },
+      required: ['project', 'changeId', 'expectedVersion', 'reason'],
       additionalProperties: false
     }
   },
@@ -336,7 +460,7 @@ export const TOOL_DEFS = [
   {
     name: 'analyze_experiment',
     description:
-      'Experiment definition, lifetime exposure/goal stats by variant (goalSum, goalSumSq, goalMean, rate), primaryMetric fleet total, and decision. decision.status is collecting, winner, no_difference, cannot_decide, or shipped. Do not call a variant the winner unless status is winner or shipped. For conversion compare rate (goals/exposures). For mean compare goalMean. primaryMetric.total is not split by variant.',
+      'Experiment definition, trusted decision samples, all telemetry samples with source/trust provenance, evidence health, primaryMetric fleet total, and the persisted fixed-horizon decision. Do not call a variant the winner unless status is winner or shipped.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -350,37 +474,42 @@ export const TOOL_DEFS = [
 ];
 
 export function executeTool(control, name, args = {}) {
+  const mutation = {
+    expectedVersion: args.expectedVersion,
+    reason: args.reason,
+    clientIdentity: args.clientIdentity
+  };
   switch (name) {
     case 'list_projects':
       return { projects: control.listProjects() };
     case 'get_project_overview':
       return control.getOverview(args.project, args.limit);
     case 'set_project_description':
-      return control.setProjectDescription(args.project, args.description);
+      return control.setProjectDescription(args.project, args.description, mutation);
     case 'set_role_description':
-      return control.setRoleDescription(args.project, args.role, args.description);
+      return control.setRoleDescription(args.project, args.role, args.description, mutation);
     case 'set_role_source':
-      return control.setRoleSource(args.project, args.role, { path: args.path, git: args.git });
+      return control.setRoleSource(args.project, args.role, { path: args.path, git: args.git }, mutation);
     case 'set_signal':
-      return control.setSignal(args.project, args.name, args.description);
+      return control.setSignal(args.project, args.name, args.description, mutation);
     case 'delete_signal':
-      return control.deleteSignal(args.project, args.name);
+      return control.deleteSignal(args.project, args.name, mutation);
     case 'set_persist_log':
-      return control.setPersistLog(args.project, args.name);
+      return control.setPersistLog(args.project, args.name, mutation);
     case 'delete_persist_log':
-      return control.deletePersistLog(args.project, args.name);
+      return control.deletePersistLog(args.project, args.name, mutation);
     case 'get_config':
       return control.getConfig(args.project);
     case 'set_config_value':
-      return control.setValue(args.project, args.key, args.value, args.roles);
+      return control.setValue(args.project, args.key, args.value, args.roles, mutation);
     case 'delete_config_value':
-      return control.deleteValue(args.project, args.key);
+      return control.deleteValue(args.project, args.key, mutation);
     case 'list_experiments':
       return { experiments: control.listExperiments(args.project) };
     case 'upsert_experiment':
-      return control.upsertExperiment(args.project, args.experiment);
+      return control.upsertExperiment(args.project, args.experiment, mutation);
     case 'set_experiment_enabled':
-      return control.setExperimentEnabled(args.project, args.id, args.enabled);
+      return control.setExperimentEnabled(args.project, args.id, args.enabled, mutation);
     case 'get_aggregates':
       return {
         windows: control.aggregates(args.project, {
@@ -400,10 +529,24 @@ export function executeTool(control, name, args = {}) {
           limit: args.limit
         })
       };
+    case 'get_aggregate_history':
+      return control.aggregateHistory(args.project, {
+        tier: args.tier,
+        from: args.from,
+        to: args.to,
+        role: args.role,
+        environment: args.environment,
+        appVersion: args.appVersion,
+        names: args.names
+      });
+    case 'list_config_changes':
+      return control.listConfigChanges(args.project, { after: args.after, limit: args.limit });
+    case 'rollback_config_change':
+      return control.rollbackConfigChange(args.project, args.changeId, mutation);
     case 'analyze_experiment':
       return control.analyzeExperiment(args.project, args.experimentId);
     case 'ship_experiment':
-      return control.shipExperiment(args.project, args.experimentId, args.variant);
+      return control.shipExperiment(args.project, args.experimentId, args.variant, mutation);
     default:
       throw new Error(`unknown tool: ${name}`);
   }

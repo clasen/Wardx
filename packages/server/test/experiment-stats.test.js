@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -15,6 +15,8 @@ const DELAY_EXPERIMENT = {
   salt: 'delay-salt',
   primaryMetric: 'message.sent',
   goalMetric: 'message.sent',
+  assignmentUnitKind: 'subject',
+  terminalRetentionMs: 604800000,
   roles: ['client'],
   variants: [
     { key: 'control', weight: 50, values: { 'message.delayMs': 1000 } },
@@ -49,13 +51,13 @@ function experimentEnvelope(now = Date.now()) {
         to: now + 1,
         metrics: { counters: [], gauges: [], histograms: [] },
         events: [
-          [now, 'experiment.exposure', { experiment: 'delay', variant: 'fast', subject: 'subject-hash' }],
+          [now, 'experiment.exposure', { experiment: 'delay', variant: 'fast', subject: 'ab'.repeat(32) }],
           [
             now,
             'experiment.goal',
             {
               metric: 'message.sent',
-              subject: 'subject-hash',
+              subject: 'ab'.repeat(32),
               experiments: [{ experiment: 'delay', variant: 'fast' }],
               value: 4
             }
@@ -88,7 +90,7 @@ test('loadExperimentStats returns empty when the sidecar is missing', () => {
   }
 });
 
-test('experiment lifetime stats persist across ingest server restarts', async () => {
+test('experiment lifetime stats persist in SQLite across ingest server restarts', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'wardx-'));
   const path = join(dir, 'server.json');
   writeFileSync(path, `${JSON.stringify(experimentServerConfig({ port: 0 }), null, 2)}\n`);
@@ -106,15 +108,13 @@ test('experiment lifetime stats persist across ingest server restarts', async ()
       });
       assert.equal(res.status, 200);
       await server.wardx.persistence.flush();
-      const saved = JSON.parse(readFileSync(experimentStatsPath(path), 'utf8'));
-      assert.equal(saved.projects.demo.delay.fast.exposures, 1);
-      assert.equal(saved.projects.demo.delay.fast.goals, 1);
-      assert.equal(saved.projects.demo.delay.fast.goalSum, 4);
-      assert.equal(saved.projects.demo.delay.fast.goalSumSq, 16);
+      assert.equal(existsSync(experimentStatsPath(path)), false);
     });
     const second = loadServerConfig(path);
     const restarted = createIngestServer(second);
-    const row = restarted.wardx.control.analyzeExperiment('demo', 'delay').variants.find((item) => item.key === 'fast');
+    const row = restarted.wardx.control
+      .analyzeExperiment('demo', 'delay')
+      .telemetryVariants.find((item) => item.key === 'fast');
     assert.equal(row.exposures, 1);
     assert.equal(row.goals, 1);
     assert.equal(row.goalSum, 4);
@@ -147,13 +147,15 @@ test('metric-only sync does not create an experiment-stats sidecar', async () =>
   }
 });
 
-test('createIngestServer rejects a corrupt experiment-stats sidecar', () => {
+test('createIngestServer ignores obsolete experiment-stats sidecars', () => {
   const dir = mkdtempSync(join(tmpdir(), 'wardx-'));
   const path = join(dir, 'server.json');
   writeFileSync(path, `${JSON.stringify(testServerConfig({ port: 0 }), null, 2)}\n`);
   writeFileSync(experimentStatsPath(path), `${JSON.stringify({ nope: true })}\n`);
   try {
-    assert.throws(() => createIngestServer(loadServerConfig(path)), /unknown key: nope/);
+    const server = createIngestServer(loadServerConfig(path));
+    assert.deepEqual(server.wardx.control.analyzeExperiment('demo', 'missing').telemetryVariants, []);
+    server.wardx.stateStore.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

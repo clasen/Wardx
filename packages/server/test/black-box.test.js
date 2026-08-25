@@ -8,14 +8,31 @@ import { gzipSync } from 'node:zlib';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { createWardx } from 'wardx';
+import { testServerConfig } from './helpers.js';
 
 const CLI_PATH = fileURLToPath(new URL('../src/cli.js', import.meta.url));
 
 function serverConfig() {
   return {
+    ...testServerConfig(),
     host: '127.0.0.1',
     port: 0,
-    projectKeys: { 'black-box-key': 'demo' },
+    credentials: {
+      'black-box-key': {
+        label: 'black-box-client',
+        project: 'demo',
+        allowedRoles: ['client', 'frontend', 'backend'],
+        trustedForDecisions: false,
+        enabled: true
+      },
+      'trusted-key': {
+        label: 'black-box-backend-verifier',
+        project: 'demo',
+        allowedRoles: ['trusted'],
+        trustedForDecisions: true,
+        enabled: true
+      }
+    },
     sink: 'null',
     maxRequestBytes: 2097152,
     maxClockSkewMs: 300000,
@@ -33,6 +50,12 @@ function serverConfig() {
     memorySinkMaxEnvelopes: 100,
     recentClientsMax: 20,
     recentLogsMax: 20,
+    history: {
+      ...testServerConfig().history,
+      clockSkewAllowanceMs: 1,
+      maxAcceptedPastAgeMs: 604800000,
+      compactionIntervalMs: 10
+    },
     projects: {
       demo: {
         version: 1,
@@ -42,7 +65,7 @@ function serverConfig() {
           'shared.multiplier': 1
         },
         keyRoles: {
-          'frontend.banner': ['frontend'],
+          'frontend.banner': ['frontend', 'trusted'],
           'backend.timeoutMs': ['backend'],
           'shared.multiplier': ['*']
         },
@@ -139,7 +162,8 @@ async function rawSync(endpoint, body, options = {}) {
 test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow work end to end', { timeout: 30_000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'wardx-black-box-'));
   const configPath = join(directory, 'wardx-server.json');
-  await writeFile(configPath, JSON.stringify(serverConfig()), 'utf8');
+  const initialConfig = serverConfig();
+  await writeFile(configPath, JSON.stringify(initialConfig), 'utf8');
 
   const transport = new StdioClientTransport({
     command: process.execPath,
@@ -317,7 +341,12 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
     assert.equal(backend.config.get('frontend.banner', 'hidden'), 'hidden');
     assert.equal(backend.config.get('shared.multiplier', null), 1);
 
-    await callTool(client, 'set_persist_log', { project: 'demo', name: 'checkout_failed' });
+    await callTool(client, 'set_persist_log', {
+      project: 'demo',
+      name: 'checkout_failed',
+      expectedVersion: 1,
+      reason: 'retain checkout failure rollups'
+    });
     frontend.counter('checkout.completed', { channel: 'store' }).inc();
     frontend.log.error('checkout_failed', { code: 'timeout' });
     await frontend.flush();
@@ -345,9 +374,11 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
       project: 'demo',
       key: 'frontend.banner',
       value: 'updated',
-      roles: ['frontend']
+      roles: ['frontend', 'trusted'],
+      expectedVersion: 2,
+      reason: 'verify durable Remote Config mutation'
     });
-    assert.equal(update.version, 2);
+    assert.equal(update.version, 3);
     await frontend.flush();
     assert.equal(frontend.config.get('frontend.banner', null), 'updated');
 
@@ -356,46 +387,121 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
       enabled: true,
       allocation: 1,
       salt: 'banner-v1-salt',
-      roles: ['frontend'],
+      roles: ['frontend', 'trusted'],
       primaryMetric: 'checkout.completed',
       goalMetric: 'checkout.completed',
-      goalKind: 'conversion',
-      control: 'winner',
-      minExposures: 1,
-      confidence: 0.95,
+      assignmentUnitKind: 'subject',
+      terminalRetentionMs: 604800000,
+      outcomeKind: 'conversion',
+      control: 'control',
+      targetSampleSizePerVariant: 10,
+      earliestAnalysisAt: 0,
+      familyWiseAlpha: 0.05,
+      minimumEffect: 0,
+      direction: 'increase',
+      healthThresholds: {
+        maxDroppedFrames: 0,
+        maxDuplicateExposures: 0,
+        maxDuplicateGoals: 0,
+        maxConflictingGoals: 0,
+        maxVariantConflicts: 0,
+        maxUntrustedRows: 10,
+        maxLateRows: 0,
+        maxMissingExposures: 0,
+        maxImplicitExposures: 0
+      },
       hypothesis: 'The declared banner increases completed checkouts.',
-      variants: [{ key: 'winner', weight: 1, values: { 'frontend.banner': 'experiment-winner' } }]
+      variants: [
+        { key: 'control', weight: 1, values: { 'frontend.banner': 'updated' } },
+        { key: 'winner', weight: 1, values: { 'frontend.banner': 'experiment-winner' } }
+      ]
     };
-    const proposed = await callTool(client, 'upsert_experiment', { project: 'demo', experiment });
-    assert.equal(proposed.version, 3);
+    const proposed = await callTool(client, 'upsert_experiment', {
+      project: 'demo',
+      experiment,
+      expectedVersion: 3,
+      reason: 'test trusted fixed-horizon experiment flow'
+    });
+    assert.equal(proposed.version, 4);
     await frontend.flush();
     const rawSubject = 'account-raw-subject-must-not-leak';
     frontend.identify(rawSubject);
-    assert.equal(frontend.config.get('frontend.banner', null), 'experiment-winner');
-    assert.equal(frontend.config.get('frontend.banner', null), 'experiment-winner');
     frontend.experiment.goal('checkout.completed');
     await frontend.flush();
+
+    const evidenceEvents = [];
+    for (let i = 0; i < 10; i++) {
+      const controlHash = `1${i.toString(16).padStart(63, '0')}`;
+      const winnerHash = `2${i.toString(16).padStart(63, '0')}`;
+      evidenceEvents.push([Date.now(), 'experiment.exposure', {
+        experiment: 'banner-v1', variant: 'control', subject: controlHash
+      }]);
+      evidenceEvents.push([Date.now(), 'experiment.exposure', {
+        experiment: 'banner-v1', variant: 'winner', subject: winnerHash
+      }]);
+      evidenceEvents.push([Date.now(), 'experiment.goal', {
+        metric: 'checkout.completed',
+        subject: winnerHash,
+        experiments: [{ experiment: 'banner-v1', variant: 'winner' }],
+        value: 1
+      }]);
+    }
+    const trustedEvidence = await rawSync(endpoint, wireEnvelope({
+      client: { role: 'trusted', instanceId: 'trusted-verifier' },
+      frames: [{
+        seq: 1,
+        from: Date.now() - 1,
+        to: Date.now(),
+        metrics: { counters: [], gauges: [], histograms: [] },
+        events: evidenceEvents,
+        logs: []
+      }]
+    }), { key: 'trusted-key' });
+    assert.equal(trustedEvidence.status, 200);
 
     const analysis = await callTool(client, 'analyze_experiment', {
       project: 'demo',
       experimentId: 'banner-v1'
     });
-    assert.equal(analysis.variants[0].exposures, 1);
-    assert.equal(analysis.variants[0].goals, 1);
+    const winnerEvidence = analysis.variants.find((row) => row.key === 'winner');
+    assert.equal(winnerEvidence.exposures, 10);
+    assert.equal(winnerEvidence.goals, 10);
     assert.equal(analysis.decision.status, 'winner');
     assert.equal(analysis.decision.leadingVariant, 'winner');
     assert.equal(JSON.stringify(analysis).includes(rawSubject), false);
     const shipped = await callTool(client, 'ship_experiment', {
       project: 'demo',
-      experimentId: 'banner-v1'
+      experimentId: 'banner-v1',
+      expectedVersion: 4,
+      reason: 'ship persisted healthy winner'
     });
     assert.equal(shipped.shippedVariant, 'winner');
-    assert.equal(shipped.version, 4);
+    assert.equal(shipped.version, 5);
+
+    const currentDay = Math.floor(Date.now() / 86_400_000) * 86_400_000;
+    for (const [daysAgo, value] of [[2, 2], [1, 3]]) {
+      const timestamp = currentDay - daysAgo * 86_400_000 + 1000;
+      const historical = await rawSync(endpoint, wireEnvelope({
+        client: { role: 'frontend', instanceId: `history-${daysAgo}` },
+        frames: [{
+          seq: 1,
+          from: timestamp,
+          to: timestamp + 1,
+          metrics: { counters: [['historical.orders', null, value]], gauges: [], histograms: [] },
+          events: [],
+          logs: []
+        }]
+      }));
+      assert.equal(historical.status, 200);
+    }
 
     await Promise.all([frontend.shutdown(), backend.shutdown()]);
     frontend = undefined;
     backend = undefined;
     await client.close();
+
+    initialConfig.history.maxAcceptedPastAgeMs = 1;
+    await writeFile(configPath, JSON.stringify(initialConfig), 'utf8');
 
     const restartedTransport = new StdioClientTransport({
       command: process.execPath,
@@ -410,27 +516,49 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
     const restartedClient = new Client({ name: 'wardx-black-box-restart-test', version: '1.0.0' });
     try {
       await Promise.all([restartedClient.connect(restartedTransport), restartedPort]);
+      await new Promise((resolve) => setTimeout(resolve, 300));
       const persistedConfig = await callTool(restartedClient, 'get_config', { project: 'demo' });
-      assert.equal(persistedConfig.version, 4);
+      assert.equal(persistedConfig.version, 5);
       assert.equal(persistedConfig.values['frontend.banner'], 'experiment-winner');
       assert.equal(persistedConfig.experiments[0].enabled, false);
       const persistedExperiment = await callTool(restartedClient, 'analyze_experiment', {
         project: 'demo',
         experimentId: 'banner-v1'
       });
-      assert.equal(persistedExperiment.variants[0].exposures, 1);
-      assert.equal(persistedExperiment.variants[0].goals, 1);
+      const persistedWinner = persistedExperiment.variants.find((row) => row.key === 'winner');
+      assert.equal(persistedWinner.exposures, 10);
+      assert.equal(persistedWinner.goals, 10);
       assert.equal(persistedExperiment.decision.status, 'shipped');
-      const persistedAggregates = await callTool(restartedClient, 'get_aggregates', { project: 'demo' });
-      assert.ok(persistedAggregates.windows.length >= 1);
+      const persistedHistory = await callTool(restartedClient, 'get_aggregate_history', {
+        project: 'demo',
+        tier: 'day',
+        from: currentDay - 2 * 86_400_000,
+        to: currentDay,
+        role: 'frontend',
+        names: ['historical.orders']
+      });
+      assert.equal(persistedHistory.buckets.length, 2);
+      assert.deepEqual(
+        persistedHistory.buckets.map((bucket) => bucket.rows[0].value),
+        [2, 3]
+      );
+      assert.equal(persistedHistory.completeness.allFinalized, true);
       const overview = await callTool(restartedClient, 'get_project_overview', { project: 'demo' });
       assert.deepEqual(overview.persistLogs, ['checkout_failed']);
-      assert.ok(
-        overview.roles.frontend.outcomes.some(
-          (row) => row.kind === 'log' && row.name === 'checkout_failed' && row.count === 1
-        )
-      );
       assert.deepEqual((await callTool(restartedClient, 'get_recent_logs', { project: 'demo' })).logs, []);
+      const changes = await callTool(restartedClient, 'list_config_changes', { project: 'demo' });
+      const shippedChange = changes.changes.find((change) => change.operation === 'ship_experiment');
+      assert.ok(shippedChange);
+      const rollback = await callTool(restartedClient, 'rollback_config_change', {
+        project: 'demo',
+        changeId: shippedChange.id,
+        expectedVersion: 5,
+        reason: 'black-box rollback verification'
+      });
+      assert.equal(rollback.version, 6);
+      const rolledBackConfig = await callTool(restartedClient, 'get_config', { project: 'demo' });
+      assert.equal(rolledBackConfig.values['frontend.banner'], 'updated');
+      assert.equal(rolledBackConfig.experiments[0].enabled, true);
     } finally {
       await restartedClient.close().catch(() => {});
     }

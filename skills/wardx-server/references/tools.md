@@ -1,87 +1,76 @@
 # Wardx MCP tools
 
-All tools except `list_projects` require `project`: the project **name** from `list_projects`, not the ingest key.
+All tools except `list_projects` take the project name from that tool. Every
+mutation also takes integer `expectedVersion >= 0` and non-empty `reason`.
 
-Resource `wardx://project/{name}` returns the same JSON as `get_project_overview`.
+## Read
 
-## Catalog (no `configVersion` bump)
+| Tool | Main arguments |
+| --- | --- |
+| `list_projects` | none |
+| `get_project_overview` | `project`, optional `limit` |
+| `get_config` | `project` |
+| `get_aggregates` | `project`; optional `names`, `from`, `to`, `role` |
+| `get_aggregate_history` | `project`, `tier: hour|day`, bounded `from`, `to`; optional `role`, `environment`, `appVersion`, `names` |
+| `get_recent_logs` | `project`; optional `level`, exact `message`, exact `attrs`, `role`, `limit` |
+| `list_experiments` | `project` |
+| `analyze_experiment` | `project`, `experimentId` |
+| `list_config_changes` | `project`; optional `after`, `limit` |
 
-| Tool | Arguments | Returns |
-| --- | --- | --- |
-| `list_projects` | _(none)_ | `{ projects: string[] }` |
-| `get_project_overview` | `project`, optional `limit` (max counters, events, histograms, and persist logs per role, highest first) | description, `onboarding`, `knobs`, `persistLogs`, `roles` (outcomes + clients, optional `path`/`git`), `experiments`, `version`. Histogram outcomes are ranked by `max` and include `exemplar` when the peak had attrs. Persist log outcomes are `kind: "log"` with lifetime `count` and last `exemplar`. |
-| `set_project_description` | `project`, `description` | `{ project }` |
-| `set_role_description` | `project`, `role`, `description` | `{ project, role }` |
-| `set_role_source` | `project`, `role`, and `path` and/or `git` | `{ project, role }` |
-| `set_signal` | `project`, `name`, `description` | `{ project, name }` |
-| `delete_signal` | `project`, `name` | `{ project, name }` |
-| `set_persist_log` | `project`, `name` (exact log message) | `{ project, name }` |
-| `delete_persist_log` | `project`, `name` | `{ project, name }` |
+`get_aggregate_history` returns bucket rows plus finalization, drop count, and
+newest compacted source watermark. `analyze_experiment.variants` contains
+trusted decision rows; `telemetryVariants` includes all source/trust classes.
 
-`role` is an open client role name. It cannot be `*`.
+## Mutate
 
-## Remote Config and experiments (bumps `configVersion`)
+| Tool | Additional arguments |
+| --- | --- |
+| `set_project_description` | `description` |
+| `set_role_description` | `role`, `description` |
+| `set_role_source` | `role`, `path` and/or `git` |
+| `set_signal` / `delete_signal` | `name`, plus `description` for set |
+| `set_persist_log` / `delete_persist_log` | exact `name` |
+| `set_config_value` | `key`, JSON `value`, `roles` |
+| `delete_config_value` | `key` |
+| `upsert_experiment` | `experiment` |
+| `set_experiment_enabled` | `id`, `enabled` |
+| `ship_experiment` | `experimentId`, optional matching `variant` |
+| `rollback_config_change` | retained `changeId` |
 
-| Tool | Arguments | Returns |
-| --- | --- | --- |
-| `get_config` | `project` | `{ version, values, experiments }` |
-| `set_config_value` | `project`, `key`, `value`, `roles` | `{ version }` |
-| `delete_config_value` | `project`, `key` | `{ version }` |
-| `list_experiments` | `project` | `{ experiments }` including `hypothesis` when set |
-| `upsert_experiment` | `project`, `experiment` | `{ version }` |
-| `set_experiment_enabled` | `project`, `id`, `enabled` | `{ version }` |
-| `ship_experiment` | `project`, `experimentId`, optional `variant` | `{ version, shippedVariant }` |
-
-`roles` is `["*"]` or a list of role names. Do not mix `*` with named roles.
-
-`experiment` object:
+`roles` is `['*']` or one or more named roles. A fixed-horizon experiment has
+this server-side shape in addition to id/allocation/salt/roles/variants:
 
 ```json
 {
-  "id": "message-delay-v1",
-  "enabled": true,
-  "allocation": 1,
-  "salt": "3ad8f9",
-  "primaryMetric": "message.sent",
-  "goalMetric": "message.sent",
-  "roles": ["client"],
-  "hypothesis": "Shorter delay increases messages sent",
-  "goalKind": "conversion",
+  "goalMetric": "checkout.completed",
+  "assignmentUnitKind": "session",
+  "outcomeKind": "conversion",
   "control": "control",
-  "minExposures": 50,
-  "confidence": 0.95,
-  "variants": [
-    { "key": "control", "weight": 50, "values": { "message.delayMs": 1000 } },
-    { "key": "fast", "weight": 50, "values": { "message.delayMs": 400 } }
-  ]
+  "targetSampleSizePerVariant": 500,
+  "earliestAnalysisAt": 1787875200000,
+  "familyWiseAlpha": 0.05,
+  "minimumEffect": 0.02,
+  "direction": "increase",
+  "terminalRetentionMs": 604800000,
+  "healthThresholds": {
+    "maxDroppedFrames": 0,
+    "maxDuplicateExposures": 10,
+    "maxDuplicateGoals": 10,
+    "maxConflictingGoals": 0,
+    "maxVariantConflicts": 0,
+    "maxUntrustedRows": 1000,
+    "maxLateRows": 0,
+    "maxMissingExposures": 0,
+    "maxImplicitExposures": 0
+  }
 }
 ```
 
-Required: `id`, `enabled`, `allocation` ∈ [0, 1], `salt`, `goalMetric`, `roles`, `variants` (non-empty; weights sum to > 0). Optional: `primaryMetric`, `hypothesis`, `goalKind` (`conversion` | `mean`), `control`, `minExposures`, `confidence`. `hypothesis` and the close-policy fields are stripped before the snapshot goes to clients. A closable test needs all four policy fields; there is no implicit `minExposures` or `confidence`. Only a goal whose name equals `goalMetric` attaches to the experiment; there is no compatibility fallback. `ship_experiment` refuses unless `analyze_experiment.decision.status` is `winner` (or already shipped that variant).
+All fixed-horizon fields are all-or-none. `hypothesis` is optional and MCP-only.
+Analysis policy, roles, retention, and shipped metadata stay off the client
+wire. A descriptive experiment still requires `assignmentUnitKind` and
+`terminalRetentionMs` but omits every fixed-horizon field.
 
-Keep `salt` when replacing the same `id`. Assignment is client-side and deterministic (`experimentId + subjectId + salt`). The server does not map users. Clients `identify()` or pass `subjectId` on `config.get` / `experiment.goal`; no subject and that read is Remote Config with no exposure.
-
-## Telemetry (read-only)
-
-| Tool | Arguments | Returns |
-| --- | --- | --- |
-| `get_aggregates` | `project`, optional `names[]`, `from`, `to`, `role` | `{ windows }` with catalog legends on names. Histogram bodies include `max` and optional `exemplar`. Allowlisted logs appear as `logNames` (`count` + last `exemplar`). |
-| `get_recent_logs` | `project`, optional `level` (`debug`\|`info`\|`warn`\|`error`), `message` (exact), `attrs` (exact match on listed keys), `role`, `limit` | `{ logs }` newest first |
-| `analyze_experiment` | `project`, `experimentId` | definition + hypothesis, lifetime `variants[]` with `exposures`/`goals`/`goalSum`/`goalSumSq`/`goalMean`/`rate`, `decision`, optional `primaryMetric` fleet total |
-
-Undescribed names include `{ undescribed: true }` instead of `{ description }`.
-
-## Common errors
-
-| Message | Cause |
-| --- | --- |
-| `unknown project: …` | Name not in `list_projects` |
-| `unknown config key: …` | Delete or experiment on a key that is not in `values` |
-| `config key … is not visible to role …` | Experiment roles cannot see that key |
-| `config key … is not visible to all roles` | Experiment `roles: ["*"]` but the key is not `["*"]` |
-| `unknown experiment: …` | `set_experiment_enabled` / analyze / ship on a missing id |
-| `experiment … is not ready to ship` | `ship_experiment` while `decision.status` is not `winner` |
-| `unknown signal: …` | `delete_signal` on a name not in the catalog |
-| `unknown persist log: …` | `delete_persist_log` on a name not in `persistLogs` |
-| `path or git is required` | `set_role_source` with neither field |
-| `role cannot be *` | `*` is only valid inside a `roles` array as the sole entry |
+Common errors include `version conflict: current version is N`, role/key
+visibility failures, immutable-plan failures after trusted exposure, and
+`persisted healthy terminal winner required` on premature shipping.
