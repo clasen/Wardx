@@ -10,7 +10,8 @@ The same channel that carries the data up carries the configuration back down, s
                          AGENT
                   arisa.sh / Codex / Claude
                              │
-                    MCP stdio
+             MCP stdio or Streamable HTTP
+                  over an SSH tunnel
                     tools + wardx://project/{name}
                              ▼
 ┌─────────────────────────────────────────────────────┐
@@ -42,7 +43,11 @@ The same channel that carries the data up carries the configuration back down, s
    metrics / config.get              same /v1/sync
 ```
 
-HTTP is the client path. Control, analysis, and visualization use MCP on the same process. There is no admin HTTP API. The project key authenticates a project; client-selected roles only route and separate data inside it and are not an authorization boundary.
+HTTP sync is the client path. Control, analysis, and visualization use MCP on
+the same process, either over stdio or an optional loopback-only Streamable HTTP
+listener reached through an SSH tunnel. There is no admin REST API. The project
+key authenticates a project; client-selected roles only route and separate data
+inside it and are not an authorization boundary.
 
 ## Packages
 

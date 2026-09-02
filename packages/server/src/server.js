@@ -14,6 +14,7 @@ import { dirname, isAbsolute, resolve } from 'node:path';
 import { SqliteStateStore } from './storage/SqliteStateStore.js';
 import { ExperimentLedger } from './storage/ExperimentLedger.js';
 import { normalizeCatalog } from './control/catalog.js';
+import { createConfiguredMcpHttpServer } from './mcp/http.js';
 
 function createSink(config) {
   if (config.sink === 'null') return new NullSink();
@@ -207,6 +208,30 @@ export function listen(server, port, host) {
 export async function startServer(config, options = {}) {
   const server = createIngestServer(config, options);
   const address = await listen(server, config.port, config.host);
+  let mcpAddress = null;
+  if (server.wardx.config.mcpHttp.enabled) {
+    let mcpServer;
+    try {
+      mcpServer = createConfiguredMcpHttpServer(server.wardx.control, server.wardx.config.mcpHttp);
+      mcpAddress = await listen(
+        mcpServer,
+        server.wardx.config.mcpHttp.port,
+        server.wardx.config.mcpHttp.host
+      );
+    } catch (error) {
+      await server.wardx.stop();
+      throw error;
+    }
+    const stopIngest = server.wardx.stop;
+    let stopPromise = null;
+    server.wardx.mcpHttp = mcpServer.wardxMcp;
+    server.wardx.stop = () => {
+      if (!stopPromise) {
+        stopPromise = mcpServer.wardxMcp.stop().then(stopIngest);
+      }
+      return stopPromise;
+    };
+  }
   const stop = async (code) => {
     try {
       await server.wardx.stop();
@@ -218,7 +243,7 @@ export async function startServer(config, options = {}) {
   };
   process.once('SIGINT', () => stop(130));
   process.once('SIGTERM', () => stop(143));
-  return { server, address, config };
+  return { server, address, mcpAddress, config };
 }
 
 export { loadServerConfig, validateServerConfig, ControlService };

@@ -7,10 +7,12 @@ import { test } from 'node:test';
 import { gzipSync } from 'node:zlib';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createWardx } from 'wardx';
 import { testServerConfig } from './helpers.js';
 
 const CLI_PATH = fileURLToPath(new URL('../src/cli.js', import.meta.url));
+const MCP_HTTP_TOKEN = 'wardx-black-box-mcp-token-at-least-32-bytes';
 
 function serverConfig() {
   return {
@@ -56,6 +58,17 @@ function serverConfig() {
       maxAcceptedPastAgeMs: 604800000,
       compactionIntervalMs: 10
     },
+    mcpHttp: {
+      enabled: true,
+      host: '127.0.0.1',
+      port: 0,
+      path: '/mcp',
+      bearerTokenEnvironmentVariable: 'WARDX_BLACK_BOX_MCP_TOKEN',
+      maxRequestBytes: 65536,
+      maxConcurrentRequests: 8,
+      allowedHosts: ['127.0.0.1', 'localhost'],
+      allowedOrigins: ['http://127.0.0.1']
+    },
     projects: {
       demo: {
         version: 1,
@@ -99,6 +112,22 @@ function waitForPort(stderr) {
     stderr.on('data', (chunk) => {
       output += chunk.toString('utf8');
       const match = output.match(/wardx ingest listening on (\d+)/);
+      if (!match) return;
+      clearTimeout(timeout);
+      resolve(Number(match[1]));
+    });
+    stderr.on('error', reject);
+  });
+}
+
+function waitForMcpPort(stderr) {
+  return new Promise((resolve, reject) => {
+    let output = '';
+    const timeout = setTimeout(() => reject(new Error(`server did not report its MCP HTTP port: ${output}`)), 5000);
+    timeout.unref();
+    stderr.on('data', (chunk) => {
+      output += chunk.toString('utf8');
+      const match = output.match(/wardx MCP HTTP listening on (\d+)/);
       if (!match) return;
       clearTimeout(timeout);
       resolve(Number(match[1]));
@@ -169,6 +198,7 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
     command: process.execPath,
     args: [CLI_PATH, configPath],
     cwd: directory,
+    env: { ...process.env, WARDX_BLACK_BOX_MCP_TOKEN: MCP_HTTP_TOKEN },
     stderr: 'pipe'
   });
   let serverStderr = '';
@@ -176,18 +206,25 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
     serverStderr += chunk.toString('utf8');
   });
   const portPromise = waitForPort(transport.stderr);
+  const mcpPortPromise = waitForMcpPort(transport.stderr);
   const client = new Client({ name: 'wardx-black-box-test', version: '1.0.0' });
+  const httpClient = new Client({ name: 'wardx-black-box-http-test', version: '1.0.0' });
   let frontend;
   let backend;
   try {
-    const [, port] = await Promise.all([client.connect(transport), portPromise]);
+    const [, port, mcpPort] = await Promise.all([client.connect(transport), portPromise, mcpPortPromise]);
     const endpoint = `http://127.0.0.1:${port}`;
+    await httpClient.connect(new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${mcpPort}/mcp`),
+      { requestInit: { headers: { authorization: `Bearer ${MCP_HTTP_TOKEN}` } } }
+    ));
 
     const health = await fetch(`${endpoint}/health`);
     assert.equal(health.status, 200);
     assert.deepEqual(await health.json(), { ok: true });
 
     assert.deepEqual(await callTool(client, 'list_projects'), { projects: ['demo'] });
+    assert.deepEqual(await callTool(httpClient, 'list_projects'), { projects: ['demo'] });
 
     const invalidHistogram = wireEnvelope({
       frames: [
@@ -498,6 +535,7 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
     await Promise.all([frontend.shutdown(), backend.shutdown()]);
     frontend = undefined;
     backend = undefined;
+    await httpClient.close();
     await client.close();
 
     initialConfig.history.maxAcceptedPastAgeMs = 1;
@@ -507,6 +545,7 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
       command: process.execPath,
       args: [CLI_PATH, configPath],
       cwd: directory,
+      env: { ...process.env, WARDX_BLACK_BOX_MCP_TOKEN: MCP_HTTP_TOKEN },
       stderr: 'pipe'
     });
     restartedTransport.stderr.on('data', (chunk) => {
@@ -567,6 +606,7 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
     throw err;
   } finally {
     await Promise.allSettled([frontend?.shutdown(), backend?.shutdown()]);
+    await httpClient.close().catch(() => {});
     await client.close().catch(() => {});
     await rm(directory, { recursive: true, force: true });
   }

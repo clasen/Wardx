@@ -204,8 +204,9 @@ Recommended minimal contract:
   normal overview responses.
 
 This minimal phase does not add RBAC, human approvals, a web UI, or multi-party
-authorization. MCP stdio and filesystem access remain the administrative trust
-boundary.
+authorization. MCP stdio/filesystem access and the optional loopback-only MCP
+HTTP bearer reached through an SSH tunnel remain the administrative trust
+boundaries.
 
 ### STORE-DEC-1: local durable store
 

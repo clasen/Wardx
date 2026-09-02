@@ -141,10 +141,10 @@ Primary evidence:
 
 ### End-to-end behavior
 
-- [x] The CLI black box covers startup, liveness, MCP stdio, public Node SDK
-  sync, hostile HTTP inputs, role-filtered config, telemetry, logs, experiment
-  proposal/analysis/shipping, persistence, restart, and intentional volatile-ring
-  loss.
+- [x] The CLI black box covers startup, liveness, MCP stdio and authenticated
+  Streamable HTTP, public Node SDK sync, hostile HTTP inputs, role-filtered
+  config, telemetry, logs, experiment proposal/analysis/shipping, persistence,
+  restart, and intentional volatile-ring loss.
 - [x] Failed Node frames remain at-most-once and failure telemetry appears on a
   later successful frame.
 - [x] Public tarballs install in a clean temporary project, resolve from the

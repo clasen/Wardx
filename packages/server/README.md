@@ -3,15 +3,15 @@
 Single-process Wardx ingest, historical aggregates, Remote Config, experiments,
 and MCP control. Node.js 20 or later is required.
 
-Wardx has two interfaces:
+Wardx has two application surfaces:
 
 - SDKs call `POST /v1/sync` to upload bounded telemetry frames and download
   role-filtered config.
-- Agents use MCP stdio to read current/history aggregates and safely mutate
-  config or experiments.
+- Agents use MCP over stdio, or optional loopback-only Streamable HTTP, to read
+  current/history aggregates and safely mutate config or experiments.
 
-There is no admin HTTP API and no supported multi-replica deployment in this
-release.
+There is no admin REST API and no supported multi-replica deployment in this
+release. Streamable HTTP exposes the same MCP tools, not a second control API.
 
 ## Install and run
 
@@ -65,6 +65,7 @@ Important groups:
 | `sqlite` | Local path, WAL/synchronous/checkpoint policy, transaction and pending-write bounds. |
 | `history` | Late-data policy, hour/day retention, app-version and query bounds. |
 | `control` | Journal capacity and MCP read concurrency/pending bounds. |
+| `mcpHttp` | Optional loopback Streamable HTTP listener, bearer source, boundary allowlists, and request bounds. |
 | `capacity` | Maximum concurrent HTTP sync handlers. |
 | `experiments` | Maximum active assignment-ledger rows. |
 | `projects` | Initial Remote Config, role routing, experiments, and optional MCP catalog. |
@@ -100,6 +101,72 @@ Credential example:
 A credential cannot claim a role outside `allowedRoles`. Public clients must be
 untrusted. Never store live credentials in version control or secrets in Remote
 Config.
+
+## Remote MCP through an SSH tunnel
+
+Keep the MCP listener private on the Wardx host. Enable it with an explicit
+loopback-only configuration; startup fails if the named environment variable is
+missing or contains fewer than 32 bytes:
+
+```json
+{
+  "mcpHttp": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8788,
+    "path": "/mcp",
+    "bearerTokenEnvironmentVariable": "WARDX_MCP_TOKEN",
+    "maxRequestBytes": 65536,
+    "maxConcurrentRequests": 8,
+    "allowedHosts": ["127.0.0.1", "localhost"],
+    "allowedOrigins": [
+      "http://127.0.0.1:8788",
+      "http://localhost:8788"
+    ]
+  }
+}
+```
+
+Inject the same high-entropy `WARDX_MCP_TOKEN` into the Wardx service and Codex
+Desktop; do not write it into either JSON or the tunnel definition. From the Mac,
+the equivalent manual tunnel is:
+
+```bash
+ssh -NT \
+  -L 127.0.0.1:8788:127.0.0.1:8788 \
+  -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  user@wardx-server.example
+```
+
+The native macOS lifecycle hook is the repository's
+[`ops/macos/com.wardx.mcp-tunnel.plist.example`](../../ops/macos/com.wardx.mcp-tunnel.plist.example).
+Copy it to `~/Library/LaunchAgents/com.wardx.mcp-tunnel.plist`, replace the SSH
+target, validate it with `plutil -lint`, and load it with:
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.wardx.mcp-tunnel.plist
+```
+
+The SSH key must already work non-interactively and the host key must already be
+trusted. `launchd` starts the tunnel at login and restarts it if it exits. This is
+independent of Codex, so an MCP session cannot race tunnel startup or be expected
+to repair its own connection.
+
+Configure Codex Desktop to use the local end of the tunnel:
+
+```toml
+[mcp_servers.wardx]
+url = "http://127.0.0.1:8788/mcp"
+bearer_token_env_var = "WARDX_MCP_TOKEN"
+startup_timeout_sec = 10
+tool_timeout_sec = 60
+```
+
+Requests are accepted only after the path, Host, optional Origin, Bearer token,
+body-size bound, and concurrent-request bound pass. The server never needs a
+public MCP port; the only public boundary is SSH.
 
 ## HTTP sync
 
@@ -262,7 +329,8 @@ Read tools include:
 Mutation tools include catalog setters, `set_config_value`,
 `delete_config_value`, `upsert_experiment`, `set_experiment_enabled`,
 `ship_experiment`, and `rollback_config_change`. MCP reads are bounded by
-`control.maxConcurrentMcpReads` and `control.maxPendingMcpReads`.
+`control.maxConcurrentMcpReads` and `control.maxPendingMcpReads`. Streamable HTTP
+also enforces `mcpHttp.maxConcurrentRequests` and `mcpHttp.maxRequestBytes`.
 
 ## Operations
 
@@ -288,7 +356,7 @@ Mutation tools include catalog setters, `set_config_value`,
 | --- | --- |
 | `createIngestServer(config, { server? })` | Create Wardx on its HTTP server or a supplied Node server. |
 | `listen(server, port, host)` | Listen and return the bound address. |
-| `startServer(config, { server? })` | Create, listen, and install signal shutdown. |
+| `startServer(config, { server? })` | Create, listen, optionally start MCP HTTP, and install signal shutdown. |
 | `loadServerConfig(path)` | Read and strictly validate operational JSON. |
 | `ControlService` | In-process MCP/control implementation. |
 | `executeTool` | MCP tool dispatcher used by stdio and tests. |

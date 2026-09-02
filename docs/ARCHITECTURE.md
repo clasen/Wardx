@@ -1,8 +1,9 @@
 # Wardx architecture
 
-Wardx is one bounded process with two interfaces. SDKs use HTTP sync; agents use
-MCP stdio. There is no admin HTTP API and no supported multi-replica topology.
-See `CLUSTER_ROADMAP.md` for work deliberately outside this contract.
+Wardx is one bounded process with two application surfaces. SDKs use HTTP sync;
+agents use MCP over stdio or an optional loopback-only Streamable HTTP listener.
+There is no admin REST API and no supported multi-replica topology. See
+`CLUSTER_ROADMAP.md` for work deliberately outside this contract.
 
 ```text
 SDKs -- POST /v1/sync --+
@@ -15,7 +16,8 @@ SDKs -- POST /v1/sync --+
                     |- minute/hour/day aggregate tiers
                     |- experiment ledger, totals, terminal decisions
                         ^
-Agent -- MCP stdio ------+
+Local agent -- MCP stdio --------------------+
+Remote agent -- SSH tunnel -- MCP HTTP ------+
 ```
 
 `@wardx/core` runs inside the SDK. Measurement calls perform no network or
@@ -69,10 +71,14 @@ journal. `list_config_changes` returns bounded public metadata;
 `rollback_config_change` applies a retained inverse as a new version. It never
 rewrites history or exposes reversible values in overview responses.
 
-MCP client identity is recorded only when available; the current stdio boundary
-does not invent a verified identity. MCP reads have configured concurrent and
-pending bounds. Config changes remain administrative operations protected by
-stdio and filesystem access; Wardx does not add RBAC or approval workflows.
+MCP client identity is recorded only when available; neither transport invents
+a verified identity. MCP reads have configured concurrent and pending bounds.
+The optional HTTP transport adds a single Bearer credential, strict path, Host
+and optional Origin allowlists, a body-size bound, and a concurrent-request
+bound. It can bind only to loopback and is intended to be reached through SSH.
+Config changes remain administrative operations protected by stdio/filesystem
+access or by that bearer-plus-tunnel boundary; Wardx does not add RBAC or
+approval workflows.
 
 ## Experiments
 
@@ -100,8 +106,8 @@ be resumed under the old ID.
 ## Capacity and failure behavior
 
 Sync handlers, pending historical batches/bytes, experiment ledger rows, MCP
-reads, current series, rings, query ranges, and retained tiers are all bounded by
-required configuration. Above those limits Wardx rejects work with a
+reads, MCP HTTP requests/bodies, current series, rings, query ranges, and
+retained tiers are all bounded by required configuration. Above those limits Wardx rejects work with a
 non-sensitive overload response instead of building an unbounded queue. Clients
 and proxies must not retry `POST /v1/sync`; general telemetry remains
 at-most-once. Experiment evidence is the narrow exception: accepted evidence is

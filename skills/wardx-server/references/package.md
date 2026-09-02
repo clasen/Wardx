@@ -14,11 +14,13 @@
 | `src/control/ControlService.js` | MCP reads/mutations, experiment gates, journal publish. |
 | `src/control/MutationJournal.js` | CAS, audit-safe reversible entry, rollback-as-new-version. |
 | `src/control/PersistenceCoordinator.js` | Coalesced minute writes, restart scans, compaction, retention, metrics. |
-| `src/mcp/` | Public schemas, bounded reads, stdio resources/tools. |
+| `src/mcp/` | Public schemas, bounded reads, stdio and loopback Streamable HTTP resources/tools. |
 
 ## Contracts
 
 - No admin HTTP route and no multi-process/shared-SQLite mode.
+- Optional MCP HTTP binds only to loopback and requires one environment-sourced
+  Bearer token plus path, Host/Origin, body, and concurrency bounds.
 - Operational configuration passed as an object or loaded from JSON owns
   settings/credentials and bootstraps an empty DB. SQLite owns project state
   thereafter. Do not add sidecar or compatibility fallback.
@@ -43,9 +45,9 @@
 ## Required config groups
 
 Top-level required groups include `credentials`, `sqlite`, `history`, `control`,
-`capacity`, `experiments`, and `projects`, in addition to HTTP/envelope/sink/
-current-window settings. See `REQUIRED*` in `src/loadConfig.js`; never duplicate
-that list here in code or add a fallback.
+`mcpHttp`, `capacity`, `experiments`, and `projects`, in addition to
+HTTP/envelope/sink/current-window settings. See `REQUIRED*` in
+`src/loadConfig.js`; never duplicate that list here in code or add a fallback.
 
 Each credential contains `label`, `project`, `allowedRoles`,
 `trustedForDecisions`, and `enabled`. Each project contains `version`, `values`,

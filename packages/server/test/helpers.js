@@ -82,6 +82,7 @@ export function testServerConfig(overrides = {}) {
       maxConcurrentMcpReads: 8,
       maxPendingMcpReads: 32
     },
+    mcpHttp: { enabled: false },
     capacity: { maxConcurrentSyncHandlers: 256 },
     experiments: { ledgerMaxRows: 1000000 },
     projects: {

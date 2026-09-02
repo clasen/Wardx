@@ -5,8 +5,9 @@ description: Operate or change the Wardx single-process ingest, historical aggre
 
 # Wardx server
 
-Wardx has two interfaces in one bounded process: clients use `POST /v1/sync`;
-agents use MCP stdio. There is no admin HTTP API or supported multi-replica mode.
+Wardx has two application surfaces in one bounded process: clients use
+`POST /v1/sync`; agents use MCP over stdio or optional loopback-only Streamable
+HTTP. There is no admin REST API or supported multi-replica mode.
 
 Read [references/tools.md](references/tools.md) for exact MCP arguments. When
 editing the server, also read [references/package.md](references/package.md).
@@ -25,6 +26,11 @@ editing the server, also read [references/package.md](references/package.md).
 
 Never invent catalog descriptions, paths, git URLs, identities, or trust.
 Remote Config never contains secrets.
+
+For remote MCP, keep `mcpHttp.host` on loopback, supply the named bearer token
+through the environment, and reach it through an SSH local-forward. Host,
+optional Origin, request size, and concurrency are strict configured bounds.
+Never expose the listener directly or store its token in JSON.
 
 ## Mutations
 
@@ -111,5 +117,7 @@ hardware, settings, duration, commit, and local-SSD details.
   health failure; never bypass with manual config edits.
 - empty history: check tier/range/finalization and current versus historical
   tool choice.
-- no tools: configure the MCP client to spawn `wardx-server <config.json>` on
-  stdio; do not substitute an HTTP admin call.
+- no tools: for local operation, configure the MCP client to spawn
+  `wardx-server <config.json>` on stdio. For remote operation, check the SSH
+  tunnel and configure Streamable HTTP at its local endpoint; do not substitute
+  an HTTP admin call.

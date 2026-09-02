@@ -60,6 +60,55 @@ test('validateServerConfig requires scoped credential and capacity records', () 
   assert.throws(() => validateServerConfig(history), /maxQueryRows must be an integer >= 1/);
 });
 
+test('validateServerConfig requires explicit bounded loopback MCP HTTP configuration', () => {
+  const missing = testServerConfig();
+  delete missing.mcpHttp;
+  assert.throws(() => validateServerConfig(missing), /mcpHttp/);
+
+  assert.doesNotThrow(() => validateServerConfig(testServerConfig({ mcpHttp: { enabled: false } })));
+
+  const enabled = {
+    enabled: true,
+    host: '127.0.0.1',
+    port: 8788,
+    path: '/mcp',
+    bearerTokenEnvironmentVariable: 'WARDX_MCP_TOKEN',
+    maxRequestBytes: 65536,
+    maxConcurrentRequests: 8,
+    allowedHosts: ['127.0.0.1', 'localhost'],
+    allowedOrigins: ['http://127.0.0.1:8788', 'http://localhost:8788']
+  };
+  assert.doesNotThrow(() => validateServerConfig(testServerConfig({ mcpHttp: enabled })));
+
+  for (const host of ['0.0.0.0', '192.0.2.10']) {
+    assert.throws(
+      () => validateServerConfig(testServerConfig({ mcpHttp: { ...enabled, host } })),
+      /mcpHttp\.host must be a loopback address/
+    );
+  }
+
+  assert.throws(
+    () => validateServerConfig(testServerConfig({ mcpHttp: { ...enabled, extra: true } })),
+    /mcpHttp unknown key: extra/
+  );
+  assert.throws(
+    () => validateServerConfig(testServerConfig({ mcpHttp: { ...enabled, maxConcurrentRequests: 0 } })),
+    /maxConcurrentRequests must be an integer >= 1/
+  );
+  assert.throws(
+    () => validateServerConfig(testServerConfig({
+      mcpHttp: { ...enabled, allowedHosts: ['wardx.example'] }
+    })),
+    /allowedHosts entries must be loopback/
+  );
+  assert.throws(
+    () => validateServerConfig(testServerConfig({
+      mcpHttp: { ...enabled, allowedOrigins: ['https://wardx.example'] }
+    })),
+    /allowedOrigins entries must be HTTP loopback origins/
+  );
+});
+
 test('validateServerConfig reserves fixed-horizon ledger capacity before enablement', () => {
   const config = testServerConfig();
   config.experiments.ledgerMaxRows = 1;

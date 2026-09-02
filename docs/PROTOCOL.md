@@ -182,6 +182,6 @@ does not prove SQLite writability, durable persistence, Remote Config
 correctness, downstream reachability, or capacity, and it is not a readiness
 contract.
 
-Remote Config, experiments, aggregates, recent logs, and analysis are MCP tools on the ingest process. There is no admin HTTP API. Each project has its own snapshot, aggregator, recent-client ring, and recent-log ring. Aggregates, clients, and logs are tagged with the sender's role. MCP `get_project_overview` groups them by role.
+Remote Config, experiments, aggregates, recent logs, and analysis are MCP tools on the ingest process, exposed over stdio or optional loopback-only Streamable HTTP. There is no admin REST API. Each project has its own snapshot, aggregator, recent-client ring, and recent-log ring. Aggregates, clients, and logs are tagged with the sender's role. MCP `get_project_overview` groups them by role.
 
 How the SDK HTTP sync and the MCP agent share that process: [ARCHITECTURE.md](ARCHITECTURE.md).
