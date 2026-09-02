@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import https from 'node:https';
 import { test } from 'node:test';
 import { createIngestServer, listen } from '../src/server.js';
 import { gzipJson, sampleEnvelope, testServerConfig } from './helpers.js';
@@ -13,6 +14,22 @@ async function withServer(config, fn) {
     await server.wardx.stop();
   }
 }
+
+test('createIngestServer attaches Wardx to a supplied HTTPS server', async () => {
+  const transport = https.createServer();
+  const config = testServerConfig();
+  const server = createIngestServer(config, { server: transport });
+  try {
+    assert.equal(server, transport);
+    assert.equal(server.listenerCount('request'), 1);
+    assert.equal(server.wardx.config, config);
+
+    const address = await listen(server, config.port, config.host);
+    assert.equal(typeof address.port, 'number');
+  } finally {
+    await server.wardx.stop();
+  }
+});
 
 function syncHeaders(key = 'test-key') {
   return {

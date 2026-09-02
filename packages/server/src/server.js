@@ -22,6 +22,26 @@ function createSink(config) {
   throw new Error(`unknown sink: ${config.sink}`);
 }
 
+function resolveNodeServer(options) {
+  if (!options || typeof options !== 'object' || Array.isArray(options)) {
+    throw new Error('server options must be an object');
+  }
+  for (const key of Object.keys(options)) {
+    if (key !== 'server') throw new Error(`server options unknown key: ${key}`);
+  }
+  if (options.server === undefined) return http.createServer();
+  const server = options.server;
+  for (const method of ['on', 'once', 'off', 'listen', 'close', 'address', 'listenerCount']) {
+    if (typeof server?.[method] !== 'function') {
+      throw new Error('server options.server must be a Node HTTP-compatible server');
+    }
+  }
+  if (server.listenerCount('request') > 0) {
+    throw new Error('server options.server must not have a request listener');
+  }
+  return server;
+}
+
 function sqlitePath(config) {
   if (isAbsolute(config.sqlite.path) || !config.configPath) return config.sqlite.path;
   return resolve(dirname(config.configPath), config.sqlite.path);
@@ -90,7 +110,8 @@ function hydrateHistoricalState(config, stateStore, registry) {
   }
 }
 
-export function createIngestServer(configInput) {
+export function createIngestServer(configInput, options = {}) {
+  const server = resolveNodeServer(options);
   const config = validateServerConfig(configInput);
   const stateStore = createStateStore(config);
   hydrateAuthoritativeState(config, stateStore);
@@ -113,7 +134,7 @@ export function createIngestServer(configInput) {
     diagnostics
   });
 
-  const server = http.createServer((req, res) => {
+  server.on('request', (req, res) => {
     const host = req.headers.host || `${config.host}:${config.port}`;
     const url = new URL(req.url || '/', `http://${host}`);
     const work = (async () => {
@@ -183,8 +204,8 @@ export function listen(server, port, host) {
   });
 }
 
-export async function startServer(config) {
-  const server = createIngestServer(config);
+export async function startServer(config, options = {}) {
+  const server = createIngestServer(config, options);
   const address = await listen(server, config.port, config.host);
   const stop = async (code) => {
     try {

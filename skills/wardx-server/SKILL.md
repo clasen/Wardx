@@ -86,9 +86,16 @@ credential allowlist is rejected before mutation. Never expose raw keys in
 diagnostics or MCP.
 
 Run one process against one local SQLite WAL database. Do not share the file or
-put it on NFS. Keep HTTP behind a proxy with TLS and measured body/rate/
-connection limits; never retry `POST /v1/sync`. `GET /health` is liveness only.
-Back up operational JSON plus SQLite after graceful drain/stop.
+put it on NFS. `createIngestServer(config, { server })` and
+`startServer(config, { server })` accept a dedicated Node HTTP-compatible server
+created by the application, including `https.createServer({ key, cert })`. It
+must not already have a `request` listener; Wardx owns request handling and
+closes it during `server.wardx.stop()`.
+
+Keep HTTP behind a proxy with TLS and measured body/rate/connection limits when
+those controls are not supplied by the deployment; never retry
+`POST /v1/sync`. `GET /health` is liveness only. Back up the operational
+configuration source plus SQLite after graceful drain/stop.
 
 Capacity bounds reject excess sync handlers, pending historical batches/bytes,
 ledger rows, MCP reads, series, and query ranges. A 5,000 sync/s figure is a

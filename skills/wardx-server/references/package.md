@@ -4,7 +4,7 @@
 
 | Path | Responsibility |
 | --- | --- |
-| `src/server.js` | Construct one server, SQLite store, capacity gates, control and graceful shutdown. |
+| `src/server.js` | Construct Wardx on its default HTTP server or a supplied Node server, plus SQLite, capacity, control, and graceful shutdown. |
 | `src/loadConfig.js` | Closed required operational config; no defaults. |
 | `src/auth/CredentialRegistry.js` | Authenticate raw keys and authorize claimed roles. |
 | `src/ingest/` | Bounded HTTP read/validation and pre-mutation capacity checks. |
@@ -19,8 +19,12 @@
 ## Contracts
 
 - No admin HTTP route and no multi-process/shared-SQLite mode.
-- Operational JSON owns settings/credentials and bootstraps an empty DB. SQLite
-  owns project state thereafter. Do not add sidecar or compatibility fallback.
+- Operational configuration passed as an object or loaded from JSON owns
+  settings/credentials and bootstraps an empty DB. SQLite owns project state
+  thereafter. Do not add sidecar or compatibility fallback.
+- A supplied `options.server` must be a dedicated Node HTTP-compatible server
+  without an existing `request` listener. Wardx attaches the handler and owns
+  shutdown; TLS material and transport policy stay with the application.
 - Every config/catalog/experiment mutation uses `expectedVersion` and `reason`.
   Commit project state and one journal entry atomically before `_publish`.
 - Credential trust comes only from `CredentialRegistry`; never from wire data.

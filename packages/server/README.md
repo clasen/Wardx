@@ -31,9 +31,29 @@ npm run verify:release
 `GET /health` is liveness only. It does not prove SQLite writability, capacity,
 or MCP readiness.
 
+## Programmatic startup
+
+`createIngestServer` and `startServer` accept the complete configuration object
+directly; no JSON file is involved. Pass a dedicated Node HTTP-compatible server
+to use HTTPS or customize the transport:
+
+```js
+import https from 'node:https';
+import { startServer } from '@wardx/server';
+
+export function startWardx(config, { key, cert }) {
+  const transport = https.createServer({ key, cert });
+  return startServer(config, { server: transport });
+}
+```
+
+The supplied server must not already have a `request` listener. Wardx owns its
+request handling and closes the server during `server.wardx.stop()`. The same
+strict configuration validation applies to objects and JSON-loaded config.
+
 ## Required configuration
 
-The JSON config is closed-schema: every operational, retention, capacity, and
+The configuration is closed-schema: every operational, retention, capacity, and
 durability value is required and unknown keys fail startup. See
 `config/development.json` for a complete example.
 
@@ -250,8 +270,9 @@ Mutation tools include catalog setters, `set_config_value`,
   NFS or share it between processes.
 - Put a reverse proxy in front of HTTP for TLS, body/connection/rate limits, and
   graceful drain. Never enable POST retries.
-- Back up the operational JSON and SQLite database after draining and stopping
-  Wardx. Preserve permissions. Restore them as one tested unit.
+- Back up the operational configuration source and SQLite database after
+  draining and stopping Wardx. Preserve permissions. Restore them as one tested
+  unit.
 - On disk-full, permission, busy-timeout, or incompatible-schema failure,
   preserve the database and diagnostics. Do not delete it to force an empty
   start.
@@ -265,9 +286,9 @@ Mutation tools include catalog setters, `set_config_value`,
 
 | Export | Purpose |
 | --- | --- |
-| `createIngestServer(config)` | Create the HTTP server and `server.wardx` services. |
+| `createIngestServer(config, { server? })` | Create Wardx on its HTTP server or a supplied Node server. |
 | `listen(server, port, host)` | Listen and return the bound address. |
-| `startServer(config)` | Create, listen, and install signal shutdown. |
+| `startServer(config, { server? })` | Create, listen, and install signal shutdown. |
 | `loadServerConfig(path)` | Read and strictly validate operational JSON. |
 | `ControlService` | In-process MCP/control implementation. |
 | `executeTool` | MCP tool dispatcher used by stdio and tests. |

@@ -12,6 +12,8 @@ function mutateEnvelope(mutator) {
 }
 
 test('validateEnvelope accepts the documented wire structures', () => {
+  const to = Date.now();
+  const from = to - 15_000;
   const envelope = {
     protocol: 1,
     project: 'demo',
@@ -28,11 +30,11 @@ test('validateEnvelope accepts the documented wire structures', () => {
     frames: [
       {
         seq: 42,
-        from: 1787221120000,
-        to: 1787221135000,
+        from,
+        to,
         metrics: {
           counters: [['match.completed', { mode: 'ranked' }, 18392]],
-          gauges: [['players.online', null, 12921, 1787221134000]],
+          gauges: [['players.online', null, 12921, to - 1000]],
           histograms: [
             [
               'request.duration',
@@ -52,8 +54,8 @@ test('validateEnvelope accepts the documented wire structures', () => {
             ]
           ]
         },
-        events: [[1787221124812, 'purchase', { product: 'premium' }]],
-        logs: [[1787221125823, 'error', 'payment_failed', { code: 'timeout' }]]
+        events: [[from + 4812, 'purchase', { product: 'premium' }]],
+        logs: [[from + 5823, 'error', 'payment_failed', { code: 'timeout' }]]
       }
     ]
   };
