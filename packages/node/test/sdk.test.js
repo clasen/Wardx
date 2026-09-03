@@ -66,6 +66,51 @@ test('sdk syncs frames and receives remote config', async () => {
   });
 });
 
+test('independent SDK workers merge overlapping distinct sketches at one server', async () => {
+  await withServer(async (server, endpoint) => {
+    const workerSubjects = [
+      ['hid-a', 'hid-b', 'hid-c'],
+      ['hid-b', 'hid-c', 'hid-d'],
+      ['hid-a', 'hid-e']
+    ];
+    const workers = workerSubjects.map(() => createWardx({
+      endpoint,
+      projectKey: 'test-key',
+      project: 'demo',
+      role: 'game-server',
+      appVersion: '2.4.1',
+      environment: 'test',
+      privacySalt: 'shared-cluster-privacy-salt',
+      aggregateIntervalMs: 60_000,
+      syncIntervalMs: 60_000
+    }));
+    try {
+      for (let index = 0; index < workers.length; index += 1) {
+        const distinct = workers[index].distinct('cluster.active_hids', { result: 'violating' });
+        for (const subject of workerSubjects[index]) distinct.add(subject);
+      }
+      await Promise.all(workers.map((worker) => worker.flush()));
+
+      const windows = server.wardx.registry.get('demo').aggregator.snapshot({
+        role: 'game-server',
+        names: ['cluster.active_hids']
+      });
+      const rows = windows.flatMap((window) => window.distincts);
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].precision, 9);
+      assert.ok(rows[0].estimate >= 4 && rows[0].estimate <= 6, String(rows[0].estimate));
+
+      const envelopes = server.wardx.sink.envelopes.filter(
+        (envelope) => envelope.client.role === 'game-server'
+      );
+      assert.equal(new Set(envelopes.map((envelope) => envelope.client.instanceId)).size, 3);
+      assert.doesNotMatch(JSON.stringify(envelopes), /hid-a|hid-b|hid-c|hid-d|hid-e/);
+    } finally {
+      await Promise.all(workers.map((worker) => worker.shutdown()));
+    }
+  });
+});
+
 test('tracer receives measure records and a sync record on flush', async () => {
   await withServer(async (_server, endpoint) => {
     const records = [];
