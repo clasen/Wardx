@@ -54,6 +54,7 @@ namespace Wardx
         public int Counters;
         public int Gauges;
         public int Histograms;
+        public int Distincts;
         public int Events;
         public int Logs;
         public int DroppedLogs;
@@ -213,6 +214,38 @@ namespace Wardx
                 Op = "observe",
                 Value = value,
                 Attrs = attrs,
+                Noop = _noop
+            });
+        }
+    }
+
+    sealed class TracedDistinct : IDistinct
+    {
+        readonly IDistinct _inner;
+        readonly ITracer _tracer;
+        readonly string _name;
+        readonly IReadOnlyDictionary<string, object> _dims;
+        readonly bool _noop;
+
+        public TracedDistinct(IDistinct inner, ITracer tracer, string name, IReadOnlyDictionary<string, object> dims, bool noop)
+        {
+            _inner = inner;
+            _tracer = tracer;
+            _name = name;
+            _dims = dims;
+            _noop = noop;
+        }
+
+        public void Add(string identifier)
+        {
+            _inner.Add(identifier);
+            TracerEmit.Measure(_tracer, new MeasureRecord
+            {
+                Type = "distinct",
+                Name = _name,
+                Dims = _dims,
+                Op = "add",
+                Value = 1,
                 Noop = _noop
             });
         }

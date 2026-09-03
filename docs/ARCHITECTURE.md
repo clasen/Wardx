@@ -54,7 +54,8 @@ buckets are written to SQLite, compacted deterministically to hour and day, and
 pruned only after the downstream rollup and its watermark are durable. Hour/day
 rows keep project, role, environment, app version, signal name, and declared
 dimensions. They never keep event or log attrs, histogram exemplars, instance
-IDs, or subject hashes.
+IDs, or subject hashes. Distinct rows retain only mergeable HLL registers; MCP
+returns their estimate and precision without the registers.
 
 `get_aggregates` returns current in-memory windows. `get_aggregate_history`
 returns bounded hour/day ranges with optional role, environment, app-version,
@@ -121,11 +122,12 @@ do not establish deployment capacity.
 
 ## Instrumentation boundary
 
-Wardx is aggregate-first. Use counters/histograms for stability, a small set of
+Wardx is aggregate-first. Use counters/histograms for stability, `distinct` for
+an approximate unique count without identifier storage, a small set of
 named events for behavior, and recent logs for drill-down. Funnels are volume
 comparisons, not per-subject paths. The experiment assignment ledger is
 non-queryable and exists only for deduplication. Wardx is not a raw event
 warehouse, billing ledger, player journey store, or authoritative economy
-database.
+database. A distinct aggregate is not a queryable identity set or user journey.
 
 Protocol details and HTTP status semantics are in [PROTOCOL.md](PROTOCOL.md).

@@ -10,22 +10,25 @@ namespace Wardx
         public List<CounterSample> Counters = new List<CounterSample>();
         public List<GaugeSample> Gauges = new List<GaugeSample>();
         public List<HistogramSample> Histograms = new List<HistogramSample>();
+        public List<DistinctSample> Distincts = new List<DistinctSample>();
         public List<EventSample> Events = new List<EventSample>();
         public List<LogSample> Logs = new List<LogSample>();
 
         public Dictionary<string, object> ToWire()
         {
+            var metrics = new Dictionary<string, object>
+            {
+                ["counters"] = CounterRows(),
+                ["gauges"] = GaugeRows(),
+                ["histograms"] = HistogramRows()
+            };
+            if (Distincts.Count > 0) metrics["distincts"] = DistinctRows();
             return new Dictionary<string, object>
             {
                 ["seq"] = Seq,
                 ["from"] = From,
                 ["to"] = To,
-                ["metrics"] = new Dictionary<string, object>
-                {
-                    ["counters"] = CounterRows(),
-                    ["gauges"] = GaugeRows(),
-                    ["histograms"] = HistogramRows()
-                },
+                ["metrics"] = metrics,
                 ["events"] = EventRows(),
                 ["logs"] = LogRows()
             };
@@ -57,6 +60,25 @@ namespace Wardx
             foreach (var row in Histograms)
             {
                 rows.Add(new object[] { row.Name, DimsOrNull(row.Dims), HistogramWire(row.Body) });
+            }
+            return rows;
+        }
+
+        List<object> DistinctRows()
+        {
+            var rows = new List<object>(Distincts.Count);
+            foreach (var row in Distincts)
+            {
+                rows.Add(new object[]
+                {
+                    row.Name,
+                    DimsOrNull(row.Dims),
+                    new Dictionary<string, object>
+                    {
+                        ["precision"] = row.Body.Precision,
+                        ["registers"] = row.Body.Registers
+                    }
+                });
             }
             return rows;
         }
@@ -129,6 +151,7 @@ namespace Wardx
         public int DroppedCounters;
         public int DroppedGauges;
         public int DroppedHistograms;
+        public int DroppedDistincts;
         public int DroppedLogs;
         public int DroppedEvents;
     }
@@ -145,6 +168,7 @@ namespace Wardx
                 Counters = new List<CounterSample>(metrics.Counters),
                 Gauges = new List<GaugeSample>(metrics.Gauges),
                 Histograms = new List<HistogramSample>(metrics.Histograms),
+                Distincts = new List<DistinctSample>(metrics.Distincts),
                 Events = events,
                 Logs = logs
             };
@@ -206,6 +230,7 @@ namespace Wardx
             foreach (var row in frame.Counters) splitter.AddCounter(row);
             foreach (var row in frame.Gauges) splitter.AddGauge(row);
             foreach (var row in frame.Histograms) splitter.AddHistogram(row);
+            foreach (var row in frame.Distincts) splitter.AddDistinct(row);
             foreach (var row in frame.Events) splitter.AddEvent(row);
             foreach (var row in frame.Logs) splitter.AddLog(row);
             return splitter.Finish();
@@ -245,6 +270,11 @@ namespace Wardx
             if (!TryAdd(row, frame => frame.Histograms)) _batch.DroppedHistograms++;
         }
 
+        public void AddDistinct(DistinctSample row)
+        {
+            if (!TryAdd(row, frame => frame.Distincts)) _batch.DroppedDistincts++;
+        }
+
         public void AddEvent(EventSample row)
         {
             if (!TryAdd(row, frame => frame.Events)) _batch.DroppedEvents++;
@@ -260,6 +290,7 @@ namespace Wardx
             _batch.DroppedRows = _batch.DroppedCounters
                 + _batch.DroppedGauges
                 + _batch.DroppedHistograms
+                + _batch.DroppedDistincts
                 + _batch.DroppedEvents
                 + _batch.DroppedLogs;
             if (_batch.DroppedRows > 0)
@@ -319,6 +350,7 @@ namespace Wardx
             return frame.Counters.Count
                 + frame.Gauges.Count
                 + frame.Histograms.Count
+                + frame.Distincts.Count
                 + frame.Events.Count
                 + frame.Logs.Count;
         }

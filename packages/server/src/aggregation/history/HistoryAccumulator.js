@@ -38,6 +38,9 @@ function historyRows(envelope, frame, persistLogs) {
       ...common
     });
   }
+  for (const [name, dimensions, body] of frame.metrics.distincts || []) {
+    rows.push({ kind: 'distinct', name, dimensions, ...body, ...common });
+  }
   for (const event of frame.events) {
     rows.push({ kind: 'event', name: event[1], dimensions: null, count: 1, ...common });
   }

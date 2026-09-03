@@ -83,6 +83,7 @@ wardx.event('match.started', { mode: 'ranked', country: 'AR' });
 wardx.counter('match.completed', { mode: 'ranked' }).inc();
 wardx.gauge('players.online').set(12);
 wardx.histogram('request.duration', { buckets: [10, 25, 50, 100, 250] }).observe(42);
+wardx.distinct('shot.traffic.hids', { result: 'violating' }).add(hid);
 
 const end = wardx.timer('matchmaking.duration');
 end({ result: 'success' });
@@ -277,7 +278,7 @@ If the event buffer is full, the SDK discards the new event and increments `ward
 
 **Objective:** Emit one named event and one counter per step. Compare those counts. Do not reconstruct a per-user path.
 
-Wardx does not store a user journey. Delivery is at-most-once. Production discards envelopes after ingest (`sink: "null"`). The aggregator counts events by name and role. Event attrs do not split that count. `sessionId` identifies the envelope. It is not a join key. There are no unique users, no ordered sequences, and no time between steps.
+Wardx does not store a user journey. Delivery is at-most-once. Production discards envelopes after ingest (`sink: "null"`). The aggregator counts events by name and role. Event attrs do not split that count. `sessionId` identifies the envelope. It is not a join key. `distinct` can estimate unique identifiers per named aggregate, but it does not provide ordered sequences or time between steps.
 
 Give each step its own name. Do not reuse `screen.view` with a `surface` attr as the funnel. Use `surface` only as a counter dimension when you also need a breakdown of one step.
 
@@ -309,7 +310,10 @@ function onOnboardingDone(wardx, userId) {
 
 On a backend that serves many users, increment the counters in process. Do not `event()` once per user action.
 
-Do not put `userId` on a counter dimension. Do not expect Mixpanel-style unique-user funnels from Wardx.
+Do not put `userId` on a counter dimension. For an approximate unique count at
+one step, use `distinct(stepName, dims).add(userId)`. It hashes with the required
+local `privacySalt` and sends only a 512-register HLL sketch (`p=9`, about 4.6%
+standard error). This still does not create a Mixpanel-style per-user funnel.
 
 ## Use case 8: Detect abnormal point accumulation
 

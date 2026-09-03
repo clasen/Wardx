@@ -587,7 +587,11 @@ export class ControlService {
       limit: this.config.history.maxQueryRows
     });
     for (const bucket of buckets) {
-      bucket.rows = bucket.rows.map((row) => ({ ...row, ...annotateSignal(store.catalog, row.name) }));
+      bucket.rows = bucket.rows.map((row) => {
+        const output = { ...row, ...annotateSignal(store.catalog, row.name) };
+        if (output.kind === 'distinct') delete output.registers;
+        return output;
+      });
     }
     const sourceTier = filter.tier === 'hour' ? 'minute' : 'hour';
     return {

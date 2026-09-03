@@ -79,11 +79,30 @@ namespace Wardx.Tests
             var tsnap = token.SnapshotAndReset();
             AssertX.Equal(1, tsnap.Histograms.Count, "timer histogram");
             AssertX.True(tsnap.Histograms[0].Body.Min >= 1, "timer min ms");
+
+            var distincts = Registry(1000, null, "test-salt");
+            var distinct = distincts.Distinct("shot.traffic.hids", Dims.Of("result", "violating"));
+            distinct.Add("hid-a");
+            distinct.Add("hid-a");
+            distinct.Add("hid-b");
+            var distinctSnapshot = distincts.SnapshotAndReset();
+            AssertX.Equal(1, distinctSnapshot.Distincts.Count, "one distinct sketch");
+            var registers = System.Convert.FromBase64String(distinctSnapshot.Distincts[0].Body.Registers);
+            AssertX.Equal((byte)3, registers[168], "shared Node/C# register 168");
+            AssertX.Equal((byte)2, registers[499], "shared Node/C# register 499");
+            AssertX.Equal(0, distincts.SnapshotAndReset().Distincts.Count, "distinct reset");
         }
 
-        static MetricsRegistry Registry(int maxSeries = 1000, System.Action onDrop = null)
+        static MetricsRegistry Registry(int maxSeries = 1000, System.Action onDrop = null, string privacySalt = "test-salt")
         {
-            return new MetricsRegistry(maxSeries, 8, 64, new double[] { 10, 25, 50, 100 }, onDrop ?? (() => { }));
+            return new MetricsRegistry(
+                maxSeries,
+                8,
+                64,
+                new double[] { 10, 25, 50, 100 },
+                onDrop ?? (() => { }),
+                privacySalt
+            );
         }
     }
 }

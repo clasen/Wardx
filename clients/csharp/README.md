@@ -18,10 +18,10 @@ Unity 2021.3 or later, or .NET Standard 2.1.
 https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime
 ```
 
-Pin a release with `#v0.2.2`. In `Packages/manifest.json`:
+Pin a release with `#v0.4.0`. In `Packages/manifest.json`:
 
 ```json
-"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.2.2"
+"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.4.0"
 ```
 
 **Unity (this checkout).** Package Manager → Add package from disk → `clients/csharp/Runtime/package.json`.
@@ -59,6 +59,7 @@ wardx.Event("match.started", Dims.Of("mode", "ranked"));
 wardx.Counter("match.completed", Dims.Of("mode", "ranked")).Inc();
 wardx.Gauge("players.online").Set(12);
 wardx.Histogram("request.duration").Observe(42);
+wardx.Distinct("shot.traffic.hids", Dims.Of("result", "violating")).Add(hid);
 
 var end = wardx.Timer("matchmaking.duration");
 end.Stop(Dims.Of("result", "success"));
@@ -80,6 +81,7 @@ Each `WardxClient.Create(...)` SDK instance creates its own `instanceId` and `se
 | How many / how much | `Counter(name, dims).Inc()` or `.Add(n)` |
 | Last known size | `Gauge(name, dims).Set(value)` |
 | Distribution | `Histogram(name, dims, buckets).Observe(value)` |
+| Approximate unique count | `Distinct(name, dims).Add(identifier)` |
 | Elapsed time | `Timer(name, dims)` then `Stop()` |
 | Discrete product fact | `Event(name, attrs)` |
 | Volume funnel (drop-off between steps) | one `Event` + one `Counter` per step name |
@@ -89,6 +91,11 @@ Each `WardxClient.Create(...)` SDK instance creates its own `instanceId` and `se
 | Experiment conversion | `Experiment.Goal(name)` after `Identify`, or `Experiment.Goal(name, subjectId)` |
 
 A counter in a frame is a window delta. Do not put a user id on a metric dimension. Histogram `Observe(value, attrs)` keeps attrs only for the window max (`exemplar`).
+
+`Distinct` hashes each identifier locally with `PrivacySalt` and updates a fixed
+HyperLogLog (`p=9`, 512 registers, about 4.6% standard error). Only the sketch
+is serialized. Keep the same stable salt on every worker and across the hour/day
+range being compared; Wardx never stores or returns the identifier.
 
 ## Funnels
 

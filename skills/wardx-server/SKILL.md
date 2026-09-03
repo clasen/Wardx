@@ -77,6 +77,8 @@ plan before ledger retention expires. A shipped or expired plan needs a new ID.
 - Events are counts by name; attrs are not historical series.
 - Historical allowlisted logs are counts by role/level/name without attrs.
 - Historical histograms merge only identical bounds and never retain exemplars.
+- Distinct rows merge HLL registers across workers and buckets; reads expose
+  only `estimate` and `precision`, never identifiers or raw registers.
 - Funnels are volume comparisons, not unique users or ordered journeys.
 - The experiment ledger is not queryable subject history.
 

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { HistoricalCompactor, mergeHistoryBuckets, normalizeHistoricalRow, utcBucketStart } from '../src/aggregation/history/index.js';
 import { SqliteStateStore } from '../src/storage/SqliteStateStore.js';
+import { HyperLogLog } from '@wardx/core';
 
 const SQLITE_SETTINGS = {
   synchronous: 'FULL', busyTimeoutMs: 1000, walAutoCheckpointPages: 100, checkpointMode: 'TRUNCATE',
@@ -17,6 +18,28 @@ function counter(value, overrides = {}) {
     dimensions: { route: '/health' }, value, ...overrides
   };
 }
+
+function distinct(ids) {
+  const hll = new HyperLogLog('active.hids', null, 'test-salt');
+  for (const id of ids) hll.add(id);
+  return {
+    kind: 'distinct', name: 'active.hids', role: 'api', environment: 'production', appVersion: '1.0.0',
+    dimensions: null, ...hll.snapshot()
+  };
+}
+
+test('historical HLL rows merge as a union instead of summing worker estimates', () => {
+  const from = Date.UTC(2026, 0, 1);
+  const first = minute('demo', from, [distinct(['a', 'b'])]);
+  const second = minute('demo', from + 60_000, [distinct(['b', 'c'])]);
+  const merged = mergeHistoryBuckets({
+    project: 'demo', tier: 'hour', from, to: from + 3_600_000,
+    sourceBuckets: [first, second], finalized: true
+  });
+  assert.equal(merged.rows[0].kind, 'distinct');
+  assert.ok(merged.rows[0].estimate >= 2 && merged.rows[0].estimate <= 4);
+  assert.doesNotMatch(JSON.stringify(merged), /"a"|"b"|"c"/);
+});
 
 function minute(project, from, rows, dropCount = 0) {
   return { project, tier: 'minute', from, to: from + 60_000, finalized: true, dropCount, rows };

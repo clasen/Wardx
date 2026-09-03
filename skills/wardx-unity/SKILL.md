@@ -1,6 +1,6 @@
 ---
 name: wardx-unity
-description: Instruments Unity with the Wardx C# SDK (WardxClient / WardxBehaviour) — counters, gauges, histograms, timers, events, logs, Remote Config, experiment assignment, and volume funnels. Use when the user mentions Wardx, WardxClient, WardxBehaviour, WardxOptions, Config.Get, Experiment.Goal, Identify, clients/csharp, com.wardx.sdk, Unity, or asks to add telemetry, metrics, events, logs, or A/B assignment in a Unity player. Also use when changing Unity-specific code in clients/csharp. Do not use for MCP tools, catalog onboarding, or ingest control — that belongs to wardx-server. Do not use for Node.js (wardx) or a non-Unity C# process (wardx-csharp).
+description: Instruments Unity with the Wardx C# SDK (WardxClient / WardxBehaviour) — counters, gauges, histograms, distinct HLL estimates, timers, events, logs, Remote Config, experiment assignment, and volume funnels. Use when the user mentions Wardx, WardxClient, WardxBehaviour, WardxOptions, Config.Get, Experiment.Goal, Identify, clients/csharp, com.wardx.sdk, Unity, or asks to add telemetry, metrics, events, logs, unique counts, or A/B assignment in a Unity player. Also use when changing Unity-specific code in clients/csharp. Do not use for MCP tools, catalog onboarding, or ingest control — that belongs to wardx-server. Do not use for Node.js (wardx) or a non-Unity C# process (wardx-csharp).
 ---
 
 # Wardx Unity SDK
@@ -37,6 +37,7 @@ Use the cheapest signal that still answers the question.
 | How many / how much in this window | `Counter(name, dims).Inc()` or `.Add(n)` |
 | Last known size of a set | `Gauge(name, dims).Set(value)` |
 | Distribution of a sample you already have | `Histogram(name, dims, buckets).Observe(value)` |
+| Approximate unique identifiers without storing them | `Distinct(name, dims).Add(identifier)` |
 | Elapsed time you start and stop here | `Timer(name, dims)` then `Stop()` |
 | One discrete product fact | `Event(name, attrs)` plus a counter when you also need a rate |
 | Drop-off between named steps (volume funnel) | one `Event` + one `Counter` per step name. Not a unique-user path. |
@@ -51,6 +52,10 @@ Use the cheapest signal that still answers the question.
 A counter in a frame is a window delta, not a lifetime total. A gauge that is never `Set` in a window is absent. Keep the series object when you increment in a loop. Build dims with `Dims.Of(...)`.
 
 **Dimensions.** Small sets: `mode`, `level`, `result`, `source`. Values are string, number, or boolean. Never `userId`, email, or a unique id on a metric dimension. The SDK caps series per name (`MaxSeriesPerMetric`); extra series become no-ops and increment `wardx.internal.cardinality_dropped`. Histogram `Observe(value, attrs)` keeps attrs only for the window max (`exemplar`). A lookup key (`grantId`, `matchId`) belongs there, not on the series.
+
+**Distinct.** `Distinct(name, dims).Add(identifier)` hashes locally with the
+required stable `PrivacySalt` and sends only a fixed mergeable HLL sketch. It
+answers approximate unique counts, not identities or ordered player paths.
 
 **Player, not backend.** This process is one user. Increment on the game loop or event handlers. Give the player `role` `unity` so MCP does not mix it with a `game-server`.
 

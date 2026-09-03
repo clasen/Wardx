@@ -7,6 +7,7 @@ import type {
   CreateWardxOptions,
   DimensionValue,
   Dimensions,
+  DistinctHandle,
   EventTraceRecord,
   Experiment,
   ExperimentGoalContext,
@@ -36,6 +37,7 @@ export type {
   CreateWardxOptions,
   DimensionValue,
   Dimensions,
+  DistinctHandle,
   EventTraceRecord,
   Experiment,
   ExperimentGoalContext,
@@ -78,6 +80,7 @@ export class WardxNode {
   counter(name: string, dims?: Dimensions | null): CounterHandle;
   gauge(name: string, dims?: Dimensions | null): GaugeHandle;
   histogram(name: string, a?: HistogramOptions | null, b?: HistogramOptions | null): HistogramHandle;
+  distinct(name: string, dims?: Dimensions | null): DistinctHandle;
   timer(name: string, dims?: Dimensions | null): StopTimer;
   event(name: string, attrs?: Attrs | null): void;
   flush(): Promise<void>;

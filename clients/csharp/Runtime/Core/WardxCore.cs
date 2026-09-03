@@ -33,7 +33,8 @@ namespace Wardx
                 settings.MaxDimensionKeys,
                 settings.MaxDimensionValueLength,
                 settings.HistogramBuckets,
-                () => { Internal.CardinalityDropped += 1; }
+                () => { Internal.CardinalityDropped += 1; },
+                settings.PrivacySalt
             );
             _events = new EventBuffer(settings.MaxBufferedEvents);
             _logs = new LogBuffer(settings.MaxBufferedLogs);
@@ -61,6 +62,12 @@ namespace Wardx
         {
             return Wrap(_metrics.Histogram(name, dims, buckets), NoopHistogram.Instance, name, dims,
                 (series, noop) => new TracedHistogram(series, _tracer, name, dims, noop));
+        }
+
+        public IDistinct Distinct(string name, IReadOnlyDictionary<string, object> dims = null)
+        {
+            return Wrap(_metrics.Distinct(name, dims), NoopDistinct.Instance, name, dims,
+                (series, noop) => new TracedDistinct(series, _tracer, name, dims, noop));
         }
 
         public TimerToken Timer(string name, IReadOnlyDictionary<string, object> dims = null)
@@ -185,6 +192,7 @@ namespace Wardx
                     Counters = physical.Counters.Count,
                     Gauges = physical.Gauges.Count,
                     Histograms = physical.Histograms.Count,
+                    Distincts = physical.Distincts.Count,
                     Events = physical.Events.Count,
                     Logs = physical.Logs.Count,
                     DroppedLogs = i == 0 ? batch.DroppedLogs : 0,

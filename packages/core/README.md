@@ -61,7 +61,7 @@ The defaults live in `defaults.json`. Do not omit a required key. The loader doe
 
 **When:** You write a runtime that is not Node.js, or you test the engine without HTTP.
 
-**Objective:** Record counters, gauges, histograms, and timers. Then make a frame.
+**Objective:** Record counters, gauges, histograms, distinct estimates, and timers. Then make a frame.
 
 ```js
 import { WardxCore, loadSdkDefaults } from '@wardx/core';
@@ -83,6 +83,7 @@ core.counter('match.completed', { mode: 'ranked' }).inc();
 core.counter('coins.awarded').add(25);
 core.gauge('players.online').set(12921);
 core.histogram('request.duration').observe(42);
+core.distinct('shot.traffic.hids', { result: 'violating' }).add(hid);
 
 const endTimer = core.timer('matchmaking.duration');
 endTimer({ result: 'success' });
@@ -96,7 +97,7 @@ const frames = core.takePendingFrames();
 1. Load the SDK defaults.
 2. Add the identity fields.
 3. Construct `WardxCore`.
-4. Call `counter`, `gauge`, `histogram`, or `timer`.
+4. Call `counter`, `gauge`, `histogram`, `distinct`, or `timer`.
 5. Call `snapshotFrame` when you need a frame.
 6. Call `takePendingFrames` to get the pending frames.
 
@@ -114,6 +115,12 @@ core.histogram('coins.award_size').observe(80, { grantId: 'g-80' });
 `observe(value, attrs)` keeps `attrs` only when `value` is the window max. The frame stores that pair as `exemplar`. Attrs use the same key and value limits as dimensions. Do not change the buckets of an existing series. The engine throws an error.
 
 `timer(name, dims)` starts a timer. The returned function records the duration in milliseconds into a histogram. You can add dimensions when you stop the timer.
+
+`distinct(name, dims).add(identifier)` updates a fixed HyperLogLog sketch. The
+engine hashes the identifier as `SHA-256(privacySalt || 0x00 || identifier)` and
+discards it immediately; the frame contains only 512 HLL registers (`p=9`,
+about 4.6% standard error). Keep `privacySalt` stable across workers and time
+windows so equal identifiers map to equal registers.
 
 If a series is above `maxSeriesPerMetric`, or a dimension is not valid, the engine returns a no-op object. The engine increments `wardx.internal.cardinality_dropped`.
 

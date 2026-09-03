@@ -59,6 +59,10 @@ export class WardxNode {
     return this._core.histogram(name, a, b);
   }
 
+  distinct(name, dims) {
+    return this._core.distinct(name, dims);
+  }
+
   timer(name, dims) {
     return this._core.timer(name, dims);
   }

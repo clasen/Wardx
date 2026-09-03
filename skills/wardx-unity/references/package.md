@@ -28,6 +28,8 @@ Exports: `WardxClient`, `WardxOptions`, `WardxBehaviour` (Unity), `Dims`, `Conso
 - Failed sync increments `FramesFailed` and drops that envelope. Do not retry the same frames. Do not write a disk queue.
 - `Role` cannot be `*`. It is client-selected routing metadata, not authorization; Remote Config never contains secrets. Required create keys are `Endpoint`, `ProjectKey`, `Project`, `Role`, `AppVersion`, `Environment`. Do not default them in code. `WardxBehaviour` may fill empty `AppVersion` from `Application.version` only.
 - Histogram buckets are immutable per series. Changing them throws.
+- Distinct identifiers are salted and hashed locally; frames contain only the
+  fixed `p=9` HLL sketch. Keep `PrivacySalt` stable across workers.
 - Invalid or over-cap dimensions return no-op series and increment `CardinalityDropped`. Do not throw on cardinality.
 - `Config.Get` never blocks on network. Missing key → caller fallback.
 - `Identify(subjectId)` sets the instance default subject. `Identify(null)` clears it. Empty string throws. Per-call `subjectId` overrides it. A `game-server` that serves many users must pass `subjectId` per call and must not `Identify()`.

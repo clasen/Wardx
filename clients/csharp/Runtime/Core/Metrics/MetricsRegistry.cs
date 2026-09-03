@@ -11,9 +11,11 @@ namespace Wardx
         readonly int _maxDimensionValueLength;
         readonly double[] _defaultHistogramBuckets;
         readonly Action _onCardinalityDropped;
+        readonly string _privacySalt;
         readonly Dictionary<string, Dictionary<string, Counter>> _countersByName = new Dictionary<string, Dictionary<string, Counter>>();
         readonly Dictionary<string, Dictionary<string, Gauge>> _gaugesByName = new Dictionary<string, Dictionary<string, Gauge>>();
         readonly Dictionary<string, Dictionary<string, Histogram>> _histogramsByName = new Dictionary<string, Dictionary<string, Histogram>>();
+        readonly Dictionary<string, Dictionary<string, HyperLogLog>> _distinctsByName = new Dictionary<string, Dictionary<string, HyperLogLog>>();
         readonly HashSet<string> _rejected = new HashSet<string>();
 
         public MetricsRegistry(
@@ -21,13 +23,15 @@ namespace Wardx
             int maxDimensionKeys,
             int maxDimensionValueLength,
             double[] defaultHistogramBuckets,
-            Action onCardinalityDropped)
+            Action onCardinalityDropped,
+            string privacySalt = null)
         {
             _maxSeriesPerMetric = maxSeriesPerMetric;
             _maxDimensionKeys = maxDimensionKeys;
             _maxDimensionValueLength = maxDimensionValueLength;
             _defaultHistogramBuckets = defaultHistogramBuckets;
             _onCardinalityDropped = onCardinalityDropped;
+            _privacySalt = privacySalt;
         }
 
         public ICounter Counter(string name, IReadOnlyDictionary<string, object> dims = null)
@@ -55,6 +59,18 @@ namespace Wardx
                 throw new InvalidOperationException("histogram " + name + " buckets cannot change for an existing series");
             }
             return histogram;
+        }
+
+        public IDistinct Distinct(string name, IReadOnlyDictionary<string, object> dims = null)
+        {
+            var series = Series(
+                _distinctsByName,
+                'd',
+                name,
+                dims,
+                resolved => new HyperLogLog(name, resolved, _privacySalt)
+            );
+            return (IDistinct)series ?? NoopDistinct.Instance;
         }
 
         public TimerToken Timer(string name, IReadOnlyDictionary<string, object> dims = null)
@@ -111,7 +127,19 @@ namespace Wardx
                     }
                 }
             }
-            return new MetricSnapshot(counters, gauges, histograms);
+            var distincts = new List<DistinctSample>();
+            foreach (var byKey in _distinctsByName.Values)
+            {
+                foreach (var series in byKey.Values)
+                {
+                    if (series.Dirty)
+                    {
+                        distincts.Add(new DistinctSample(series.Name, series.Dims, series.Snapshot()));
+                        series.Reset();
+                    }
+                }
+            }
+            return new MetricSnapshot(counters, gauges, histograms, distincts);
         }
 
         public bool IsDirty()
@@ -135,6 +163,13 @@ namespace Wardx
                 foreach (var series in byKey.Values)
                 {
                     if (series.Count > 0) return true;
+                }
+            }
+            foreach (var byKey in _distinctsByName.Values)
+            {
+                foreach (var series in byKey.Values)
+                {
+                    if (series.Dirty) return true;
                 }
             }
             return false;
@@ -216,12 +251,23 @@ namespace Wardx
         public readonly List<CounterSample> Counters;
         public readonly List<GaugeSample> Gauges;
         public readonly List<HistogramSample> Histograms;
+        public readonly List<DistinctSample> Distincts;
 
-        public MetricSnapshot(List<CounterSample> counters, List<GaugeSample> gauges, List<HistogramSample> histograms)
+        public MetricSnapshot(
+            List<CounterSample> counters,
+            List<GaugeSample> gauges,
+            List<HistogramSample> histograms,
+            List<DistinctSample> distincts)
         {
             Counters = counters;
             Gauges = gauges;
             Histograms = histograms;
+            Distincts = distincts;
+        }
+
+        public MetricSnapshot(List<CounterSample> counters, List<GaugeSample> gauges, List<HistogramSample> histograms)
+            : this(counters, gauges, histograms, new List<DistinctSample>())
+        {
         }
     }
 
@@ -262,6 +308,20 @@ namespace Wardx
         public readonly HistogramBody Body;
 
         public HistogramSample(string name, IReadOnlyDictionary<string, object> dims, HistogramBody body)
+        {
+            Name = name;
+            Dims = dims;
+            Body = body;
+        }
+    }
+
+    public readonly struct DistinctSample
+    {
+        public readonly string Name;
+        public readonly IReadOnlyDictionary<string, object> Dims;
+        public readonly HllBody Body;
+
+        public DistinctSample(string name, IReadOnlyDictionary<string, object> dims, HllBody body)
         {
             Name = name;
             Dims = dims;

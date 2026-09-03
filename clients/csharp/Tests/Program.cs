@@ -66,6 +66,8 @@ namespace Wardx.Tests
                     );
                 }
                 client.Counter("interop.counter", Dims.Of("runtime", "csharp")).Inc();
+                client.Distinct("interop.hids", Dims.Of("result", "violating")).Add("interop-private-hid");
+                client.Distinct("interop.hids", Dims.Of("result", "violating")).Add("interop-private-hid");
                 client.Event("interop.event", Dims.Of("runtime", "csharp"));
                 client.Experiment.Goal("interop.goal", "interop-subject", 2);
                 client.ShutdownAsync().GetAwaiter().GetResult();

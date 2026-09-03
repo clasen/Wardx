@@ -1,5 +1,7 @@
+import { estimateHllBody, mergeHllBodies, normalizeHllBody } from '../HyperLogLog.js';
+
 const TIERS = new Set(['minute', 'hour', 'day']);
-const KINDS = new Set(['counter', 'event', 'log', 'gauge', 'histogram', 'drop']);
+const KINDS = new Set(['counter', 'event', 'log', 'gauge', 'histogram', 'distinct', 'drop']);
 const LOG_LEVELS = new Set(['debug', 'info', 'warn', 'error']);
 const FORBIDDEN_KEYS = new Set([
   'attrs',
@@ -89,6 +91,11 @@ export function normalizeHistoricalRow(row, label = 'historical row') {
       previous = bound;
       return [bound, integerCount(pair[1], `${label}.buckets[${index}][1]`)];
     });
+  } else if (row.kind === 'distinct') {
+    const body = normalizeHllBody({ precision: row.precision, registers: row.registers });
+    out.precision = body.precision;
+    out.registers = body.registers;
+    out.estimate = estimateHllBody(body);
   }
   return out;
 }
@@ -140,6 +147,14 @@ function mergeRow(existing, incoming) {
     for (let index = 0; index < existing.buckets.length; index++) {
       existing.buckets[index][1] += incoming.buckets[index][1];
     }
+  } else if (existing.kind === 'distinct') {
+    const body = mergeHllBodies(
+      { precision: existing.precision, registers: existing.registers },
+      { precision: incoming.precision, registers: incoming.registers }
+    );
+    existing.precision = body.precision;
+    existing.registers = body.registers;
+    existing.estimate = estimateHllBody(body);
   }
 }
 

@@ -1,3 +1,5 @@
+import { estimateHllBody, mergeHllBodies, normalizeHllBody } from './HyperLogLog.js';
+
 function dimKey(dims) {
   if (dims == null) return '';
   const keys = Object.keys(dims);
@@ -267,9 +269,11 @@ function emptyWindow(minute) {
     counters: new Map(),
     gauges: new Map(),
     histograms: new Map(),
+    distincts: new Map(),
     counterSeriesByName: new Map(),
     gaugeSeriesByName: new Map(),
     histogramSeriesByName: new Map(),
+    distinctSeriesByName: new Map(),
     eventNames: new Map(),
     logNames: new Map(),
     experiments: new Map(),
@@ -456,6 +460,21 @@ export class FrameAggregator {
           body: mergeHistogram(window.histograms.get(key)?.body, body)
         });
       }
+      for (const [name, dims, body] of frame.metrics.distincts || []) {
+        const key = seriesKey(role, name, dims);
+        const capKey = eventKey(role, name);
+        if (!admitSeries(window.distincts, window.distinctSeriesByName, capKey, key, max)) {
+          window.cardinalityDropped += 1;
+          continue;
+        }
+        const previous = window.distincts.get(key);
+        window.distincts.set(key, {
+          name,
+          dims,
+          role,
+          body: previous ? mergeHllBodies(previous.body, body) : normalizeHllBody(body)
+        });
+      }
     }
     this._prune();
     return {
@@ -520,6 +539,12 @@ export class FrameAggregator {
           role: row.role,
           body: cloneHistogramBody(row.body)
         })),
+        distincts: [...window.distincts.values()].map((row) => ({
+          name: row.name,
+          dims: cloneDims(row.dims),
+          role: row.role,
+          body: normalizeHllBody(row.body)
+        })),
         eventNames: [...window.eventNames.values()].map((row) => ({
           name: row.name,
           role: row.role,
@@ -577,6 +602,16 @@ export class FrameAggregator {
           dims,
           role: row.role,
           body: cloneHistogramBody(row.body)
+        });
+      }
+      for (const row of incoming.distincts || []) {
+        const dims = cloneDims(row.dims);
+        const key = seriesKey(row.role, row.name, dims);
+        putSeries(window.distincts, window.distinctSeriesByName, key, eventKey(row.role, row.name), {
+          name: row.name,
+          dims,
+          role: row.role,
+          body: normalizeHllBody(row.body)
         });
       }
       for (const row of incoming.eventNames) {
@@ -645,6 +680,13 @@ export class FrameAggregator {
         counters: filterByRole(filterByName([...window.counters.values()], names), role),
         gauges: filterByRole(filterByName([...window.gauges.values()], names), role),
         histograms: filterByRole(filterByName([...window.histograms.values()], names), role),
+        distincts: filterByRole(filterByName([...window.distincts.values()], names), role).map((row) => ({
+          name: row.name,
+          dims: row.dims,
+          role: row.role,
+          estimate: estimateHllBody(row.body),
+          precision: row.body.precision
+        })),
         eventNames,
         logNames,
         experiments: serializeExperiments(window.experiments, names),

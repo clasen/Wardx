@@ -21,6 +21,7 @@ function rowCount(frame) {
     frame.metrics.counters.length +
     frame.metrics.gauges.length +
     frame.metrics.histograms.length +
+    (frame.metrics.distincts?.length || 0) +
     frame.events.length +
     frame.logs.length
   );
@@ -39,7 +40,8 @@ export class FrameBuilder {
       metrics: {
         counters,
         gauges,
-        histograms
+        histograms,
+        ...(metrics.distincts?.length > 0 ? { distincts: metrics.distincts.slice() } : {})
       },
       events,
       logs
@@ -81,6 +83,7 @@ export class FrameBuilder {
       counters: 0,
       gauges: 0,
       histograms: 0,
+      distincts: 0,
       events: 0,
       logs: 0
     };
@@ -100,11 +103,17 @@ export class FrameBuilder {
       collection(current).push(row);
       if (measure(current).bytes <= maxFrameBytes) return true;
       collection(current).pop();
+      if (collection.kind === 'distincts' && current.metrics.distincts.length === 0) {
+        delete current.metrics.distincts;
+      }
       if (rowCount(current) > 0) {
         finishCurrent();
         collection(current).push(row);
         if (measure(current).bytes <= maxFrameBytes) return true;
         collection(current).pop();
+        if (collection.kind === 'distincts' && current.metrics.distincts.length === 0) {
+          delete current.metrics.distincts;
+        }
       }
       if (countDrop) dropped[collection.kind] += 1;
       return false;
@@ -116,6 +125,11 @@ export class FrameBuilder {
     gauges.kind = 'gauges';
     const histograms = (candidate) => candidate.metrics.histograms;
     histograms.kind = 'histograms';
+    const distincts = (candidate) => {
+      if (!candidate.metrics.distincts) candidate.metrics.distincts = [];
+      return candidate.metrics.distincts;
+    };
+    distincts.kind = 'distincts';
     const events = (candidate) => candidate.events;
     events.kind = 'events';
     const logs = (candidate) => candidate.logs;
@@ -124,6 +138,7 @@ export class FrameBuilder {
     for (const row of frame.metrics.counters) addRow(counters, row);
     for (const row of frame.metrics.gauges) addRow(gauges, row);
     for (const row of frame.metrics.histograms) addRow(histograms, row);
+    for (const row of frame.metrics.distincts || []) addRow(distincts, row);
     for (const row of frame.events) addRow(events, row);
     for (const row of frame.logs) addRow(logs, row);
 
@@ -143,6 +158,7 @@ export class FrameBuilder {
       droppedCounters: dropped.counters,
       droppedGauges: dropped.gauges,
       droppedHistograms: dropped.histograms,
+      droppedDistincts: dropped.distincts,
       droppedEvents: dropped.events,
       droppedLogs: dropped.logs
     };

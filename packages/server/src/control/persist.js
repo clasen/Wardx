@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { normalizeHllBody } from '../aggregation/HyperLogLog.js';
 
 const STAT_KEYS = ['exposures', 'goals', 'goalSum', 'goalSumSq'];
 
@@ -341,6 +342,7 @@ const WINDOW_KEYS = [
   'counters',
   'gauges',
   'histograms',
+  'distincts',
   'eventNames',
   'logNames',
   'experiments'
@@ -350,6 +352,7 @@ const COUNTER_KEYS = ['name', 'dims', 'role', 'value'];
 const GAUGE_KEYS = ['name', 'dims', 'role', 'value', 'timestamp'];
 const HISTOGRAM_KEYS = ['name', 'dims', 'role', 'body'];
 const HISTOGRAM_BODY_KEYS = new Set(['count', 'sum', 'min', 'max', 'buckets', 'exemplar']);
+const DISTINCT_KEYS = ['name', 'dims', 'role', 'body'];
 const EVENT_NAME_KEYS = ['name', 'role', 'count'];
 const LOG_NAME_KEYS = new Set(['name', 'level', 'role', 'count', 'exemplar']);
 const WINDOW_EXPERIMENT_KEYS = ['id', 'variants'];
@@ -450,7 +453,7 @@ function validateWindowRow(window, label) {
     throw new Error(`${label} must be an object`);
   }
   assertKnownKeys(window, WINDOW_KEYS, label);
-  assertRequiredKeys(window, WINDOW_KEYS, label);
+  assertRequiredKeys(window, WINDOW_KEYS.filter((key) => key !== 'distincts'), label);
   if (typeof window.from !== 'number' || !Number.isFinite(window.from) || window.from % 60000 !== 0) {
     throw new Error(`${label}.from must be a minute-aligned timestamp`);
   }
@@ -511,6 +514,19 @@ function validateWindowRow(window, label) {
     assertDims(row.dims, `${rowLabel}.dims`);
     assertRoleName(row.role, `${rowLabel}.role`);
     validateHistogramBody(row.body, `${rowLabel}.body`);
+  }
+  const distincts = window.distincts || [];
+  if (!Array.isArray(distincts)) throw new Error(`${label}.distincts must be an array`);
+  for (let i = 0; i < distincts.length; i++) {
+    const row = distincts[i];
+    const rowLabel = `${label}.distincts[${i}]`;
+    if (!row || typeof row !== 'object' || Array.isArray(row)) throw new Error(`${rowLabel} must be an object`);
+    assertKnownKeys(row, DISTINCT_KEYS, rowLabel);
+    assertRequiredKeys(row, DISTINCT_KEYS, rowLabel);
+    assertMetricName(row.name, `${rowLabel}.name`);
+    assertDims(row.dims, `${rowLabel}.dims`);
+    assertRoleName(row.role, `${rowLabel}.role`);
+    normalizeHllBody(row.body);
   }
   if (!Array.isArray(window.eventNames)) throw new Error(`${label}.eventNames must be an array`);
   for (let i = 0; i < window.eventNames.length; i++) {

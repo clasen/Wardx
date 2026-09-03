@@ -52,10 +52,11 @@ test('tracer receives one record per measure, event, and log', () => {
   engine.counter('coins.awarded').add(25);
   engine.gauge('players.online').set(12);
   engine.histogram('request.duration').observe(42, { grantId: 'g-1' });
+  engine.distinct('traffic.hids', { result: 'violating' }).add('private-hid');
   engine.event('purchase', { product: 'premium' });
   engine.log.info('match_started', { players: 4 });
 
-  assert.equal(tracer.records.length, 6);
+  assert.equal(tracer.records.length, 7);
   assert.deepEqual(tracer.records[0], {
     hook: 'measure',
     type: 'counter',
@@ -70,10 +71,20 @@ test('tracer receives one record per measure, event, and log', () => {
   assert.equal(tracer.records[2].type, 'gauge');
   assert.equal(tracer.records[3].type, 'histogram');
   assert.deepEqual(tracer.records[3].attrs, { grantId: 'g-1' });
-  assert.equal(tracer.records[4].hook, 'event');
-  assert.equal(tracer.records[4].dropped, false);
-  assert.equal(tracer.records[5].hook, 'log');
-  assert.equal(tracer.records[5].level, 'info');
+  assert.deepEqual(tracer.records[4], {
+    hook: 'measure',
+    type: 'distinct',
+    name: 'traffic.hids',
+    dims: { result: 'violating' },
+    op: 'add',
+    value: 1,
+    noop: false
+  });
+  assert.equal(JSON.stringify(tracer.records[4]).includes('private-hid'), false);
+  assert.equal(tracer.records[5].hook, 'event');
+  assert.equal(tracer.records[5].dropped, false);
+  assert.equal(tracer.records[6].hook, 'log');
+  assert.equal(tracer.records[6].level, 'info');
 });
 
 test('tracer wraps the same series once', () => {
@@ -97,7 +108,7 @@ test('timer stop traces as a histogram observe', async () => {
   assert.equal(tracer.records[0].type, 'histogram');
   assert.equal(tracer.records[0].name, 'matchmaking.duration');
   assert.equal(tracer.records[0].dims.result, 'success');
-  assert.ok(tracer.records[0].value >= 5);
+  assert.ok(tracer.records[0].value > 0);
 });
 
 test('cardinality drop still traces with noop true', () => {

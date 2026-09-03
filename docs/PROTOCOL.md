@@ -71,6 +71,11 @@ Compact arrays for high-volume collections:
         "max": 80,
         "buckets": [[10, 2], [25, 5], [50, 2]]
       }
+    ]],
+    "distincts": [[
+      "shot.traffic.hids",
+      {"result":"violating"},
+      {"precision":9,"registers":"<canonical base64 of 512 registers>"}
     ]]
   },
   "events": [[1787221124812, "purchase", {"product":"premium"}]],
@@ -81,6 +86,15 @@ Compact arrays for high-volume collections:
 The server counts `events` by name and `client.role`. Attrs on a product event are not series. `experiment.exposure` and `experiment.goal` are the exception: they roll up by experiment and variant. A volume funnel is therefore one distinct event name (and a counter of the same name) per step. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Counters are **window deltas**, not lifetime totals. Histogram observations above the last bound remain in `count` / `sum` / `min` / `max` and do not increment a bucket.
+
+`distincts` is optional when empty. Each row is a fixed HyperLogLog sketch with
+`precision = 9` and exactly 512 one-byte registers encoded as canonical Base64.
+Clients compute SHA-256 over `privacySalt`, one zero byte, and the UTF-8
+identifier, update one register, and discard the identifier and digest. Servers
+merge sketches by the register-wise maximum. The standard error is about 4.6%.
+Deploy server support before enabling `distinct` in an SDK: version 1 frames
+without `distincts` remain unchanged, while an older closed-schema server rejects
+the new collection.
 
 A histogram body may include optional `exemplar`: `{ "value": 80, "attrs": { "grantId": "g-80" } }`. It is the observation that set `max` in that window, with caller attrs. One exemplar per series per window. The server keeps the exemplar of the higher merged `max`. Clients omit the field when the max observation had no attrs.
 
@@ -145,6 +159,10 @@ Otherwise variants are chosen from cumulative `weight / totalWeight * allocation
 Every experiment snapshot has one non-empty `goalMetric`. A goal is emitted only for an assignment already exposed in this SDK instance and only when the goal call's name equals that assignment's `goalMetric`. One call cannot attach unrelated concurrent experiments, and there is no match-all behavior. Assignment/exposure state is bounded by the SDK's required `experimentStateMaxSubjects` setting (default `100000`); eviction may emit a duplicate exposure, which the server ledger counts without changing accepted totals.
 
 `subjectHash = SHA-256(UTF8(projectSalt) || 0x00 || UTF8(subjectId))` as 64 lowercase hex digits. The separator prevents ambiguous concatenation. Node and C# require an explicit non-empty `privacySalt`; they never reuse the project credential. Both implementations use the same bytes and output.
+
+Distinct sketches use the same salted SHA-256 byte construction but never put
+the 256-bit digest on the wire. `privacySalt` must remain stable and identical
+across workers so repeated identifiers update the same HLL register.
 
 ## Config resolution
 

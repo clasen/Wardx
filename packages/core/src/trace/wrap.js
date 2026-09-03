@@ -44,3 +44,14 @@ export function wrapHistogram(tracer, series, noop, name, dims) {
     }
   };
 }
+
+export function wrapDistinct(tracer, series, noop, name, dims) {
+  const n = noop ? name : series.name;
+  const d = noop ? (dims ?? null) : series.dims;
+  return {
+    add(identifier) {
+      series.add(identifier);
+      emit(tracer, 'measure', { type: 'distinct', name: n, dims: d, op: 'add', value: 1, noop });
+    }
+  };
+}

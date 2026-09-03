@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { FrameAggregator } from '../src/aggregation/FrameAggregator.js';
+import { HyperLogLog } from '@wardx/core';
 import { sampleEnvelope } from './helpers.js';
 
 function aggregator(max = 2) {
@@ -9,6 +10,30 @@ function aggregator(max = 2) {
     aggregateMaxSeriesPerMetric: max
   });
 }
+
+function distinctBody(ids, salt = 'test-salt') {
+  const hll = new HyperLogLog('shot.traffic.hids', null, salt);
+  for (const id of ids) hll.add(id);
+  return hll.snapshot();
+}
+
+test('FrameAggregator merges overlapping HLL sketches across workers', () => {
+  const agg = aggregator();
+  const now = Date.now();
+  for (const ids of [['hid-a', 'hid-b'], ['hid-b', 'hid-c']]) {
+    const envelope = envelopeWithCounters([], now);
+    envelope.frames[0].metrics.distincts = [
+      ['shot.traffic.hids', { result: 'violating' }, distinctBody(ids)]
+    ];
+    agg.ingest(envelope);
+  }
+  const row = agg.snapshot()[0].distincts[0];
+  assert.equal(row.name, 'shot.traffic.hids');
+  assert.deepEqual(row.dims, { result: 'violating' });
+  assert.ok(row.estimate >= 2 && row.estimate <= 4, String(row.estimate));
+  assert.equal('body' in row, false);
+  assert.doesNotMatch(JSON.stringify(agg.windowsSnapshot()), /hid-a|hid-b|hid-c/);
+});
 
 function envelopeWithCounters(rows, now = Date.now()) {
   return sampleEnvelope({

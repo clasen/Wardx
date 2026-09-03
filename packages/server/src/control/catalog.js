@@ -210,6 +210,7 @@ export function annotateWindows(windows, catalog) {
     counters: window.counters.map((row) => ({ ...row, ...annotateSignal(catalog, row.name) })),
     gauges: window.gauges.map((row) => ({ ...row, ...annotateSignal(catalog, row.name) })),
     histograms: window.histograms.map((row) => ({ ...row, ...annotateSignal(catalog, row.name) })),
+    distincts: (window.distincts || []).map((row) => ({ ...row, ...annotateSignal(catalog, row.name) })),
     eventNames: window.eventNames.map((row) => ({ ...row, ...annotateSignal(catalog, row.name) })),
     logNames: window.logNames.map((row) => ({ ...row, ...annotateSignal(catalog, row.name) }))
   }));

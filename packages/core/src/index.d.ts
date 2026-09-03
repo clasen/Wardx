@@ -44,6 +44,10 @@ export interface HistogramHandle {
   observe(value: number, attrs?: Dimensions | null): void;
 }
 
+export interface DistinctHandle {
+  add(identifier: string): void;
+}
+
 export type StopTimer = (dims?: Dimensions | null) => void;
 
 export interface SdkDefaults {
@@ -140,6 +144,12 @@ export type LogRow = [timestamp: number, level: LogLevel, message: string, attrs
 export type CounterRow = [name: string, dims: Dimensions | null, value: number];
 export type GaugeRow = [name: string, dims: Dimensions | null, value: number, timestamp: number];
 export type HistogramRow = [name: string, dims: Dimensions | null, snapshot: HistogramSnapshot];
+export type DistinctRow = [name: string, dims: Dimensions | null, sketch: HllSketch];
+
+export interface HllSketch {
+  precision: 9;
+  registers: string;
+}
 
 export interface HistogramExemplar {
   value: number;
@@ -159,6 +169,7 @@ export interface MetricsSnapshot {
   counters: CounterRow[];
   gauges: GaugeRow[];
   histograms: HistogramRow[];
+  distincts?: DistinctRow[];
 }
 
 export interface Frame {
@@ -177,6 +188,7 @@ export interface FrameBatch {
   droppedCounters: number;
   droppedGauges: number;
   droppedHistograms: number;
+  droppedDistincts: number;
   droppedLogs: number;
   droppedEvents: number;
 }
@@ -197,7 +209,7 @@ export interface InternalSnapshot {
 }
 
 export interface MeasureTraceRecord {
-  type: 'counter' | 'gauge' | 'histogram';
+  type: 'counter' | 'gauge' | 'histogram' | 'distinct';
   name: string;
   dims: Dimensions | null;
   op: 'inc' | 'add' | 'set' | 'observe';
@@ -226,6 +238,7 @@ export interface FrameTraceRecord {
   counters: number;
   gauges: number;
   histograms: number;
+  distincts: number;
   events: number;
   logs: number;
   droppedLogs: number;
@@ -307,11 +320,31 @@ export class Histogram implements HistogramHandle {
   reset(): void;
 }
 
+export class HyperLogLog implements DistinctHandle {
+  name: string;
+  dims: Dimensions | null;
+  privacySalt: string;
+  registers: Uint8Array;
+  dirty: boolean;
+  constructor(name: string, dims: Dimensions | null, privacySalt: string);
+  add(identifier: string): void;
+  snapshot(): HllSketch;
+  reset(): void;
+}
+
+export const HLL_PRECISION: 9;
+export function encodeHllRegisters(registers: Uint8Array): string;
+export function decodeHllRegisters(sketch: HllSketch): Uint8Array;
+export function estimateHllRegisters(registers: Uint8Array): number;
+export function estimateHyperLogLog(sketch: HllSketch): number;
+export function mergeHyperLogLog(left: HllSketch, right: HllSketch): HllSketch;
+
 export interface MetricsRegistryOptions {
   maxSeriesPerMetric: number;
   maxDimensionKeys: number;
   maxDimensionValueLength: number;
   defaultHistogramBuckets: number[];
+  privacySalt?: string;
   onCardinalityDropped: () => void;
 }
 
@@ -320,6 +353,7 @@ export class MetricsRegistry {
   counter(name: string, dims?: Dimensions | null): CounterHandle;
   gauge(name: string, dims?: Dimensions | null): GaugeHandle;
   histogram(name: string, a?: HistogramOptions | null, b?: HistogramOptions | null): HistogramHandle;
+  distinct(name: string, dims?: Dimensions | null): DistinctHandle;
   timer(name: string, dims?: Dimensions | null): StopTimer;
   snapshotAndReset(): MetricsSnapshot;
   isDirty(): boolean;
@@ -403,6 +437,7 @@ export class WardxCore {
   counter(name: string, dims?: Dimensions | null): CounterHandle;
   gauge(name: string, dims?: Dimensions | null): GaugeHandle;
   histogram(name: string, a?: HistogramOptions | null, b?: HistogramOptions | null): HistogramHandle;
+  distinct(name: string, dims?: Dimensions | null): DistinctHandle;
   timer(name: string, dims?: Dimensions | null): StopTimer;
   event(name: string, attrs?: Attrs | null): void;
   identify(subjectId: string | null | undefined): void;

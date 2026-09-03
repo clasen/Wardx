@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { MetricsRegistry } from '../src/metrics/MetricsRegistry.js';
+import { estimateHyperLogLog } from '../src/metrics/HyperLogLog.js';
 
 function registry(overrides = {}) {
   return new MetricsRegistry({
@@ -8,10 +9,44 @@ function registry(overrides = {}) {
     maxDimensionKeys: 8,
     maxDimensionValueLength: 64,
     defaultHistogramBuckets: [10, 25, 50, 100],
+    privacySalt: 'test-salt',
     onCardinalityDropped: () => {},
     ...overrides
   });
 }
+
+test('distinct hashes identifiers locally, deduplicates them, and resets by window', () => {
+  const metrics = registry();
+  const distinct = metrics.distinct('shot.traffic.hids', { result: 'violating' });
+  distinct.add('hid-a');
+  distinct.add('hid-a');
+  distinct.add('hid-b');
+
+  const snapshot = metrics.snapshotAndReset();
+  assert.equal(snapshot.distincts.length, 1);
+  assert.equal(snapshot.distincts[0][0], 'shot.traffic.hids');
+  assert.deepEqual(snapshot.distincts[0][1], { result: 'violating' });
+  assert.equal(snapshot.distincts[0][2].precision, 9);
+  const estimate = estimateHyperLogLog(snapshot.distincts[0][2]);
+  assert.ok(estimate >= 1 && estimate <= 3);
+  assert.doesNotMatch(JSON.stringify(snapshot), /hid-a|hid-b/);
+  assert.equal(metrics.snapshotAndReset().distincts.length, 0);
+});
+
+test('distinct uses privacySalt and estimates a larger unique set within HLL error', () => {
+  const first = registry({ privacySalt: 'salt-a' });
+  const second = registry({ privacySalt: 'salt-b' });
+  for (let index = 0; index < 10_000; index++) {
+    const id = `hid-${index}`;
+    first.distinct('active.hids').add(id);
+    second.distinct('active.hids').add(id);
+  }
+  const firstBody = first.snapshotAndReset().distincts[0][2];
+  const secondBody = second.snapshotAndReset().distincts[0][2];
+  assert.notEqual(firstBody.registers, secondBody.registers);
+  const estimate = estimateHyperLogLog(firstBody);
+  assert.ok(estimate >= 9000 && estimate <= 11000, String(estimate));
+});
 
 test('counter inc and add accumulate in the window then reset', () => {
   const metrics = registry();

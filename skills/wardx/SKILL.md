@@ -1,6 +1,6 @@
 ---
 name: wardx
-description: Instruments Node.js with the Wardx SDK (wardx / createWardx) — counters, gauges, histograms, timers, events, logs, Remote Config, experiment assignment, and volume funnels. Use when the user mentions wardx, createWardx, config.get, experiment.goal, createConsoleTracer, packages/node, packages/core, @wardx/core, funnel, onboarding steps, or asks to add telemetry, metrics, events, logs, or A/B assignment in application code. Also use when changing the Node SDK or the core engine. Do not use for MCP tools, catalog onboarding, ingest control, or POST /v1/sync from an agent — that belongs to wardx-server.
+description: Instruments Node.js with the Wardx SDK (wardx / createWardx) — counters, gauges, histograms, distinct HLL estimates, timers, events, logs, Remote Config, experiment assignment, and volume funnels. Use when the user mentions wardx, createWardx, config.get, experiment.goal, createConsoleTracer, packages/node, packages/core, @wardx/core, funnel, onboarding steps, or asks to add telemetry, metrics, events, logs, unique counts, or A/B assignment in application code. Also use when changing the Node SDK or the core engine. Do not use for MCP tools, catalog onboarding, ingest control, or POST /v1/sync from an agent — that belongs to wardx-server.
 ---
 
 # Wardx Node SDK
@@ -37,6 +37,7 @@ Use the cheapest signal that still answers the question.
 | How many / how much in this window | `counter(name, dims).inc()` or `.add(n)` |
 | Last known size of a set | `gauge(name, dims).set(value)` |
 | Distribution of a sample you already have | `histogram(name, …).observe(value)` |
+| Approximate unique identifiers without storing them | `distinct(name, dims).add(identifier)` |
 | Elapsed time you start and stop here | `timer(name, dims)` then the stop function |
 | One discrete product fact | `event(name, attrs)` plus a counter when you also need a rate |
 | Drop-off between named steps (volume funnel) | one `event` + one `counter` per step name. Not a unique-user path. |
@@ -51,6 +52,11 @@ Use the cheapest signal that still answers the question.
 A counter in a frame is a window delta, not a lifetime total. A gauge that is never `set` in a window is absent. Keep the series object when you increment in a loop.
 
 **Dimensions.** Small sets: `mode`, `route`, `code`, `source`, `result`. Values are string, number, or boolean. Never `userId`, email, or a unique id on a metric dimension. The SDK caps series per name (`maxSeriesPerMetric`); extra series become no-ops and increment `wardx.internal.cardinality_dropped`. Histogram `observe(value, attrs)` keeps attrs only for the window max (`exemplar`). A lookup key (`grantId`, `matchId`) belongs there, not on the series.
+
+**Distinct.** `distinct(name, dims).add(identifier)` hashes the identifier locally
+with the required stable `privacySalt` and sends only a fixed mergeable HLL
+sketch. Use it for an approximate unique count per low-cardinality series. It
+does not retain identities, order events, or create a queryable user funnel.
 
 **Backend vs client.** If one process serves many users, increment counters in process. Do not `event()` once per user action. Give that process its own `role` so MCP does not mix it with a player client.
 

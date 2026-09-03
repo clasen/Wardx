@@ -69,6 +69,19 @@ namespace Wardx.Tests
             }
             AssertX.Equal(1.0, dropped, "events_dropped");
 
+            var distinctCore = new WardxCore(Fixtures.TestSettings(o => o.MaxFrameBytes = 1024));
+            distinctCore.Distinct("shot.traffic.hids", Dims.Of("result", "violating")).Add("private-hid");
+            var distinctBatch = distinctCore.SnapshotFrame();
+            AssertX.Equal(0, distinctBatch.DroppedDistincts, "HLL fits minimum frame");
+            var distinctRows = 0;
+            foreach (var physical in distinctBatch.Frames) distinctRows += physical.Distincts.Count;
+            AssertX.Equal(1, distinctRows, "one HLL row");
+            AssertX.True(
+                string.Join("", distinctBatch.Jsons).IndexOf("private-hid", System.StringComparison.Ordinal) < 0,
+                "raw HID absent"
+            );
+            AssertConsecutiveAndBounded(distinctBatch, 1024);
+
             var events = new List<EventSample>();
             for (var i = 0; i < 200; i++)
             {

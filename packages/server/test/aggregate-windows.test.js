@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { HyperLogLog } from '@wardx/core';
 import { aggregateWindowsPath, loadAggregateWindows, validateAggregateWindows } from '../src/control/persist.js';
 import { loadServerConfig } from '../src/loadConfig.js';
 import { executeTool } from '../src/mcp/tools.js';
@@ -69,6 +70,9 @@ test('historical aggregate buckets persist across ingest server restarts', async
   writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
   const now = Date.now() - 600_000;
   const hourFrom = Math.floor(now / 3_600_000) * 3_600_000;
+  const hll = new HyperLogLog('shot.traffic.hids', null, 'test-salt');
+  hll.add('private-hid-a');
+  hll.add('private-hid-b');
   try {
     await withServer(loadServerConfig(path), async (server, base) => {
       const res = await fetch(`${base}/v1/sync`, {
@@ -102,7 +106,8 @@ test('historical aggregate buckets persist across ingest server restarts', async
                         exemplar: { value: 80, attrs: { grantId: 'g-80' } }
                       }
                     ]
-                  ]
+                  ],
+                  distincts: [['shot.traffic.hids', { result: 'violating' }, hll.snapshot()]]
                 },
                 events: [[now, 'purchase', { product: 'premium' }]],
                 logs: []
@@ -127,6 +132,11 @@ test('historical aggregate buckets persist across ingest server restarts', async
     const histogram = history.buckets[0].rows.find((row) => row.name === 'coins.award_size');
     assert.equal(histogram.max, 80);
     assert.equal(histogram.exemplar, undefined);
+    const distinct = history.buckets[0].rows.find((row) => row.name === 'shot.traffic.hids');
+    assert.ok(distinct.estimate >= 1 && distinct.estimate <= 3);
+    assert.equal(distinct.precision, 9);
+    assert.equal(distinct.registers, undefined);
+    assert.doesNotMatch(JSON.stringify(history), /private-hid-a|private-hid-b/);
     assert.equal(executeTool(restarted.wardx.control, 'get_aggregates', { project: 'demo' }).windows.length, 0);
   } finally {
     rmSync(dir, { recursive: true, force: true });

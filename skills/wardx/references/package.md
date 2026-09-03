@@ -27,7 +27,7 @@ Exports: `createWardx`, `WardxNode`, `createConsoleTracer`. Node 20+. ESM.
 | `src/settings.js` | `resolveSettings`, `loadSdkDefaults`, `nextSyncDelayMs` |
 | `src/protocol.js` | `PROTOCOL_VERSION`, `SDK_NAME` (`wardx-node`), `PLATFORM` (`node`), `INTERNAL`, required keys |
 | `defaults.json` | Operational defaults. Loader throws if a required key is missing. No fallback values. |
-| `src/metrics/` | Counter, Gauge, Histogram, Timer, MetricsRegistry, dimensions |
+| `src/metrics/` | Counter, Gauge, Histogram, HyperLogLog, Timer, MetricsRegistry, dimensions |
 | `src/config/` | ConfigStore, ExperimentResolver, FNV-1a hashes |
 | `src/frame/FrameBuilder.js` | Window snapshot; `splitToMaxBytes` with consecutive sequence numbers and observable row drops |
 | `src/buffers/` | EventBuffer, LogBuffer — drop new rows when full |
@@ -41,6 +41,8 @@ The core does not send HTTP. A runtime (this Node package, or a future SDK) must
 - Failed sync increments `framesFailed` and drops that envelope. Do not retry the same frames. Do not write a disk queue.
 - `role` cannot be `*`. It is client-selected routing metadata, not authorization; Remote Config never contains secrets. Required create keys are listed in `REQUIRED_CREATE_KEYS`; do not default them in code.
 - Histogram buckets are immutable per series. Changing them throws.
+- Distinct identifiers are salted and hashed locally; frames contain only the
+  fixed `p=9` HLL sketch. Keep `privacySalt` stable across workers.
 - Invalid or over-cap dimensions return no-op series and increment `cardinalityDropped`. Do not throw on cardinality.
 - `config.get` never blocks on network. Missing key → caller fallback.
 - `identify(subjectId)` sets the SDK-instance default subject. `identify(null)` clears it. Per-call `{ subjectId }` overrides it. A `game-server` that serves many users must pass `subjectId` per call and must not share an instance default.

@@ -86,6 +86,11 @@ namespace Wardx
             lock (_gate) return new LockedHistogram(_gate, _core.Histogram(name, dims, buckets));
         }
 
+        public IDistinct Distinct(string name, IReadOnlyDictionary<string, object> dims = null)
+        {
+            lock (_gate) return new LockedDistinct(_gate, _core.Distinct(name, dims));
+        }
+
         public TimerToken Timer(string name, IReadOnlyDictionary<string, object> dims = null)
         {
             var start = Stopwatch.GetTimestamp();
@@ -496,6 +501,23 @@ namespace Wardx
         public void Observe(double value, IReadOnlyDictionary<string, object> attrs)
         {
             lock (_gate) _inner.Observe(value, attrs);
+        }
+    }
+
+    sealed class LockedDistinct : IDistinct
+    {
+        readonly object _gate;
+        readonly IDistinct _inner;
+
+        public LockedDistinct(object gate, IDistinct inner)
+        {
+            _gate = gate;
+            _inner = inner;
+        }
+
+        public void Add(string identifier)
+        {
+            lock (_gate) _inner.Add(identifier);
         }
     }
 

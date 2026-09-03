@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { validateEnvelope, validateExperimentEvents } from '../src/ingest/validate.js';
 import { sampleEnvelope, testServerConfig } from './helpers.js';
+import { HyperLogLog } from '@wardx/core';
 
 const LIMITS = testServerConfig();
 
@@ -52,7 +53,16 @@ test('validateEnvelope accepts the documented wire structures', () => {
                 exemplar: { value: 80, attrs: { grantId: 'g-80' } }
               }
             ]
-          ]
+          ],
+          distincts: [[
+            'shot.traffic.hids',
+            { result: 'violating' },
+            (() => {
+              const hll = new HyperLogLog('shot.traffic.hids', null, 'test-salt');
+              hll.add('private-hid');
+              return hll.snapshot();
+            })()
+          ]]
         },
         events: [[from + 4812, 'purchase', { product: 'premium' }]],
         logs: [[from + 5823, 'error', 'payment_failed', { code: 'timeout' }]]
@@ -66,6 +76,20 @@ test('validateEnvelope accepts the documented wire structures', () => {
     }),
     null
   );
+});
+
+test('validateEnvelope rejects malformed HLL sketches', () => {
+  const cases = [
+    [{ precision: 8, registers: '' }, /precision must be 9/],
+    [{ precision: 9, registers: 'not-base64' }, /canonical base64/],
+    [{ precision: 9, registers: Buffer.alloc(511).toString('base64') }, /exactly 512 bytes/],
+    [{ precision: 9, registers: Buffer.from([57, ...new Array(511).fill(0)]).toString('base64') }, /rank must be <= 56/]
+  ];
+  for (const [body, expected] of cases) {
+    const envelope = sampleEnvelope();
+    envelope.frames[0].metrics.distincts = [['active.hids', null, body]];
+    assert.match(validateEnvelope(envelope, LIMITS), expected);
+  }
 });
 
 test('validateEnvelope accepts configured limits exactly', () => {

@@ -160,6 +160,10 @@ async function verify() {
     assert.equal(analysis.variants[0].goalSum, 2);
     assert.equal(analysis.decision.status, 'invalid');
     assert.match(analysis.decision.reason, /descriptive experiment/);
+    const aggregates = await callTool(client, 'get_aggregates', { project: 'demo', names: ['interop.hids'] });
+    const distinct = aggregates.windows.flatMap((window) => window.distincts).find((row) => row.name === 'interop.hids');
+    assert.equal(distinct.estimate, 1);
+    assert.equal('registers' in distinct, false);
     await client.close();
 
     const envelopes = (await readFile(ndjsonPath, 'utf8'))
@@ -170,10 +174,13 @@ async function verify() {
     assert.ok(envelopes.every((envelope) => envelope.sdk.name === 'wardx-csharp'));
     assert.ok(envelopes.every((envelope) => envelope.client.platform === 'csharp'));
     assert.equal(JSON.stringify(envelopes).includes('interop-subject'), false);
+    assert.equal(JSON.stringify(envelopes).includes('interop-private-hid'), false);
     const frames = envelopes.flatMap((envelope) => envelope.frames);
     const counters = frames.flatMap((frame) => frame.metrics.counters);
     const events = frames.flatMap((frame) => frame.events);
+    const distincts = frames.flatMap((frame) => frame.metrics.distincts || []);
     assert.ok(counters.some((row) => row[0] === 'interop.counter' && row[2] === 1));
+    assert.ok(distincts.some((row) => row[0] === 'interop.hids' && row[2].precision === 9));
     assert.equal(events.filter((row) => row[1] === 'experiment.exposure').length, 1);
     assert.equal(events.filter((row) => row[1] === 'experiment.goal').length, 1);
     assert.ok(events.some((row) => row[1] === 'interop.event'));

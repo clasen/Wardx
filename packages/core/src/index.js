@@ -5,6 +5,15 @@ export { ConfigStore } from './config/ConfigStore.js';
 export { Counter } from './metrics/Counter.js';
 export { Gauge } from './metrics/Gauge.js';
 export { Histogram } from './metrics/Histogram.js';
+export {
+  HLL_PRECISION,
+  HyperLogLog,
+  decodeHllRegisters,
+  encodeHllRegisters,
+  estimateHllRegisters,
+  estimateHyperLogLog,
+  mergeHyperLogLog
+} from './metrics/HyperLogLog.js';
 export { MetricsRegistry } from './metrics/MetricsRegistry.js';
 export { EventBuffer } from './buffers/EventBuffer.js';
 export { LogBuffer } from './buffers/LogBuffer.js';

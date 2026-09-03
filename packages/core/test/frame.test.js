@@ -38,16 +38,26 @@ test('internal dropped counters are merged into the next frame without recursion
   assert.equal(dropped[2], 1);
 });
 
-function bareFrame({ events = [], logs = [], histograms = [], gauges = [] }) {
+function bareFrame({ events = [], logs = [], histograms = [], gauges = [], distincts = [] }) {
   return {
     seq: 1,
     from: 1,
     to: 2,
-    metrics: { counters: [], gauges, histograms },
+    metrics: { counters: [], gauges, histograms, distincts },
     events,
     logs
   };
 }
+
+test('splitToMaxBytes keeps an HLL row under the minimum frame size', () => {
+  const core = new WardxCore(testSettings({ maxFrameBytes: 1024 }));
+  core.distinct('shot.traffic.hids', { result: 'violating' }).add('private-hid');
+  const batch = core.snapshotFrame();
+  assert.equal(batch.droppedDistincts, 0);
+  assert.equal(batch.frames.flatMap((frame) => frame.metrics.distincts || []).length, 1);
+  assert.ok(batch.jsons.every((json) => Buffer.byteLength(json, 'utf8') <= 1024));
+  assert.doesNotMatch(batch.jsons.join(''), /private-hid/);
+});
 
 test('splitToMaxBytes keeps a frame that already fits', () => {
   const frame = bareFrame({ events: [[1, 'a', null]] });

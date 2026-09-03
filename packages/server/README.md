@@ -201,12 +201,15 @@ not retry `POST /v1/sync`.
 
 `get_aggregates` returns current in-memory minute windows. Current counters sum
 deltas; gauges keep the latest timestamp; histograms merge compatible buckets
-and retain the current-window max exemplar; events count by name; logs count by
+and retain the current-window max exemplar; distincts merge HLL registers and
+return an approximate unique count; events count by name; logs count by
 level/name when selected by `catalog.persistLogs`.
 
 SQLite stores tier-neutral minute rows and deterministically compacts them to
 hour and day. Historical counters sum, events/logs count, gauges retain
-last/min/max/sample count, and histograms merge count/sum/min/max/buckets.
+last/min/max/sample count, histograms merge count/sum/min/max/buckets, and
+distincts merge as set unions. MCP exposes the distinct `estimate` and
+`precision`, never identifiers or raw registers.
 Historical rows retain role, environment, app version, and declared dimensions,
 but never event/log attrs, exemplars, instance IDs, or subject hashes.
 
@@ -221,7 +224,7 @@ Use MCP `get_aggregate_history` with:
   "role": "unity",
   "environment": "production",
   "appVersion": "2.4.1",
-  "names": ["level.complete", "session.duration"]
+  "names": ["level.complete", "session.duration", "shot.traffic.hids"]
 }
 ```
 

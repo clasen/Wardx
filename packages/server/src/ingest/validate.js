@@ -1,4 +1,5 @@
 import { roleSees } from '../roles.js';
+import { decodeHllBody } from '../aggregation/HyperLogLog.js';
 
 const LOG_LEVELS = new Set(['debug', 'info', 'warn', 'error']);
 
@@ -156,6 +157,20 @@ function validateHistogram(row, label, limits) {
   return validateHistogramBody(row[2], `${label}[2]`, limits);
 }
 
+function validateDistinct(row, label, limits) {
+  if (!Array.isArray(row) || row.length !== 3) return `${label} must be a 3-item tuple`;
+  const invalidName = validateNonEmptyString(row[0], `${label}[0]`, limits.maxNameBytes);
+  if (invalidName) return invalidName;
+  const invalidDims = validateDimensions(row[1], `${label}[1]`, limits);
+  if (invalidDims) return invalidDims;
+  try {
+    decodeHllBody(row[2]);
+  } catch (error) {
+    return `${label}[2] ${error.message}`;
+  }
+  return null;
+}
+
 function validateEvent(row, label, limits, earliestTimestamp, latestTimestamp) {
   if (!Array.isArray(row) || row.length !== 3) return `${label} must be a 3-item tuple`;
   const invalidTimestamp = validateTimestamp(row[0], `${label}[0]`, earliestTimestamp, latestTimestamp);
@@ -246,7 +261,7 @@ export function validateEnvelope(body, limits) {
     if (!isObject(frame.metrics)) return `${label}.metrics is required`;
     const invalidMetricsKey = unknownKey(
       frame.metrics,
-      new Set(['counters', 'gauges', 'histograms']),
+      new Set(['counters', 'gauges', 'histograms', 'distincts']),
       `${label}.metrics`
     );
     if (invalidMetricsKey) return invalidMetricsKey;
@@ -254,6 +269,7 @@ export function validateEnvelope(body, limits) {
       frame.metrics.counters,
       frame.metrics.gauges,
       frame.metrics.histograms,
+      frame.metrics.distincts || [],
       frame.events,
       frame.logs
     ]) {
@@ -276,6 +292,14 @@ export function validateEnvelope(body, limits) {
       (row, rowLabel) => validateHistogram(row, rowLabel, limits)
     );
     if (invalidHistograms) return invalidHistograms;
+    if (frame.metrics.distincts !== undefined) {
+      const invalidDistincts = validateRows(
+        frame.metrics.distincts,
+        `${label}.metrics.distincts`,
+        (row, rowLabel) => validateDistinct(row, rowLabel, limits)
+      );
+      if (invalidDistincts) return invalidDistincts;
+    }
     const invalidEvents = validateRows(frame.events, `${label}.events`, (row, rowLabel) =>
       validateEvent(row, rowLabel, limits, earliestTimestamp, latestTimestamp)
     );

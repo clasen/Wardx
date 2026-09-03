@@ -1,6 +1,6 @@
 {
   "name": "@wardx/core",
-  "version": "0.2.2",
+  "version": "0.4.0",
   "description": "Runtime-agnostic Wardx engine for metrics, events, logs, Remote Config, and experiments.",
   "keywords": [
     "wardx",

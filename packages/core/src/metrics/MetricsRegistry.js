@@ -1,6 +1,7 @@
 import { Counter, NOOP_COUNTER } from './Counter.js';
 import { Gauge, NOOP_GAUGE } from './Gauge.js';
 import { Histogram, NOOP_HISTOGRAM } from './Histogram.js';
+import { HyperLogLog, NOOP_DISTINCT } from './HyperLogLog.js';
 import { startTimer } from './Timer.js';
 import { assertMetricName, dimKey, validateDimensions } from './dimensions.js';
 
@@ -48,16 +49,24 @@ export class MetricsRegistry {
     this.maxDimensionKeys = options.maxDimensionKeys;
     this.maxDimensionValueLength = options.maxDimensionValueLength;
     this.defaultHistogramBuckets = options.defaultHistogramBuckets;
+    this.privacySalt = options.privacySalt;
     this.onCardinalityDropped = options.onCardinalityDropped;
     this.countersByName = new Map();
     this.gaugesByName = new Map();
     this.histogramsByName = new Map();
+    this.distinctsByName = new Map();
     this.rejected = new Set();
   }
 
   _series(kindMap, Ctor, name, dims, extra) {
     assertMetricName(name);
-    const kindPrefix = kindMap === this.histogramsByName ? 'h' : kindMap === this.gaugesByName ? 'g' : 'c';
+    const kindPrefix = kindMap === this.histogramsByName
+      ? 'h'
+      : kindMap === this.gaugesByName
+        ? 'g'
+        : kindMap === this.distinctsByName
+          ? 'd'
+          : 'c';
     const checked = validateDimensions(dims, this.maxDimensionKeys, this.maxDimensionValueLength);
     const key = dimKey(checked.ok ? checked.dims : dims);
     const rejectKey = kindPrefix + '\0' + name + '\0' + key;
@@ -109,6 +118,13 @@ export class MetricsRegistry {
     return series;
   }
 
+  distinct(name, dims) {
+    const series = this._series(this.distinctsByName, HyperLogLog, name, dims, (resolvedDims) => {
+      return new HyperLogLog(name, resolvedDims, this.privacySalt);
+    });
+    return series || NOOP_DISTINCT;
+  }
+
   timer(name, dims) {
     const histogram = this.histogram(name, dims);
     return startTimer((duration, endDims) => {
@@ -148,7 +164,16 @@ export class MetricsRegistry {
         }
       }
     }
-    return { counters, gauges, histograms };
+    const distincts = [];
+    for (const byKey of this.distinctsByName.values()) {
+      for (const series of byKey.values()) {
+        if (series.dirty) {
+          distincts.push([series.name, series.dims, series.snapshot()]);
+          series.reset();
+        }
+      }
+    }
+    return { counters, gauges, histograms, distincts };
   }
 
   isDirty() {
@@ -165,6 +190,11 @@ export class MetricsRegistry {
     for (const byKey of this.histogramsByName.values()) {
       for (const series of byKey.values()) {
         if (series.count > 0) return true;
+      }
+    }
+    for (const byKey of this.distinctsByName.values()) {
+      for (const series of byKey.values()) {
+        if (series.dirty) return true;
       }
     }
     return false;

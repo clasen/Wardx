@@ -8,9 +8,10 @@ import { InternalMetrics } from './internal/InternalMetrics.js';
 import { NOOP_COUNTER } from './metrics/Counter.js';
 import { NOOP_GAUGE } from './metrics/Gauge.js';
 import { NOOP_HISTOGRAM } from './metrics/Histogram.js';
+import { NOOP_DISTINCT } from './metrics/HyperLogLog.js';
 import { startTimer } from './metrics/Timer.js';
 import { emit } from './trace/emit.js';
-import { wrapCounter, wrapGauge, wrapHistogram } from './trace/wrap.js';
+import { wrapCounter, wrapDistinct, wrapGauge, wrapHistogram } from './trace/wrap.js';
 
 export class WardxCore {
   constructor(settings) {
@@ -24,6 +25,7 @@ export class WardxCore {
       maxDimensionKeys: settings.maxDimensionKeys,
       maxDimensionValueLength: settings.maxDimensionValueLength,
       defaultHistogramBuckets: settings.histogramBuckets,
+      privacySalt: settings.privacySalt,
       onCardinalityDropped: () => {
         this.internal.cardinalityDropped += 1;
       }
@@ -65,6 +67,12 @@ export class WardxCore {
   histogram(name, a, b) {
     return this._wrap(this.metrics.histogram(name, a, b), NOOP_HISTOGRAM, (series, noop) =>
       wrapHistogram(this._tracer, series, noop, name)
+    );
+  }
+
+  distinct(name, dims) {
+    return this._wrap(this.metrics.distinct(name, dims), NOOP_DISTINCT, (series, noop) =>
+      wrapDistinct(this._tracer, series, noop, name, dims)
     );
   }
 
@@ -202,6 +210,7 @@ export class WardxCore {
         counters: physical.metrics.counters.length,
         gauges: physical.metrics.gauges.length,
         histograms: physical.metrics.histograms.length,
+        distincts: physical.metrics.distincts?.length || 0,
         events: physical.events.length,
         logs: physical.logs.length,
         droppedLogs: i === 0 ? batch.droppedLogs : 0,

@@ -10,7 +10,7 @@ mutation also takes integer `expectedVersion >= 0` and non-empty `reason`.
 | `list_projects` | none |
 | `get_project_overview` | `project`, optional `limit` |
 | `get_config` | `project` |
-| `get_aggregates` | `project`; optional `names`, `from`, `to`, `role` |
+| `get_aggregates` | `project`; optional `names`, `from`, `to`, `role`; distinct rows return HLL estimate/precision |
 | `get_aggregate_history` | `project`, `tier: hour|day`, bounded `from`, `to`; optional `role`, `environment`, `appVersion`, `names` |
 | `get_recent_logs` | `project`; optional `level`, exact `message`, exact `attrs`, `role`, `limit` |
 | `list_experiments` | `project` |
@@ -20,6 +20,8 @@ mutation also takes integer `expectedVersion >= 0` and non-empty `reason`.
 `get_aggregate_history` returns bucket rows plus finalization, drop count, and
 newest compacted source watermark. `analyze_experiment.variants` contains
 trusted decision rows; `telemetryVariants` includes all source/trust classes.
+Distinct history rows return the merged estimate and precision without raw HLL
+registers or identifiers.
 
 ## Mutate
 

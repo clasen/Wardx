@@ -373,7 +373,7 @@ export const TOOL_DEFS = [
   {
     name: 'get_aggregates',
     description:
-      'Read 1-minute telemetry windows for a project, with catalog descriptions on names. Windows include logNames for catalog persistLogs (count + last exemplar). Optional names, from, and to filter the payload.',
+      'Read 1-minute telemetry windows for a project, with catalog descriptions on names. Distinct rows expose mergeable HLL estimates without identifiers or registers. Windows include logNames for catalog persistLogs (count + last exemplar). Optional names, from, and to filter the payload.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -389,7 +389,7 @@ export const TOOL_DEFS = [
   },
   {
     name: 'get_aggregate_history',
-    description: 'Read bounded closed hourly or daily aggregate history with completeness metadata.',
+    description: 'Read bounded closed hourly or daily aggregate history with completeness metadata. Distinct rows expose merged HLL estimates without identifiers or registers.',
     inputSchema: {
       type: 'object',
       properties: {

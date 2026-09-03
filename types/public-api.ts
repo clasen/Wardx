@@ -36,6 +36,7 @@ client.identify('subject-1');
 client.counter('request.completed', { route: 'sync' }).inc();
 client.gauge('players.online').set(3);
 client.histogram('request.duration', { buckets: [10, 25, 50], route: 'sync' }).observe(12, { request: 'r-1' });
+client.distinct('shot.traffic.hids', { result: 'violating' }).add('hid-1');
 client.timer('request.duration')({ route: 'sync' });
 client.event('checkout.completed', { amount: 3 });
 client.log.error('checkout_failed', { code: 'timeout' });
