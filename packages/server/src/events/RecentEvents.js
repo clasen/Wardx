@@ -60,4 +60,19 @@ export class RecentEvents {
       ? rows
       : rows.slice(0, filter.limit);
   }
+
+  forget(name) {
+    const retained = [];
+    for (let offset = this.size; offset > 0; offset--) {
+      const index = (this.next - offset + this.max) % this.max;
+      const row = this.buf[index];
+      if (row.name !== name) retained.push(row);
+    }
+    this.buf = new Array(this.max);
+    this.next = 0;
+    this.size = 0;
+    for (const row of retained) {
+      this._push([row.ts, row.name, row.attrs], row.instanceId, row.role);
+    }
+  }
 }

@@ -149,6 +149,38 @@ export const TOOL_DEFS = [
     }
   },
   {
+    name: 'set_inspect_event',
+    description:
+      'Add an exact event name to catalog.inspectEvents so its raw attrs and instance ID enter the bounded volatile recent-event ring. Advances the project version.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: PROJECT,
+        name: { type: 'string', minLength: 1, description: 'Exact event name to inspect.' },
+        expectedVersion: EXPECTED_VERSION,
+        reason: REASON
+      },
+      required: ['project', 'name', 'expectedVersion', 'reason'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'delete_inspect_event',
+    description:
+      'Remove an event name from catalog.inspectEvents and purge its retained volatile samples. Advances the project version.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: PROJECT,
+        name: { type: 'string', minLength: 1 },
+        expectedVersion: EXPECTED_VERSION,
+        reason: REASON
+      },
+      required: ['project', 'name', 'expectedVersion', 'reason'],
+      additionalProperties: false
+    }
+  },
+  {
     name: 'set_persist_log',
     description:
       'Add a log message name to the catalog persistLogs allowlist. The server keeps a lifetime count and last exemplar for that name. Advances the project version. Clients never receive this.',
@@ -527,6 +559,10 @@ export function executeTool(control, name, args = {}) {
       }, mutation);
     case 'delete_signal':
       return control.deleteSignal(args.project, args.name, mutation);
+    case 'set_inspect_event':
+      return control.setInspectEvent(args.project, args.name, mutation);
+    case 'delete_inspect_event':
+      return control.deleteInspectEvent(args.project, args.name, mutation);
     case 'set_persist_log':
       return control.setPersistLog(args.project, args.name, mutation);
     case 'delete_persist_log':

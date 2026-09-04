@@ -166,6 +166,26 @@ export class ControlService {
     return { project, name, ...result };
   }
 
+  setInspectEvent(project, name, options) {
+    if (typeof name !== 'string' || name.length === 0) throw new Error('name is required');
+    const store = this.requireStore(project);
+    const result = this._commitCatalog(project, store, (catalog) => {
+      if (!catalog.inspectEvents.includes(name)) catalog.inspectEvents.push(name);
+    }, options, 'set_inspect_event', [name]);
+    return { project, name, ...result };
+  }
+
+  deleteInspectEvent(project, name, options) {
+    if (typeof name !== 'string' || name.length === 0) throw new Error('name is required');
+    const store = this.requireStore(project);
+    const index = store.catalog.inspectEvents.indexOf(name);
+    if (index === -1) throw new Error(`unknown inspect event: ${name}`);
+    const result = this._commitCatalog(project, store, (catalog) => {
+      catalog.inspectEvents.splice(index, 1);
+    }, options, 'delete_inspect_event', [name]);
+    return { project, name, ...result };
+  }
+
   setPersistLog(project, name, options) {
     if (typeof name !== 'string' || name.length === 0) throw new Error('name is required');
     const store = this.requireStore(project);
@@ -736,6 +756,9 @@ export class ControlService {
     const current = this.mutationRepository.read(project);
     const { snapshot, catalog } = materialize(current.state);
     const store = this.requireStore(project);
+    const removedInspectEvents = store.catalog.inspectEvents
+      .filter((name) => !catalog.inspectEvents.includes(name));
+    for (const name of removedInspectEvents) store.events.forget(name);
     store.configRepo = new ConfigRepository({ version: current.version, ...snapshot });
     store.catalog = catalog;
   }

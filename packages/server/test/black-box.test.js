@@ -375,6 +375,19 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
     backend = createSdk(endpoint, 'backend');
     await Promise.all([frontend.flush(), backend.flush()]);
 
+    await callTool(client, 'delete_inspect_event', {
+      project: 'demo',
+      name: 'checkout.started',
+      expectedVersion: 1,
+      reason: 'verify inspect-event mutation'
+    });
+    await callTool(client, 'set_inspect_event', {
+      project: 'demo',
+      name: 'checkout.started',
+      expectedVersion: 2,
+      reason: 'restore checkout event inspection'
+    });
+
     assert.equal(frontend.config.get('frontend.banner', null), 'welcome');
     assert.equal(frontend.config.get('backend.timeoutMs', 'hidden'), 'hidden');
     assert.equal(frontend.config.get('shared.multiplier', null), 1);
@@ -385,7 +398,7 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
     await callTool(client, 'set_persist_log', {
       project: 'demo',
       name: 'checkout_failed',
-      expectedVersion: 1,
+      expectedVersion: 3,
       reason: 'retain checkout failure rollups'
     });
     frontend.counter('checkout.completed', { channel: 'store' }).inc();
@@ -432,10 +445,10 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
       key: 'frontend.banner',
       value: 'updated',
       roles: ['frontend', 'trusted'],
-      expectedVersion: 2,
+      expectedVersion: 4,
       reason: 'verify durable Remote Config mutation'
     });
-    assert.equal(update.version, 3);
+    assert.equal(update.version, 5);
     await frontend.flush();
     assert.equal(frontend.config.get('frontend.banner', null), 'updated');
 
@@ -476,10 +489,10 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
     const proposed = await callTool(client, 'upsert_experiment', {
       project: 'demo',
       experiment,
-      expectedVersion: 3,
+      expectedVersion: 5,
       reason: 'test trusted fixed-horizon experiment flow'
     });
-    assert.equal(proposed.version, 4);
+    assert.equal(proposed.version, 6);
     await frontend.flush();
     const rawSubject = 'account-raw-subject-must-not-leak';
     frontend.identify(rawSubject);
@@ -529,11 +542,11 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
     const shipped = await callTool(client, 'ship_experiment', {
       project: 'demo',
       experimentId: 'banner-v1',
-      expectedVersion: 4,
+      expectedVersion: 6,
       reason: 'ship persisted healthy winner'
     });
     assert.equal(shipped.shippedVariant, 'winner');
-    assert.equal(shipped.version, 5);
+    assert.equal(shipped.version, 7);
 
     const currentDay = Math.floor(Date.now() / 86_400_000) * 86_400_000;
     for (const [daysAgo, value] of [[2, 2], [1, 3]]) {
@@ -577,7 +590,7 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
       await Promise.all([restartedClient.connect(restartedTransport), restartedPort]);
       await new Promise((resolve) => setTimeout(resolve, 300));
       const persistedConfig = await callTool(restartedClient, 'get_config', { project: 'demo' });
-      assert.equal(persistedConfig.version, 5);
+      assert.equal(persistedConfig.version, 7);
       assert.equal(persistedConfig.values['frontend.banner'], 'experiment-winner');
       assert.equal(persistedConfig.experiments[0].enabled, false);
       const persistedExperiment = await callTool(restartedClient, 'analyze_experiment', {
@@ -618,10 +631,10 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
       const rollback = await callTool(restartedClient, 'rollback_config_change', {
         project: 'demo',
         changeId: shippedChange.id,
-        expectedVersion: 5,
+        expectedVersion: 7,
         reason: 'black-box rollback verification'
       });
-      assert.equal(rollback.version, 6);
+      assert.equal(rollback.version, 8);
       const rolledBackConfig = await callTool(restartedClient, 'get_config', { project: 'demo' });
       assert.equal(rolledBackConfig.values['frontend.banner'], 'updated');
       assert.equal(rolledBackConfig.experiments[0].enabled, true);

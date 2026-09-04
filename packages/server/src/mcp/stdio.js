@@ -58,6 +58,8 @@ export function createMcpServer(control) {
     'set_role_source',
     'set_signal',
     'delete_signal',
+    'set_inspect_event',
+    'delete_inspect_event',
     'set_persist_log',
     'delete_persist_log',
     'set_config_value',

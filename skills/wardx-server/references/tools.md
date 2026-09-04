@@ -38,6 +38,7 @@ restart. Events outside the allowlist remain aggregate counts only.
 | `set_role_description` | `role`, `description` |
 | `set_role_source` | `role`, `path` and/or `git` |
 | `set_signal` / `delete_signal` | `name`, plus `description` and optional exact `category` for set |
+| `set_inspect_event` / `delete_inspect_event` | exact event `name`; delete also purges its retained volatile samples |
 | `set_persist_log` / `delete_persist_log` | exact `name` |
 | `set_config_value` | `key`, JSON `value`, `roles` |
 | `delete_config_value` | `key` |

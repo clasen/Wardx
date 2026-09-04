@@ -279,6 +279,14 @@ test('catalog mutations persist atomically in SQLite and bump configVersion', ()
         category: 'performance'
       }
     );
+    executeMutation(control, 'set_inspect_event', { project: 'demo', name: 'purchase' });
+    assert.deepEqual(control.getCatalog('demo').inspectEvents, ['purchase']);
+    executeMutation(control, 'delete_inspect_event', { project: 'demo', name: 'purchase' });
+    assert.deepEqual(control.getCatalog('demo').inspectEvents, []);
+    assert.throws(
+      () => executeMutation(control, 'delete_inspect_event', { project: 'demo', name: 'purchase' }),
+      /unknown inspect event: purchase/
+    );
     executeMutation(control, 'set_persist_log', { project: 'demo', name: 'payment_failed' });
     assert.deepEqual(control.getCatalog('demo').persistLogs, ['payment_failed']);
     executeMutation(control, 'delete_persist_log', { project: 'demo', name: 'payment_failed' });
@@ -991,6 +999,12 @@ test('get_recent_events filters, orders, limits, evicts, and isolates projects',
     assert.throws(
       () => executeTool(control, 'get_recent_events', { project: 'demo', limit: 0 }),
       /limit must be an integer >= 1/
+    );
+    executeMutation(control, 'delete_inspect_event', { project: 'demo', name: 'purchase' });
+    assert.equal(
+      executeTool(control, 'get_recent_events', { project: 'demo' }).events
+        .some((row) => row.name === 'purchase'),
+      false
     );
   });
 });

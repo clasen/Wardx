@@ -397,6 +397,10 @@ Mutation tools include catalog setters, `set_config_value`,
 `control.maxConcurrentMcpReads` and `control.maxPendingMcpReads`. Streamable HTTP
 also enforces `mcpHttp.maxConcurrentRequests` and `mcpHttp.maxRequestBytes`.
 
+`set_inspect_event` and `delete_inspect_event` update
+`catalog.inspectEvents` for an existing project. Removing a name immediately
+purges its retained volatile samples; aggregate event counts remain unchanged.
+
 ## Operations
 
 - Run exactly one Wardx process against one local SQLite file. Do not put it on
