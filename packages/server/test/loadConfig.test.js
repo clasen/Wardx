@@ -163,7 +163,17 @@ test('validateServerConfig reserves fixed-horizon ledger capacity before enablem
 test('validateServerConfig rejects an invalid catalog', () => {
   const config = testServerConfig();
   config.projects.demo.catalog = { signals: { 'message.sent': 1 } };
-  assert.throws(() => validateServerConfig(config), /signals\.message\.sent must be a non-empty string/);
+  assert.throws(() => validateServerConfig(config), /signals\.message\.sent must be an object/);
+
+  config.projects.demo.catalog = {
+    signals: { 'message.sent': { description: 'Messages sent', category: '' } }
+  };
+  assert.throws(() => validateServerConfig(config), /signals\.message\.sent\.category must be a non-empty string/);
+
+  config.projects.demo.catalog = {
+    signals: { 'message.sent': { description: 'Messages sent', owner: 'growth' } }
+  };
+  assert.throws(() => validateServerConfig(config), /signals\.message\.sent unknown key: owner/);
 });
 
 test('validateServerConfig rejects a duplicate persistLogs name', () => {

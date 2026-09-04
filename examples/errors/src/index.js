@@ -155,8 +155,14 @@ const server = createIngestServer({
         description: 'Checkout. Failed charges are counted and logged with a clipped stack.',
         roles: { client: { description: 'Checkout process that records failed charges.' } },
         signals: {
-          'payment.error': 'Failed charge attempts, dimensioned by provider error code',
-          payment_failed: 'One failed charge with name, code, and clipped stack'
+          'payment.error': {
+            description: 'Failed charge attempts, dimensioned by provider error code',
+            category: 'reliability'
+          },
+          payment_failed: {
+            description: 'One failed charge with name, code, and clipped stack',
+            category: 'reliability'
+          }
         },
         experiments: {}
       }

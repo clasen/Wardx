@@ -5,6 +5,7 @@ function cloneJson(value) {
 }
 
 const ROLE_ENTRY_KEYS = new Set(['description', 'path', 'git']);
+const SIGNAL_ENTRY_KEYS = new Set(['description', 'category']);
 
 function validateNameList(value, label) {
   if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
@@ -27,6 +28,12 @@ export function normalizeRoleEntry(row) {
   const out = { description: typeof row.description === 'string' ? row.description : '' };
   if (typeof row.path === 'string' && row.path.length > 0) out.path = row.path;
   if (typeof row.git === 'string' && row.git.length > 0) out.git = row.git;
+  return out;
+}
+
+export function normalizeSignalEntry(row) {
+  const out = { description: typeof row.description === 'string' ? row.description : '' };
+  if (typeof row.category === 'string' && row.category.length > 0) out.category = row.category;
   return out;
 }
 
@@ -65,8 +72,24 @@ export function validateRoleEntry(row, label) {
   }
 }
 
+export function validateSignalEntry(row, label) {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) {
+    throw new Error(`${label} must be an object`);
+  }
+  for (const key of Object.keys(row)) {
+    if (!SIGNAL_ENTRY_KEYS.has(key)) throw new Error(`${label} unknown key: ${key}`);
+  }
+  if (typeof row.description !== 'string' || row.description.length === 0) {
+    throw new Error(`${label}.description must be a non-empty string`);
+  }
+  if (row.category !== undefined && (typeof row.category !== 'string' || row.category.length === 0)) {
+    throw new Error(`${label}.category must be a non-empty string`);
+  }
+}
+
 export function normalizeCatalog(catalog) {
   if (catalog === undefined || catalog === null) return emptyCatalog();
+  validateCatalog(catalog, 'catalog');
   const experiments = {};
   if (catalog.experiments && typeof catalog.experiments === 'object') {
     for (const [id, row] of Object.entries(catalog.experiments)) {
@@ -79,10 +102,16 @@ export function normalizeCatalog(catalog) {
       roles[name] = normalizeRoleEntry(row);
     }
   }
+  const signals = {};
+  if (catalog.signals && typeof catalog.signals === 'object') {
+    for (const [name, row] of Object.entries(catalog.signals)) {
+      signals[name] = normalizeSignalEntry(row);
+    }
+  }
   return {
     description: typeof catalog.description === 'string' ? catalog.description : '',
     roles,
-    signals: catalog.signals && typeof catalog.signals === 'object' ? { ...catalog.signals } : {},
+    signals,
     experiments,
     inspectEvents: Array.isArray(catalog.inspectEvents) ? [...catalog.inspectEvents] : [],
     persistLogs: Array.isArray(catalog.persistLogs) ? [...catalog.persistLogs] : []
@@ -121,13 +150,11 @@ export function validateCatalog(catalog, label) {
     if (typeof catalog.signals !== 'object' || catalog.signals === null || Array.isArray(catalog.signals)) {
       throw new Error(`${label}.signals must be an object`);
     }
-    for (const [name, text] of Object.entries(catalog.signals)) {
+    for (const [name, row] of Object.entries(catalog.signals)) {
       if (typeof name !== 'string' || name.length === 0) {
         throw new Error(`${label}.signals keys must be non-empty strings`);
       }
-      if (typeof text !== 'string' || text.length === 0) {
-        throw new Error(`${label}.signals.${name} must be a non-empty string`);
-      }
+      validateSignalEntry(row, `${label}.signals.${name}`);
     }
   }
   if (catalog.inspectEvents !== undefined) validateNameList(catalog.inspectEvents, `${label}.inspectEvents`);
@@ -155,9 +182,32 @@ export function validateCatalog(catalog, label) {
 }
 
 export function annotateSignal(catalog, name) {
-  const text = catalog.signals[name];
-  if (typeof text === 'string' && text.length > 0) return { description: text };
+  const row = catalog.signals[name];
+  if (row && typeof row.description === 'string' && row.description.length > 0) return { ...row };
   return { undescribed: true };
+}
+
+export function signalCategories(catalog) {
+  const categories = new Set();
+  for (const row of Object.values(catalog.signals)) {
+    if (typeof row.category === 'string' && row.category.length > 0) categories.add(row.category);
+  }
+  return [...categories].sort();
+}
+
+export function assertSignalCategory(category) {
+  if (category === undefined || category === null) return;
+  if (typeof category !== 'string' || category.length === 0) {
+    throw new Error('category must be a non-empty string');
+  }
+}
+
+export function namesInCategory(catalog, category, names) {
+  assertSignalCategory(category);
+  if (category === undefined || category === null) return names;
+  if (names !== undefined && !Array.isArray(names)) throw new Error('names must be an array of strings');
+  const candidates = names === undefined ? Object.keys(catalog.signals) : names;
+  return candidates.filter((name) => catalog.signals[name]?.category === category);
 }
 
 export function isProtocolSignal(name) {

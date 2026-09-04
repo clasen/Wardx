@@ -91,11 +91,12 @@ function serverConfig() {
             backend: { description: 'Backend service.' }
           },
           signals: {
-            'frontend.banner': 'Banner text.',
-            'backend.timeoutMs': 'Backend timeout.',
-            'shared.multiplier': 'Shared multiplier.',
-            'checkout.completed': 'Completed checkouts.',
-            checkout_failed: 'Checkout failures.'
+            'frontend.banner': { description: 'Banner text.', category: 'business' },
+            'backend.timeoutMs': { description: 'Backend timeout.', category: 'performance' },
+            'shared.multiplier': { description: 'Shared multiplier.' },
+            'checkout.completed': { description: 'Completed checkouts.', category: 'business' },
+            'historical.orders': { description: 'Historical orders.', category: 'business' },
+            checkout_failed: { description: 'Checkout failures.', category: 'reliability' }
           },
           inspectEvents: ['checkout.started'],
           persistLogs: [],
@@ -395,12 +396,14 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
     const aggregates = await callTool(client, 'get_aggregates', {
       project: 'demo',
       role: 'frontend',
-      names: ['checkout.completed']
+      names: ['checkout.completed'],
+      category: 'business'
     });
     assert.equal(aggregates.windows.length, 1);
     assert.equal(aggregates.windows[0].counters[0].name, 'checkout.completed');
     assert.equal(aggregates.windows[0].counters[0].value, 1);
     assert.equal(aggregates.windows[0].counters[0].role, 'frontend');
+    assert.equal(aggregates.windows[0].counters[0].category, 'business');
 
     const recentLogs = await callTool(client, 'get_recent_logs', {
       project: 'demo',
@@ -591,7 +594,8 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
         from: currentDay - 2 * 86_400_000,
         to: currentDay,
         role: 'frontend',
-        names: ['historical.orders']
+        names: ['historical.orders'],
+        category: 'business'
       });
       assert.equal(persistedHistory.buckets.length, 2);
       assert.deepEqual(
@@ -599,7 +603,11 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
         [2, 3]
       );
       assert.equal(persistedHistory.completeness.allFinalized, true);
-      const overview = await callTool(restartedClient, 'get_project_overview', { project: 'demo' });
+      const overview = await callTool(restartedClient, 'get_project_overview', {
+        project: 'demo',
+        category: 'business'
+      });
+      assert.deepEqual(overview.categories, ['business', 'performance', 'reliability']);
       assert.deepEqual(overview.inspectEvents, ['checkout.started']);
       assert.deepEqual(overview.persistLogs, ['checkout_failed']);
       assert.deepEqual((await callTool(restartedClient, 'get_recent_events', { project: 'demo' })).events, []);

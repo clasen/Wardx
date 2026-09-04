@@ -8,10 +8,10 @@ mutation also takes integer `expectedVersion >= 0` and non-empty `reason`.
 | Tool | Main arguments |
 | --- | --- |
 | `list_projects` | none |
-| `get_project_overview` | `project`, optional `limit` |
+| `get_project_overview` | `project`, optional `limit`, exact `category` |
 | `get_config` | `project` |
-| `get_aggregates` | `project`; optional `names`, `from`, `to`, `role`; distinct rows return HLL estimate/precision |
-| `get_aggregate_history` | `project`, `tier: hour|day`, bounded `from`, `to`; optional `role`, `environment`, `appVersion`, `names` |
+| `get_aggregates` | `project`; optional `names`, `from`, `to`, `role`, exact `category`; distinct rows return HLL estimate/precision |
+| `get_aggregate_history` | `project`, `tier: hour|day`, bounded `from`, `to`; optional `role`, `environment`, `appVersion`, `names`, exact `category` |
 | `get_recent_events` | `project`; optional exact `name`, `role`, listed scalar `attrs`, `limit`; newest timestamp first |
 | `get_recent_logs` | `project`; optional `level`, exact `message`, exact `attrs`, `role`, `limit` |
 | `list_experiments` | `project` |
@@ -37,7 +37,7 @@ restart. Events outside the allowlist remain aggregate counts only.
 | `set_project_description` | `description` |
 | `set_role_description` | `role`, `description` |
 | `set_role_source` | `role`, `path` and/or `git` |
-| `set_signal` / `delete_signal` | `name`, plus `description` for set |
+| `set_signal` / `delete_signal` | `name`, plus `description` and optional exact `category` for set |
 | `set_persist_log` / `delete_persist_log` | exact `name` |
 | `set_config_value` | `key`, JSON `value`, `roles` |
 | `delete_config_value` | `key` |

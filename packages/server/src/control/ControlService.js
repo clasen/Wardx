@@ -1,11 +1,15 @@
 import {
   annotateSignal,
   annotateWindows,
+  assertSignalCategory,
   attachHypothesis,
   buildOnboarding,
   ensureRoleEntry,
+  namesInCategory,
   presentRole,
-  validateCatalog
+  signalCategories,
+  validateCatalog,
+  validateSignalEntry
 } from './catalog.js';
 import { ConfigRepository } from '../config/ConfigRepository.js';
 import { decideExperiment } from './experimentDecision.js';
@@ -137,14 +141,15 @@ export class ControlService {
     return { project, ...result };
   }
 
-  setSignal(project, name, description, options) {
+  setSignal(project, name, signal, options) {
     if (typeof name !== 'string' || name.length === 0) throw new Error('name is required');
-    if (typeof description !== 'string' || description.length === 0) {
-      throw new Error('description is required');
+    if (!signal || typeof signal !== 'object' || Array.isArray(signal)) {
+      throw new Error('signal is required');
     }
+    validateSignalEntry(signal, 'signal');
     const store = this.requireStore(project);
     const result = this._commitCatalog(project, store, (catalog) => {
-      catalog.signals[name] = description;
+      catalog.signals[name] = structuredClone(signal);
     }, options, 'set_signal', [name]);
     return { project, name, ...result };
   }
@@ -329,7 +334,10 @@ export class ControlService {
   aggregates(project, filter = {}) {
     const store = this.requireStore(project);
     if (filter.role !== undefined && filter.role !== null) assertRole(filter.role);
-    return annotateWindows(store.aggregator.snapshot(filter), store.catalog);
+    const names = namesInCategory(store.catalog, filter.category, filter.names);
+    const aggregateFilter = { ...filter };
+    delete aggregateFilter.category;
+    return annotateWindows(store.aggregator.snapshot({ ...aggregateFilter, names }), store.catalog);
   }
 
   experimentStats(project, experimentId) {
@@ -483,11 +491,12 @@ export class ControlService {
     }));
   }
 
-  getOverview(project, limit) {
+  getOverview(project, limit, category) {
     const store = this.requireStore(project);
     const snapshot = store.configRepo.snapshot();
     const catalog = store.catalog;
-    const knobs = Object.keys(snapshot.values)
+    assertSignalCategory(category);
+    const allKnobs = Object.keys(snapshot.values)
       .sort()
       .map((key) => ({
         key,
@@ -531,6 +540,8 @@ export class ControlService {
       ...annotateSignal(catalog, row.name)
     }));
     const outcomes = [...counterRows, ...eventRows, ...histogramRows, ...logRows];
+    const matchesCategory = (row) => category === undefined || category === null || row.category === category;
+    const knobs = allKnobs.filter(matchesCategory);
     const clients = store.clients.list();
     const roleNames = new Set();
     for (const targets of Object.values(snapshot.keyRoles)) {
@@ -544,10 +555,10 @@ export class ControlService {
     const names = [...roleNames].sort();
     const roles = {};
     for (const name of names) {
-      const counters = counterRows.filter((row) => row.role === name);
-      const events = eventRows.filter((row) => row.role === name);
-      const histograms = histogramRows.filter((row) => row.role === name);
-      const logs = logRows.filter((row) => row.role === name);
+      const counters = counterRows.filter((row) => row.role === name && matchesCategory(row));
+      const events = eventRows.filter((row) => row.role === name && matchesCategory(row));
+      const histograms = histogramRows.filter((row) => row.role === name && matchesCategory(row));
+      const logs = logRows.filter((row) => row.role === name && matchesCategory(row));
       roles[name] = {
         ...presentRole(catalog.roles[name]),
         outcomes: [
@@ -565,12 +576,13 @@ export class ControlService {
       description: catalog.description,
       onboarding: buildOnboarding({
         description: catalog.description,
-        knobs,
+        knobs: allKnobs,
         outcomes,
         roleNames: names,
         catalogRoles: catalog.roles
       }),
       knobs,
+      categories: signalCategories(catalog),
       inspectEvents: [...catalog.inspectEvents],
       persistLogs: [...catalog.persistLogs],
       roles,
@@ -601,9 +613,13 @@ export class ControlService {
         throw new Error('history names must be an array of non-empty strings');
       }
     }
+    const names = namesInCategory(store.catalog, filter.category, filter.names);
+    const historyFilter = { ...filter };
+    delete historyFilter.category;
     const buckets = this.stateStore.queryHistory({
       project,
-      ...filter,
+      ...historyFilter,
+      names,
       limit: this.config.history.maxQueryRows
     });
     for (const bucket of buckets) {

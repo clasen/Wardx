@@ -30,6 +30,9 @@
   shutdown; TLS material and transport policy stay with the application.
 - Every config/catalog/experiment mutation uses `expectedVersion` and `reason`.
   Commit project state and one journal entry atomically before `_publish`.
+- Catalog signal entries contain a required `description` and optional exact
+  `category`. Category is attached by name at read time, never stored in metric
+  dimensions or historical aggregate rows.
 - Credential trust comes only from `CredentialRegistry`; never from wire data.
 - General history is preflighted then coalesced. Experiment evidence is
   transactionally accepted before HTTP success.

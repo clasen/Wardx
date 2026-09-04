@@ -191,14 +191,17 @@ const server = createIngestServer({
         description: 'Pipeline walkthrough. See examples/pipeline.',
         roles: { client: { description: 'Walkthrough process that emits product metrics.' } },
         signals: {
-          'match.completed': 'Finished matches, counted per mode',
-          'coins.awarded': 'Coins granted in a window',
-          'players.online': 'Last known lobby size',
-          'request.duration': 'Handler duration in milliseconds',
-          'matchmaking.duration': 'Time to find a match',
-          'match.started': 'A match began',
-          purchase: 'Completed in-app purchase',
-          'message.delayMs': 'Milliseconds to wait before sending a chat message'
+          'match.completed': { description: 'Finished matches, counted per mode', category: 'business' },
+          'coins.awarded': { description: 'Coins granted in a window', category: 'business' },
+          'players.online': { description: 'Last known lobby size', category: 'business' },
+          'request.duration': { description: 'Handler duration in milliseconds', category: 'performance' },
+          'matchmaking.duration': { description: 'Time to find a match', category: 'performance' },
+          'match.started': { description: 'A match began', category: 'business' },
+          purchase: { description: 'Completed in-app purchase', category: 'business' },
+          'message.delayMs': {
+            description: 'Milliseconds to wait before sending a chat message',
+            category: 'performance'
+          }
         },
         experiments: {}
       }

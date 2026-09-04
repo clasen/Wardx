@@ -68,7 +68,7 @@ Important groups:
 | `mcpHttp` | Optional loopback Streamable HTTP listener, bearer source, boundary allowlists, and request bounds. |
 | `capacity` | Maximum concurrent HTTP sync handlers. |
 | `experiments` | Maximum active assignment-ledger rows. |
-| `projects` | Initial Remote Config, role routing, experiments, and optional MCP catalog with `inspectEvents`. |
+| `projects` | Initial Remote Config, role routing, experiments, and optional MCP catalog with categorized signals and `inspectEvents`. |
 | `recentClientsMax`, `recentEventsMax`, `recentLogsMax` | Per-project caps for volatile in-memory rings. |
 
 The operational JSON bootstraps each project only when `sqlite.path` is empty.
@@ -115,6 +115,33 @@ Raw recent event inspection is opt-in per project:
 
 An absent or empty `inspectEvents` retains no raw event samples. Every event still
 increments its aggregate count.
+
+Catalog signals document a Remote Config key, metric, event, or log once by
+name. `category` is optional and accepts an exact open name; common values are
+`business`, `performance`, `reliability`, and `security`:
+
+```json
+{
+  "catalog": {
+    "signals": {
+      "checkout.completed": {
+        "description": "Completed checkouts",
+        "category": "business"
+      },
+      "http.duration_ms": {
+        "description": "HTTP request duration in milliseconds",
+        "category": "performance"
+      }
+    }
+  }
+}
+```
+
+Category is catalog metadata, not a metric dimension: it does not travel in
+ingest frames or create additional series. `get_project_overview`,
+`get_aggregates`, and `get_aggregate_history` accept an exact `category` filter;
+overview also returns the project's sorted `categories` list. When `names` and
+`category` are both supplied, Wardx returns their intersection.
 
 ## Remote MCP through an SSH tunnel
 
@@ -218,6 +245,10 @@ deltas; gauges keep the latest timestamp; histograms merge compatible buckets
 and retain the current-window max exemplar; distincts merge HLL registers and
 return an approximate unique count; events count by name; logs count by
 level/name when selected by `catalog.persistLogs`.
+
+Aggregate rows include catalog `description` and optional `category` metadata.
+The same metadata is attached at read time to historical rows, so changing a
+category does not rewrite stored aggregate buckets.
 
 SQLite stores tier-neutral minute rows and deterministically compacts them to
 hour and day. Historical counters sum, events/logs count, gauges retain

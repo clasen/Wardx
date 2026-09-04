@@ -59,7 +59,9 @@ returns their estimate and precision without the registers.
 
 `get_aggregates` returns current in-memory windows. `get_aggregate_history`
 returns bounded hour/day ranges with optional role, environment, app-version,
-and exact-name filters plus completeness metadata. Recent clients, events, and
+exact-name, and catalog-category filters plus completeness metadata. Categories
+are attached by signal name at read time and are not stored as dimensions or
+historical row data. Recent clients, events, and
 logs are isolated per-project volatile rings and are empty after restart. The
 event ring is capped by `recentEventsMax` and admits only names in the project's
 `catalog.inspectEvents`; it temporarily exposes raw attrs and instance IDs

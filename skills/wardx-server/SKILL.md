@@ -20,7 +20,8 @@ editing the server, also read [references/package.md](references/package.md).
    project, role, knob, and outcome descriptions. Persist them with the matching
    catalog mutation using the overview's current version and a reason.
 3. Use `get_aggregates` for current windows and `get_aggregate_history` for
-   bounded hour/day baselines. Filter by role when comparing product surfaces.
+   bounded hour/day baselines. Filter by role when comparing product surfaces,
+   and by catalog category when comparing signal purposes.
 4. Use `get_recent_events` or `get_recent_logs` only to drill into current
    sample rows. Recent events must first be enabled by `catalog.inspectEvents`.
    These tools expose raw attrs (and recent events expose `instanceId`), are
@@ -28,6 +29,10 @@ editing the server, also read [references/package.md](references/package.md).
 
 Never invent catalog descriptions, paths, git URLs, identities, or trust.
 Remote Config never contains secrets.
+
+Signal categories are optional exact open names such as `business`,
+`performance`, `reliability`, or `security`. They live in the catalog and are
+not metric dimensions. Use the overview's `categories` list before filtering.
 
 For remote MCP, keep `mcpHttp.host` on loopback, supply the named bearer token
 through the environment, and reach it through an SSH local-forward. Host,

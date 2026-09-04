@@ -226,7 +226,8 @@ test('executeTool exposes control operations without HTTP', () => {
   executeMutation(control, 'set_signal', {
     project: 'demo',
     name: 'message.sent',
-    description: 'Chat messages that left the client after the delay'
+    description: 'Chat messages that left the client after the delay',
+    category: 'business'
   });
   const analysis = executeTool(control, 'analyze_experiment', {
     project: 'demo',
@@ -234,6 +235,7 @@ test('executeTool exposes control operations without HTTP', () => {
   });
   assert.equal(analysis.experiment.id, 'message-delay-v1');
   assert.equal(analysis.primaryMetric.description, 'Chat messages that left the client after the delay');
+  assert.equal(analysis.primaryMetric.category, 'business');
   assert.throws(() => executeTool(control, 'nope'), /unknown tool/);
 });
 
@@ -252,7 +254,10 @@ test('catalog mutations persist atomically in SQLite and bump configVersion', ()
       path: '/src/alfa-unity',
       git: 'https://github.com/acme/alfa-unity'
     });
-    mutate(control, 'setSignal', 'demo', 'message.delayMs', 'Milliseconds to wait before sending a chat message');
+    mutate(control, 'setSignal', 'demo', 'message.delayMs', {
+      description: 'Milliseconds to wait before sending a chat message',
+      category: 'performance'
+    });
     assert.equal(control.getConfig('demo').version, 16);
     const saved = JSON.parse(readFileSync(path, 'utf8'));
     assert.equal(saved.projects.demo.version, 12);
@@ -267,9 +272,12 @@ test('catalog mutations persist atomically in SQLite and bump configVersion', ()
       () => executeMutation(control, 'set_role_source', { project: 'demo', role: 'unity' }),
       /path or git is required/
     );
-    assert.equal(
+    assert.deepEqual(
       control.getCatalog('demo').signals['message.delayMs'],
-      'Milliseconds to wait before sending a chat message'
+      {
+        description: 'Milliseconds to wait before sending a chat message',
+        category: 'performance'
+      }
     );
     executeMutation(control, 'set_persist_log', { project: 'demo', name: 'payment_failed' });
     assert.deepEqual(control.getCatalog('demo').persistLogs, ['payment_failed']);
@@ -288,7 +296,10 @@ test('overview splits knobs and outcomes and marks undescribed names', async () 
   const now = Date.now();
   await withServer(testServerConfig(), async (server, base) => {
     const control = server.wardx.control;
-    mutate(control, 'setSignal', 'demo', 'message.delayMs', 'Milliseconds to wait before sending a chat message');
+    mutate(control, 'setSignal', 'demo', 'message.delayMs', {
+      description: 'Milliseconds to wait before sending a chat message',
+      category: 'performance'
+    });
     await fetch(`${base}/v1/sync`, {
       method: 'POST',
       headers: {
@@ -320,6 +331,7 @@ test('overview splits knobs and outcomes and marks undescribed names', async () 
     assert.equal(delay.value, 1000);
     assert.deepEqual(delay.roles, ['client']);
     assert.equal(delay.description, 'Milliseconds to wait before sending a chat message');
+    assert.equal(delay.category, 'performance');
     assert.equal(delay.undescribed, undefined);
     const chat = overview.knobs.find((row) => row.key === 'chat.enabled');
     assert.equal(chat.undescribed, true);
@@ -339,6 +351,123 @@ test('overview splits knobs and outcomes and marks undescribed names', async () 
     assert.deepEqual(overview.onboarding.undescribedRoles, ['client']);
     assert.deepEqual(overview.inspectEvents, []);
     assert.deepEqual(overview.persistLogs, []);
+  });
+});
+
+test('signal categories annotate and filter overview, current aggregates, and history', async () => {
+  const now = Date.now();
+  await withServer(testServerConfig(), async (server, base) => {
+    const control = server.wardx.control;
+    executeMutation(control, 'set_signal', {
+      project: 'demo',
+      name: 'message.sent',
+      description: 'Messages sent by the client',
+      category: 'business'
+    });
+    executeMutation(control, 'set_signal', {
+      project: 'demo',
+      name: 'request.duration',
+      description: 'Request duration in milliseconds',
+      category: 'performance'
+    });
+    await fetch(`${base}/v1/sync`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'content-encoding': 'gzip',
+        'x-wardx-key': 'test-key'
+      },
+      body: gzipJson(
+        sampleEnvelope({
+          frames: [
+            {
+              seq: 1,
+              from: now - 1000,
+              to: now,
+              metrics: {
+                counters: [['message.sent', null, 4]],
+                gauges: [],
+                histograms: [[
+                  'request.duration',
+                  null,
+                  { count: 1, sum: 42, min: 42, max: 42, buckets: [[50, 1]] }
+                ]]
+              },
+              events: [],
+              logs: []
+            }
+          ]
+        })
+      )
+    });
+
+    const overview = executeTool(control, 'get_project_overview', {
+      project: 'demo',
+      category: 'performance'
+    });
+    assert.deepEqual(overview.categories, ['business', 'performance']);
+    assert.deepEqual(overview.roles.client.outcomes.map((row) => row.name), ['request.duration']);
+    assert.equal(overview.roles.client.outcomes[0].category, 'performance');
+
+    const business = executeTool(control, 'get_aggregates', { project: 'demo', category: 'business' });
+    assert.deepEqual(business.windows[0].counters.map((row) => row.name), ['message.sent']);
+    assert.equal(business.windows[0].counters[0].category, 'business');
+    assert.equal(business.windows[0].histograms.length, 0);
+    const emptyIntersection = executeTool(control, 'get_aggregates', {
+      project: 'demo',
+      names: ['request.duration'],
+      category: 'business'
+    });
+    assert.equal(emptyIntersection.windows[0].histograms.length, 0);
+
+    const from = Date.UTC(2026, 0, 1);
+    server.wardx.stateStore.saveBuckets('hour', [
+      {
+        project: 'demo',
+        tier: 'hour',
+        from,
+        to: from + 3_600_000,
+        finalized: true,
+        dropCount: 0,
+        rows: [
+          {
+            kind: 'counter',
+            name: 'message.sent',
+            role: 'client',
+            environment: 'test',
+            appVersion: '0.0.0',
+            dimensions: null,
+            value: 4
+          },
+          {
+            kind: 'histogram',
+            name: 'request.duration',
+            role: 'client',
+            environment: 'test',
+            appVersion: '0.0.0',
+            dimensions: null,
+            count: 1,
+            sum: 42,
+            min: 42,
+            max: 42,
+            buckets: [[50, 1]]
+          }
+        ]
+      }
+    ]);
+    const history = executeTool(control, 'get_aggregate_history', {
+      project: 'demo',
+      tier: 'hour',
+      from,
+      to: from + 3_600_000,
+      category: 'performance'
+    });
+    assert.deepEqual(history.buckets[0].rows.map((row) => row.name), ['request.duration']);
+    assert.equal(history.buckets[0].rows[0].category, 'performance');
+    assert.throws(
+      () => executeTool(control, 'get_aggregates', { project: 'demo', category: '' }),
+      /category must be a non-empty string/
+    );
   });
 });
 
@@ -365,8 +494,14 @@ test('overview ranks histogram peaks by max and keeps the exemplar', async () =>
     }),
     async (server, base) => {
       const control = server.wardx.control;
-      mutate(control, 'setSignal', 'demo', 'economy.maxAward', 'Largest legal coin grant');
-      mutate(control, 'setSignal', 'demo', 'coins.award_size', 'Distribution of coin grant amounts');
+      mutate(control, 'setSignal', 'demo', 'economy.maxAward', {
+        description: 'Largest legal coin grant',
+        category: 'business'
+      });
+      mutate(control, 'setSignal', 'demo', 'coins.award_size', {
+        description: 'Distribution of coin grant amounts',
+        category: 'business'
+      });
       mutate(control, 'setRoleSource', 'demo', 'game-server', { path: '/src/game-server' });
       await fetch(`${base}/v1/sync`, {
         method: 'POST',
@@ -487,10 +622,14 @@ test('overview onboarding completes after catalog answers and skips protocol nam
     assert.equal(before.onboarding.undescribedOutcomes.includes('experiment.exposure'), false);
     mutate(control, 'setProjectDescription', 'demo', 'Demo chat app.');
     mutate(control, 'setRoleDescription', 'demo', 'client', 'Player-facing client.');
-    mutate(control, 'setSignal', 'demo', 'message.delayMs', 'Milliseconds to wait before sending a chat message');
-    mutate(control, 'setSignal', 'demo', 'chat.enabled', 'Whether chat is available');
-    mutate(control, 'setSignal', 'demo', 'message.sent', 'Chat messages that left the client after the delay');
-    mutate(control, 'setSignal', 'demo', 'purchase', 'A completed in-app purchase');
+    mutate(control, 'setSignal', 'demo', 'message.delayMs', {
+      description: 'Milliseconds to wait before sending a chat message'
+    });
+    mutate(control, 'setSignal', 'demo', 'chat.enabled', { description: 'Whether chat is available' });
+    mutate(control, 'setSignal', 'demo', 'message.sent', {
+      description: 'Chat messages that left the client after the delay'
+    });
+    mutate(control, 'setSignal', 'demo', 'purchase', { description: 'A completed in-app purchase' });
     const after = executeTool(control, 'get_project_overview', { project: 'demo' });
     assert.deepEqual(after.onboarding, {
       complete: true,
@@ -523,9 +662,9 @@ test('predefined catalog skips onboarding until a new name appears', async () =>
             client: { description: 'Player-facing client.', path: '/repo/client' }
           },
           signals: {
-            'message.delayMs': 'Milliseconds to wait before sending a chat message',
-            'chat.enabled': 'Whether chat is available',
-            'message.sent': 'Chat messages that left the client after the delay'
+            'message.delayMs': { description: 'Milliseconds to wait before sending a chat message' },
+            'chat.enabled': { description: 'Whether chat is available' },
+            'message.sent': { description: 'Chat messages that left the client after the delay' }
           }
         }
       }
@@ -620,7 +759,10 @@ test('get_recent_logs returns recent rows of every level', async () => {
   const now = Date.now();
   await withServer(testServerConfig({ recentLogsMax: 10 }), async (server, base) => {
     const control = server.wardx.control;
-    mutate(control, 'setSignal', 'demo', 'payment_failed', 'One failed charge with provider code and stack');
+    mutate(control, 'setSignal', 'demo', 'payment_failed', {
+      description: 'One failed charge with provider code and stack',
+      category: 'reliability'
+    });
     await fetch(`${base}/v1/sync`, {
       method: 'POST',
       headers: {

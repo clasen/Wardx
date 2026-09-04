@@ -26,6 +26,11 @@ const EXPECTED_VERSION = {
 };
 
 const REASON = { type: 'string', minLength: 1, description: 'Non-empty reason retained in the mutation journal.' };
+const CATEGORY = {
+  type: 'string',
+  minLength: 1,
+  description: 'Exact catalog category, for example business, performance, reliability, or security.'
+};
 
 export const TOOL_DEFS = [
   {
@@ -36,7 +41,7 @@ export const TOOL_DEFS = [
   {
     name: 'get_project_overview',
     description:
-      'Project description, onboarding gaps, Remote Config knobs (each with the roles that receive them), telemetry and clients grouped by role, inspectEvents/persistLogs allowlists, and previously proposed experiments. Outcomes include counters, events, histogram peaks (max + exemplar of the window max), and allowlisted persist log rollups (count + last exemplar). Each role may include optional path (local checkout) and git (repository URL). A predefined catalog can make onboarding.complete true. If it is false, ask only about the listed gaps and persist with set_project_description / set_role_description / set_signal before proposing experiments.',
+      'Project description, onboarding gaps, catalog categories, Remote Config knobs (each with the roles that receive them), telemetry and clients grouped by role, inspectEvents/persistLogs allowlists, and previously proposed experiments. Optional category filters knobs and outcomes by exact catalog category. Outcomes include counters, events, histogram peaks (max + exemplar of the window max), and allowlisted persist log rollups (count + last exemplar). Each role may include optional path (local checkout) and git (repository URL). A predefined catalog can make onboarding.complete true. If it is false, ask only about the listed gaps and persist with set_project_description / set_role_description / set_signal before proposing experiments.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -45,7 +50,8 @@ export const TOOL_DEFS = [
           type: 'integer',
           minimum: 1,
           description: 'Maximum counters, events, and histograms to return per kind, highest first.'
-        }
+        },
+        category: CATEGORY
       },
       required: ['project'],
       additionalProperties: false
@@ -53,7 +59,7 @@ export const TOOL_DEFS = [
   },
   {
     name: 'set_project_description',
-    description: 'Set the MCP-only project description. Does not bump configVersion. Clients never receive this.',
+    description: 'Set the MCP-only project description. Advances the project version. Clients never receive this.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -69,7 +75,7 @@ export const TOOL_DEFS = [
   {
     name: 'set_role_description',
     description:
-      'Set the MCP-only description for one client role in the project. Does not bump configVersion. Clients never receive this.',
+      'Set the MCP-only description for one client role in the project. Advances the project version. Clients never receive this.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -86,7 +92,7 @@ export const TOOL_DEFS = [
   {
     name: 'set_role_source',
     description:
-      'Set optional source location for this role: path for a checkout on this machine, git for a repository URL. Provide one or both. Does not bump configVersion. Clients never receive this.',
+      'Set optional source location for this role: path for a checkout on this machine, git for a repository URL. Provide one or both. Advances the project version. Clients never receive this.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -112,13 +118,14 @@ export const TOOL_DEFS = [
   {
     name: 'set_signal',
     description:
-      'Document one Remote Config key, metric, or event name. Does not bump configVersion. Clients never receive this.',
+      'Document one Remote Config key, metric, event, or log name with an optional category. Advances the project version. Clients never receive this.',
     inputSchema: {
       type: 'object',
       properties: {
         project: PROJECT,
         name: { type: 'string', minLength: 1 },
         description: { type: 'string', minLength: 1 },
+        category: CATEGORY,
         expectedVersion: EXPECTED_VERSION,
         reason: REASON
       },
@@ -128,7 +135,7 @@ export const TOOL_DEFS = [
   },
   {
     name: 'delete_signal',
-    description: 'Remove one catalog signal. Does not bump configVersion.',
+    description: 'Remove one catalog signal. Advances the project version.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -144,7 +151,7 @@ export const TOOL_DEFS = [
   {
     name: 'set_persist_log',
     description:
-      'Add a log message name to the catalog persistLogs allowlist. The server keeps a lifetime count and last exemplar for that name. Does not bump configVersion. Clients never receive this.',
+      'Add a log message name to the catalog persistLogs allowlist. The server keeps a lifetime count and last exemplar for that name. Advances the project version. Clients never receive this.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -160,7 +167,7 @@ export const TOOL_DEFS = [
   {
     name: 'delete_persist_log',
     description:
-      'Remove a log message name from persistLogs and drop its lifetime rollup. Does not bump configVersion.',
+      'Remove a log message name from persistLogs and drop its lifetime rollup. Advances the project version.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -373,7 +380,7 @@ export const TOOL_DEFS = [
   {
     name: 'get_aggregates',
     description:
-      'Read 1-minute telemetry windows for a project, with catalog descriptions on names. Distinct rows expose mergeable HLL estimates without identifiers or registers. Windows include logNames for catalog persistLogs (count + last exemplar). Optional names, from, and to filter the payload.',
+      'Read 1-minute telemetry windows for a project, with catalog descriptions and categories on names. Distinct rows expose mergeable HLL estimates without identifiers or registers. Windows include logNames for catalog persistLogs (count + last exemplar). Optional names and category filters intersect; from, to, and role also filter the payload.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -381,7 +388,8 @@ export const TOOL_DEFS = [
         names: { type: 'array', items: { type: 'string' } },
         from: { type: 'number' },
         to: { type: 'number' },
-        role: ROLE
+        role: ROLE,
+        category: CATEGORY
       },
       required: ['project'],
       additionalProperties: false
@@ -389,7 +397,7 @@ export const TOOL_DEFS = [
   },
   {
     name: 'get_aggregate_history',
-    description: 'Read bounded closed hourly or daily aggregate history with completeness metadata. Distinct rows expose merged HLL estimates without identifiers or registers.',
+    description: 'Read bounded closed hourly or daily aggregate history with catalog descriptions/categories and completeness metadata. Optional names and category filters intersect. Distinct rows expose merged HLL estimates without identifiers or registers.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -400,7 +408,8 @@ export const TOOL_DEFS = [
         role: ROLE,
         environment: { type: 'string', minLength: 1 },
         appVersion: { type: 'string', minLength: 1 },
-        names: { type: 'array', items: { type: 'string', minLength: 1 } }
+        names: { type: 'array', items: { type: 'string', minLength: 1 } },
+        category: CATEGORY
       },
       required: ['project', 'tier', 'from', 'to'],
       additionalProperties: false
@@ -504,7 +513,7 @@ export function executeTool(control, name, args = {}) {
     case 'list_projects':
       return { projects: control.listProjects() };
     case 'get_project_overview':
-      return control.getOverview(args.project, args.limit);
+      return control.getOverview(args.project, args.limit, args.category);
     case 'set_project_description':
       return control.setProjectDescription(args.project, args.description, mutation);
     case 'set_role_description':
@@ -512,7 +521,10 @@ export function executeTool(control, name, args = {}) {
     case 'set_role_source':
       return control.setRoleSource(args.project, args.role, { path: args.path, git: args.git }, mutation);
     case 'set_signal':
-      return control.setSignal(args.project, args.name, args.description, mutation);
+      return control.setSignal(args.project, args.name, {
+        description: args.description,
+        ...(args.category === undefined ? {} : { category: args.category })
+      }, mutation);
     case 'delete_signal':
       return control.deleteSignal(args.project, args.name, mutation);
     case 'set_persist_log':
@@ -537,7 +549,8 @@ export function executeTool(control, name, args = {}) {
           names: args.names,
           from: args.from,
           to: args.to,
-          role: args.role
+          role: args.role,
+          category: args.category
         })
       };
     case 'get_recent_events':
@@ -567,7 +580,8 @@ export function executeTool(control, name, args = {}) {
         role: args.role,
         environment: args.environment,
         appVersion: args.appVersion,
-        names: args.names
+        names: args.names,
+        category: args.category
       });
     case 'list_config_changes':
       return control.listConfigChanges(args.project, { after: args.after, limit: args.limit });
