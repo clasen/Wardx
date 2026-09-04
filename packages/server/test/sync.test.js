@@ -157,6 +157,7 @@ test('POST /v1/sync rejects a malformed tuple before mutating state', async () =
     assert.equal(server.wardx.sink.frameCount, 0);
     assert.deepEqual(server.wardx.control.aggregates('demo'), []);
     assert.deepEqual(server.wardx.control.recentClients('demo'), []);
+    assert.deepEqual(server.wardx.control.recentEvents('demo'), []);
     assert.deepEqual(server.wardx.control.recentLogs('demo'), []);
   });
 });
@@ -322,6 +323,7 @@ test('POST /v1/sync rejects a role outside the credential scope without mutation
     assert.deepEqual(await res.json(), { ok: false, error: 'role not allowed' });
     assert.deepEqual(server.wardx.control.aggregates('demo'), []);
     assert.deepEqual(server.wardx.control.recentClients('demo'), []);
+    assert.deepEqual(server.wardx.control.recentEvents('demo'), []);
   });
 });
 

@@ -36,6 +36,17 @@ function mutationOptions(options) {
   return options;
 }
 
+function assertScalarAttrs(attrs) {
+  if (attrs === undefined || attrs === null) return;
+  if (typeof attrs !== 'object' || Array.isArray(attrs)) throw new Error('attrs must be an object');
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key.length === 0) throw new Error('attrs keys must be non-empty strings');
+    if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
+      throw new Error(`attrs.${key} must be a string, number, or boolean`);
+    }
+  }
+}
+
 const HEALTH_FIELDS = [
   'duplicateExposures',
   'duplicateGoals',
@@ -424,6 +435,26 @@ export class ControlService {
     return this.requireStore(project).clients.list();
   }
 
+  recentEvents(project, filter = {}) {
+    const store = this.requireStore(project);
+    const name = filter.name;
+    if (name !== undefined && name !== null && (typeof name !== 'string' || name.length === 0)) {
+      throw new Error('name must be a non-empty string');
+    }
+    const role = filter.role;
+    if (role !== undefined && role !== null) assertRole(role);
+    const attrs = filter.attrs;
+    assertScalarAttrs(attrs);
+    const limit = filter.limit;
+    if (limit !== undefined && limit !== null && (!Number.isInteger(limit) || limit < 1)) {
+      throw new Error('limit must be an integer >= 1');
+    }
+    return store.events.query({ name, role, attrs, limit }).map((row) => ({
+      ...row,
+      ...annotateSignal(store.catalog, row.name)
+    }));
+  }
+
   recentLogs(project, filter = {}) {
     const store = this.requireStore(project);
     const level = filter.level;
@@ -440,19 +471,7 @@ export class ControlService {
         throw new Error('message must be a non-empty string');
       }
     }
-    if (attrs !== undefined && attrs !== null) {
-      if (typeof attrs !== 'object' || Array.isArray(attrs)) {
-        throw new Error('attrs must be an object');
-      }
-      for (const [key, value] of Object.entries(attrs)) {
-        if (typeof key !== 'string' || key.length === 0) {
-          throw new Error('attrs keys must be non-empty strings');
-        }
-        if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
-          throw new Error(`attrs.${key} must be a string, number, or boolean`);
-        }
-      }
-    }
+    assertScalarAttrs(attrs);
     if (limit !== undefined && limit !== null) {
       if (!Number.isInteger(limit) || limit < 1) throw new Error('limit must be an integer >= 1');
     }
@@ -552,6 +571,7 @@ export class ControlService {
         catalogRoles: catalog.roles
       }),
       knobs,
+      inspectEvents: [...catalog.inspectEvents],
       persistLogs: [...catalog.persistLogs],
       roles,
       experiments: snapshot.experiments.map((experiment) => attachHypothesis(catalog, experiment)),

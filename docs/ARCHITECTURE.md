@@ -59,8 +59,12 @@ returns their estimate and precision without the registers.
 
 `get_aggregates` returns current in-memory windows. `get_aggregate_history`
 returns bounded hour/day ranges with optional role, environment, app-version,
-and exact-name filters plus completeness metadata. Recent clients and recent
-logs are bounded volatile rings and are empty after restart.
+and exact-name filters plus completeness metadata. Recent clients, events, and
+logs are isolated per-project volatile rings and are empty after restart. The
+event ring is capped by `recentEventsMax` and admits only names in the project's
+`catalog.inspectEvents`; it temporarily exposes raw attrs and instance IDs
+through privileged MCP reads, while every event still contributes an aggregate
+count without either field.
 
 ## Control plane
 
@@ -124,7 +128,8 @@ do not establish deployment capacity.
 
 Wardx is aggregate-first. Use counters/histograms for stability, `distinct` for
 an approximate unique count without identifier storage, a small set of
-named events for behavior, and recent logs for drill-down. Funnels are volume
+named events for behavior, and explicitly allowlisted, bounded recent event/log
+samples for drill-down. Funnels are volume
 comparisons, not per-subject paths. The experiment assignment ledger is
 non-queryable and exists only for deduplication. Wardx is not a raw event
 warehouse, billing ledger, player journey store, or authoritative economy

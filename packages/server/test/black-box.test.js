@@ -51,6 +51,7 @@ function serverConfig() {
     aggregateMaxSeriesPerMetric: 1000,
     memorySinkMaxEnvelopes: 100,
     recentClientsMax: 20,
+    recentEventsMax: 20,
     recentLogsMax: 20,
     history: {
       ...testServerConfig().history,
@@ -96,6 +97,7 @@ function serverConfig() {
             'checkout.completed': 'Completed checkouts.',
             checkout_failed: 'Checkout failures.'
           },
+          inspectEvents: ['checkout.started'],
           persistLogs: [],
           experiments: {}
         }
@@ -362,6 +364,7 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
     assert.equal(removedAdmin.status, 404);
 
     assert.deepEqual((await callTool(client, 'get_aggregates', { project: 'demo' })).windows, []);
+    assert.deepEqual((await callTool(client, 'get_recent_events', { project: 'demo' })).events, []);
     assert.deepEqual((await callTool(client, 'get_recent_logs', { project: 'demo' })).logs, []);
     for (const suffix of ['aggregate-windows', 'experiment-stats', 'log-stats']) {
       await assert.rejects(access(`${configPath}.${suffix}.json`), { code: 'ENOENT' });
@@ -385,6 +388,7 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
       reason: 'retain checkout failure rollups'
     });
     frontend.counter('checkout.completed', { channel: 'store' }).inc();
+    frontend.event('checkout.started', { channel: 'store' });
     frontend.log.error('checkout_failed', { code: 'timeout' });
     await frontend.flush();
 
@@ -406,6 +410,19 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
     assert.equal(recentLogs.logs.length, 1);
     assert.equal(recentLogs.logs[0].level, 'error');
     assert.equal(recentLogs.logs[0].attrs.code, 'timeout');
+
+    const recentEvents = await callTool(client, 'get_recent_events', {
+      project: 'demo',
+      role: 'frontend',
+      name: 'checkout.started',
+      attrs: { channel: 'store' },
+      limit: 1
+    });
+    assert.equal(recentEvents.events.length, 1);
+    assert.equal(recentEvents.events[0].name, 'checkout.started');
+    assert.equal(recentEvents.events[0].attrs.channel, 'store');
+    assert.equal(recentEvents.events[0].role, 'frontend');
+    assert.equal(typeof recentEvents.events[0].instanceId, 'string');
 
     const update = await callTool(client, 'set_config_value', {
       project: 'demo',
@@ -583,7 +600,9 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
       );
       assert.equal(persistedHistory.completeness.allFinalized, true);
       const overview = await callTool(restartedClient, 'get_project_overview', { project: 'demo' });
+      assert.deepEqual(overview.inspectEvents, ['checkout.started']);
       assert.deepEqual(overview.persistLogs, ['checkout_failed']);
+      assert.deepEqual((await callTool(restartedClient, 'get_recent_events', { project: 'demo' })).events, []);
       assert.deepEqual((await callTool(restartedClient, 'get_recent_logs', { project: 'demo' })).logs, []);
       const changes = await callTool(restartedClient, 'list_config_changes', { project: 'demo' });
       const shippedChange = changes.changes.find((change) => change.operation === 'ship_experiment');

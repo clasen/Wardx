@@ -2,7 +2,7 @@
 
 To find out what your own product is doing, you set up five services: analytics in one, remote config in another, experiments in a third, logs wherever they land. Then you paste IDs by hand between dashboards that don't talk to each other. One server is enough for that, and Wardx is that server. Your Unity app and your Node backend send it events, metrics and errors as they happen, and get back the configuration meant for them: the app sees its variables, the backend sees its own. You run it on a server you control, and all your projects live inside it, kept apart from each other. If you have ever dumped a CSV or a JSON export into a chat to read behavior out of it, this is the next step.
 
-Hand what that server collects to an agent and it sees the current retained aggregate windows, bounded recent logs, selected lifetime rollups, and the config running right now. Ask it where an onboarding volume funnel drops and it answers from aggregate counts. Show it a fleet-level reward spike and it points at the instrumented grant path. Wardx does not store per-account journeys or act as a ledger.
+Hand what that server collects to an agent and it sees the current retained aggregate windows, allowlisted recent event/log samples, selected lifetime rollups, and the config running right now. Ask it where an onboarding volume funnel drops and it answers from aggregate counts. Show it a fleet-level reward spike and it points at the instrumented grant path. Wardx does not store per-account journeys or act as a ledger.
 
 The same channel that carries the data up carries the configuration back down, so an agent can change a variable, turn it into a hypothesis, and inspect the resulting experiment totals. Wardx does not schedule a later agent run: delayed follow-up requires an external scheduler or automation. Remote Config is for non-secret runtime values only.
 
@@ -22,6 +22,7 @@ The same channel that carries the data up carries the configuration back down, s
 │              ├── Remote Config snapshot             │
 │              ├── Experiment definitions             │
 │              ├── Aggregates                         │
+│              ├── Recent events                      │
 │              ├── Recent logs                        │
 │              └── Catalog                            │
 │                                                     │
@@ -29,7 +30,7 @@ The same channel that carries the data up carries the configuration back down, s
 │        ├── envelope store (config.sink)             │
 │        │     null | memory | ndjson                 │
 │        └── per-project ingest                       │
-│              aggregator, recent logs, clients       │
+│              aggregator, recent events/logs, clients│
 │              config reply filtered by client.role   │
 └─────────────────────────────────────────────────────┘
                              ▲

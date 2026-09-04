@@ -337,6 +337,7 @@ test('overview splits knobs and outcomes and marks undescribed names', async () 
     assert.deepEqual(overview.onboarding.undescribedKnobs, ['chat.enabled']);
     assert.deepEqual(overview.onboarding.undescribedOutcomes, ['message.sent', 'purchase']);
     assert.deepEqual(overview.onboarding.undescribedRoles, ['client']);
+    assert.deepEqual(overview.inspectEvents, []);
     assert.deepEqual(overview.persistLogs, []);
   });
 });
@@ -711,6 +712,143 @@ test('recent log ring drops the oldest row when full', async () => {
     assert.deepEqual(
       rows.logs.map((row) => row.attrs.code),
       ['third', 'second']
+    );
+  });
+});
+
+test('get_recent_events filters, orders, limits, evicts, and isolates projects', async () => {
+  const now = Date.now();
+  const baseConfig = testServerConfig({ recentEventsMax: 3 });
+  baseConfig.projects.demo.catalog = { inspectEvents: ['evicted', 'login', 'purchase'] };
+  const otherProject = structuredClone(baseConfig.projects.demo);
+  otherProject.catalog.inspectEvents = ['other-only'];
+  baseConfig.projects.other = otherProject;
+  baseConfig.credentials['other-key'] = {
+    label: 'other-client',
+    project: 'other',
+    allowedRoles: ['client'],
+    trustedForDecisions: false,
+    enabled: true
+  };
+  await withServer(baseConfig, async (server, base) => {
+    const send = (key, envelope) => fetch(`${base}/v1/sync`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'content-encoding': 'gzip',
+        'x-wardx-key': key
+      },
+      body: gzipJson(envelope)
+    });
+    const response = await send('test-key', sampleEnvelope({
+      frames: [
+        {
+          seq: 1,
+          from: now - 1000,
+          to: now,
+          metrics: { counters: [], gauges: [], histograms: [] },
+          events: [
+            [now - 5, 'evicted', { marker: 'oldest-accepted' }],
+            [now - 40, 'count-only', { secret: 'not retained' }],
+            [now - 30, 'login', { method: 'password' }],
+            [now - 10, 'purchase', { product: 'premium', context: { channel: 'store', flags: ['new'] } }]
+          ],
+          logs: []
+        }
+      ]
+    }));
+    assert.equal(response.status, 200);
+    const backendResponse = await send('test-key', sampleEnvelope({
+      client: { role: 'backend', instanceId: 'backend-instance' },
+      frames: [
+        {
+          seq: 2,
+          from: now - 1000,
+          to: now,
+          metrics: { counters: [], gauges: [], histograms: [] },
+          events: [[now - 20, 'purchase', { product: 'standard' }]],
+          logs: []
+        }
+      ]
+    }));
+    assert.equal(backendResponse.status, 200);
+    const otherResponse = await send('other-key', sampleEnvelope({
+      project: 'other',
+      client: { instanceId: 'other-instance' },
+      frames: [
+        {
+          seq: 1,
+          from: now - 1000,
+          to: now,
+          metrics: { counters: [], gauges: [], histograms: [] },
+          events: [[now - 1, 'other-only', { source: 'other' }]],
+          logs: []
+        }
+      ]
+    }));
+    assert.equal(otherResponse.status, 200);
+
+    const control = server.wardx.control;
+    const all = executeTool(control, 'get_recent_events', { project: 'demo' });
+    assert.deepEqual(all.events.map((row) => row.name), ['purchase', 'purchase', 'login']);
+    assert.equal(all.events.some((row) => row.name === 'evicted'), false);
+    assert.equal(all.events.some((row) => row.name === 'count-only'), false);
+    assert.equal(all.events.some((row) => row.name === 'other-only'), false);
+    const aggregateResult = executeTool(control, 'get_aggregates', { project: 'demo' });
+    const countOnlyAggregate = aggregateResult.windows
+      .flatMap((window) => window.eventNames)
+      .find((row) => row.name === 'count-only' && row.role === 'client');
+    assert.equal(countOnlyAggregate.count, 1);
+    assert.equal(countOnlyAggregate.attrs, undefined);
+    assert.equal(countOnlyAggregate.instanceId, undefined);
+    assert.doesNotMatch(JSON.stringify(aggregateResult), /not retained/);
+    const purchaseAggregate = aggregateResult.windows
+      .flatMap((window) => window.eventNames)
+      .find((row) => row.name === 'purchase' && row.role === 'client');
+    assert.equal(purchaseAggregate.count, 1);
+    assert.deepEqual(
+      executeTool(control, 'get_recent_events', {
+        project: 'demo',
+        name: 'purchase',
+        role: 'client',
+        attrs: { product: 'premium' },
+        limit: 1
+      }).events,
+      [
+        {
+          ts: now - 10,
+          name: 'purchase',
+          attrs: { product: 'premium', context: { channel: 'store', flags: ['new'] } },
+          instanceId: '01TESTINSTANCE000000000000',
+          role: 'client',
+          undescribed: true
+        }
+      ]
+    );
+    assert.deepEqual(
+      executeTool(control, 'get_recent_events', { project: 'other' }).events.map((row) => row.name),
+      ['other-only']
+    );
+    assert.deepEqual(
+      executeTool(control, 'get_recent_events', { project: 'demo', role: 'backend' }).events
+        .map((row) => row.role),
+      ['backend']
+    );
+    assert.throws(
+      () => executeTool(control, 'get_recent_events', { project: 'demo', name: '' }),
+      /name must be a non-empty string/
+    );
+    assert.throws(
+      () => executeTool(control, 'get_recent_events', { project: 'demo', role: '*' }),
+      /role cannot be \*/
+    );
+    assert.throws(
+      () => executeTool(control, 'get_recent_events', { project: 'demo', attrs: { nested: { value: true } } }),
+      /attrs\.nested must be a string, number, or boolean/
+    );
+    assert.throws(
+      () => executeTool(control, 'get_recent_events', { project: 'demo', limit: 0 }),
+      /limit must be an integer >= 1/
     );
   });
 });

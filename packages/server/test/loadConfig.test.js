@@ -18,6 +18,8 @@ test('loadServerConfig reads a JSON file', () => {
   assert.equal(config.credentials.dev_project_key.project, 'demo');
   assert.deepEqual(config.credentials.dev_project_key.allowedRoles, ['client', 'game-server']);
   assert.equal(config.projects.demo.version, 1);
+  assert.equal(config.recentEventsMax, 1000);
+  assert.deepEqual(config.projects.demo.catalog.inspectEvents, ['purchase']);
   assert.equal(config.recentLogsMax, 200);
   assert.equal(config.aggregateMaxSeriesPerMetric, 1000);
   assert.equal(config.configPath, path);
@@ -28,6 +30,17 @@ test('validateServerConfig requires aggregateMaxSeriesPerMetric', () => {
   const config = testServerConfig();
   delete config.aggregateMaxSeriesPerMetric;
   assert.throws(() => validateServerConfig(config), /aggregateMaxSeriesPerMetric/);
+});
+
+test('validateServerConfig requires a positive recent event capacity', () => {
+  const missing = testServerConfig();
+  delete missing.recentEventsMax;
+  assert.throws(() => validateServerConfig(missing), /recentEventsMax/);
+
+  assert.throws(
+    () => validateServerConfig(testServerConfig({ recentEventsMax: 0 })),
+    /recentEventsMax must be an integer >= 1/
+  );
 });
 
 test('loadServerConfig reads production.json with a null sink', () => {
@@ -157,6 +170,16 @@ test('validateServerConfig rejects a duplicate persistLogs name', () => {
   const config = testServerConfig();
   config.projects.demo.catalog = { persistLogs: ['payment_failed', 'payment_failed'] };
   assert.throws(() => validateServerConfig(config), /persistLogs duplicate name: payment_failed/);
+});
+
+test('validateServerConfig rejects invalid inspectEvents entries', () => {
+  const duplicate = testServerConfig();
+  duplicate.projects.demo.catalog = { inspectEvents: ['purchase', 'purchase'] };
+  assert.throws(() => validateServerConfig(duplicate), /inspectEvents duplicate name: purchase/);
+
+  const empty = testServerConfig();
+  empty.projects.demo.catalog = { inspectEvents: [''] };
+  assert.throws(() => validateServerConfig(empty), /inspectEvents\[0\] must be a non-empty string/);
 });
 
 test('validateServerConfig rejects unknown server, diagnostics, and project keys', () => {

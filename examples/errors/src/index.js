@@ -118,6 +118,7 @@ const server = createIngestServer({
   aggregateMaxSeriesPerMetric: 1000,
   memorySinkMaxEnvelopes: 100,
   recentClientsMax: 50,
+  recentEventsMax: 100,
   recentLogsMax: 100,
   sqlite: {
     path: ':memory:',

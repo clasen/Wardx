@@ -39,6 +39,7 @@ function fileShape(config, registry, override) {
     aggregateMaxSeriesPerMetric: config.aggregateMaxSeriesPerMetric,
     memorySinkMaxEnvelopes: config.memorySinkMaxEnvelopes,
     recentClientsMax: config.recentClientsMax,
+    recentEventsMax: config.recentEventsMax,
     recentLogsMax: config.recentLogsMax,
     sqlite: config.sqlite,
     history: config.history,

@@ -136,8 +136,12 @@ test('historical aggregate buckets persist across ingest server restarts', async
     assert.ok(distinct.estimate >= 1 && distinct.estimate <= 3);
     assert.equal(distinct.precision, 9);
     assert.equal(distinct.registers, undefined);
+    const event = history.buckets[0].rows.find((row) => row.name === 'purchase');
+    assert.equal(event.attrs, undefined);
+    assert.equal(event.instanceId, undefined);
     assert.doesNotMatch(JSON.stringify(history), /private-hid-a|private-hid-b/);
     assert.equal(executeTool(restarted.wardx.control, 'get_aggregates', { project: 'demo' }).windows.length, 0);
+    assert.deepEqual(executeTool(restarted.wardx.control, 'get_recent_events', { project: 'demo' }).events, []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -54,6 +54,7 @@ export function testServerConfig(overrides = {}) {
     aggregateMaxSeriesPerMetric: 1000,
     memorySinkMaxEnvelopes: 1000,
     recentClientsMax: 50,
+    recentEventsMax: 100,
     recentLogsMax: 100,
     sqlite: {
       path: temporarySqlitePath(),

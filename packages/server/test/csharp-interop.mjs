@@ -43,6 +43,7 @@ function config(ndjsonPath) {
     aggregateMaxSeriesPerMetric: 1000,
     memorySinkMaxEnvelopes: 100,
     recentClientsMax: 20,
+    recentEventsMax: 20,
     recentLogsMax: 20,
     projects: {
       demo: {

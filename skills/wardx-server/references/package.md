@@ -11,6 +11,7 @@
 | `src/storage/SqliteStateStore.js` | Schema v1, WAL, project state, journal, aggregate tiers, watermarks. |
 | `src/storage/ExperimentLedger.js` | Durable SHA-256 assignment dedupe, provenance, totals, terminal output/expiry. |
 | `src/aggregation/history/` | Canonical historical rows and deterministic compaction. |
+| `src/events/RecentEvents.js` | Per-project allowlisted, bounded volatile event samples and filters. |
 | `src/control/ControlService.js` | MCP reads/mutations, experiment gates, journal publish. |
 | `src/control/MutationJournal.js` | CAS, audit-safe reversible entry, rollback-as-new-version. |
 | `src/control/PersistenceCoordinator.js` | Coalesced minute writes, restart scans, compaction, retention, metrics. |
@@ -32,12 +33,15 @@
 - Credential trust comes only from `CredentialRegistry`; never from wire data.
 - General history is preflighted then coalesced. Experiment evidence is
   transactionally accepted before HTTP success.
-- Historical rows exclude attrs, exemplars, instance IDs, and subject hashes.
+- Historical rows exclude attrs, exemplars, instance IDs, and subject hashes;
+  only `catalog.inspectEvents` names may enter the volatile recent-event ring
+  that exposes raw event attrs and instance IDs.
 - Source retention requires durable downstream bucket plus watermark.
 - Fixed-horizon plans are all-or-none and immutable after trusted exposure.
   Terminal analysis is first-write-wins.
-- Current aggregates/rings are memory-only. Hour/day history and experiment
-  evidence survive restart.
+- Current aggregates/rings are memory-only. `catalog.inspectEvents` selects and
+  `recentEventsMax` bounds each project's event ring. Hour/day history and
+  experiment evidence survive restart.
 - All bounds live in config: sync handlers, pending SQLite batches/bytes,
   write batch, transaction/busy/checkpoint policy, history ranges/rows/
   retention/cardinality, journal, MCP reads, and ledger rows.

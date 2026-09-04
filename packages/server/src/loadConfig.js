@@ -25,6 +25,7 @@ const REQUIRED = [
   'aggregateMaxSeriesPerMetric',
   'memorySinkMaxEnvelopes',
   'recentClientsMax',
+  'recentEventsMax',
   'recentLogsMax',
   'sqlite',
   'history',
@@ -284,6 +285,9 @@ export function validateServerConfig(parsed) {
   }
   if (!Number.isInteger(parsed.recentClientsMax) || parsed.recentClientsMax < 1) {
     throw new Error('server config recentClientsMax must be an integer >= 1');
+  }
+  if (!Number.isInteger(parsed.recentEventsMax) || parsed.recentEventsMax < 1) {
+    throw new Error('server config recentEventsMax must be an integer >= 1');
   }
   if (!Number.isInteger(parsed.recentLogsMax) || parsed.recentLogsMax < 1) {
     throw new Error('server config recentLogsMax must be an integer >= 1');

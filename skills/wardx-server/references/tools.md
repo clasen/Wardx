@@ -12,6 +12,7 @@ mutation also takes integer `expectedVersion >= 0` and non-empty `reason`.
 | `get_config` | `project` |
 | `get_aggregates` | `project`; optional `names`, `from`, `to`, `role`; distinct rows return HLL estimate/precision |
 | `get_aggregate_history` | `project`, `tier: hour|day`, bounded `from`, `to`; optional `role`, `environment`, `appVersion`, `names` |
+| `get_recent_events` | `project`; optional exact `name`, `role`, listed scalar `attrs`, `limit`; newest timestamp first |
 | `get_recent_logs` | `project`; optional `level`, exact `message`, exact `attrs`, `role`, `limit` |
 | `list_experiments` | `project` |
 | `analyze_experiment` | `project`, `experimentId` |
@@ -22,6 +23,12 @@ newest compacted source watermark. `analyze_experiment.variants` contains
 trusted decision rows; `telemetryVariants` includes all source/trust classes.
 Distinct history rows return the merged estimate and precision without raw HLL
 registers or identifiers.
+
+`get_recent_events` reads only names enabled by that project's
+`catalog.inspectEvents` from its `recentEventsMax` circular in-memory buffer.
+Listed scalar attribute keys match exactly. Rows include all raw attrs and
+`instanceId`, evict the oldest retained sample first, and disappear on process
+restart. Events outside the allowlist remain aggregate counts only.
 
 ## Mutate
 

@@ -31,7 +31,8 @@ When this roadmap is complete, an agent can:
 
 This roadmap does not add:
 
-- raw event history or a general event warehouse;
+- durable raw event history or a general event warehouse (the explicitly
+  allowlisted, bounded process-local recent-event ring is ephemeral);
 - user journeys, per-account queries, cohorts, or retention analytics;
 - a billing ledger or authoritative game-economy store;
 - arbitrary SQL through MCP;

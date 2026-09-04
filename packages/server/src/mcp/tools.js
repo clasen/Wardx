@@ -36,7 +36,7 @@ export const TOOL_DEFS = [
   {
     name: 'get_project_overview',
     description:
-      'Project description, onboarding gaps, Remote Config knobs (each with the roles that receive them), telemetry and clients grouped by role, persistLogs allowlist, and previously proposed experiments. Outcomes include counters, events, histogram peaks (max + exemplar of the window max), and allowlisted persist log rollups (count + last exemplar). Each role may include optional path (local checkout) and git (repository URL). A predefined catalog can make onboarding.complete true. If it is false, ask only about the listed gaps and persist with set_project_description / set_role_description / set_signal before proposing experiments.',
+      'Project description, onboarding gaps, Remote Config knobs (each with the roles that receive them), telemetry and clients grouped by role, inspectEvents/persistLogs allowlists, and previously proposed experiments. Outcomes include counters, events, histogram peaks (max + exemplar of the window max), and allowlisted persist log rollups (count + last exemplar). Each role may include optional path (local checkout) and git (repository URL). A predefined catalog can make onboarding.complete true. If it is false, ask only about the listed gaps and persist with set_project_description / set_role_description / set_signal before proposing experiments.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -436,6 +436,27 @@ export const TOOL_DEFS = [
     }
   },
   {
+    name: 'get_recent_events',
+    description:
+      'Recent catalog.inspectEvents rows for one isolated project, newest timestamp first. Optional name, role, scalar attrs (exact match on listed keys), and limit. Rows include raw attrs and instanceId and exist only in the bounded in-memory ring. Events outside the allowlist remain aggregate counts only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: PROJECT,
+        name: { type: 'string', minLength: 1, description: 'Exact event name.' },
+        attrs: {
+          type: 'object',
+          additionalProperties: { type: ['string', 'number', 'boolean'] },
+          description: 'Exact match on these scalar attr keys, for example { "product": "premium" }.'
+        },
+        role: ROLE,
+        limit: { type: 'integer', minimum: 1, description: 'Maximum rows to return, newest first.' }
+      },
+      required: ['project'],
+      additionalProperties: false
+    }
+  },
+  {
     name: 'get_recent_logs',
     description:
       'Recent log rows for a project, newest first. Drill from a series into a sample row. Optional level, message, attrs (exact match on listed keys), and limit.',
@@ -517,6 +538,15 @@ export function executeTool(control, name, args = {}) {
           from: args.from,
           to: args.to,
           role: args.role
+        })
+      };
+    case 'get_recent_events':
+      return {
+        events: control.recentEvents(args.project, {
+          name: args.name,
+          attrs: args.attrs,
+          role: args.role,
+          limit: args.limit
         })
       };
     case 'get_recent_logs':

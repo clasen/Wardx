@@ -163,6 +163,7 @@ export function createSyncHandler({
     store.aggregator.ingest(body, store.catalog.persistLogs, source);
     if (preparedHistory.updates.length > 0) persistence.mark('history');
     store.clients.touch(body.client);
+    store.events.ingest(body, store.catalog.inspectEvents);
     store.logs.ingest(body);
     const includeConfig = body.configVersion !== store.configRepo.version;
     json(res, 200, store.configRepo.buildResponse(includeConfig, body.client.role));

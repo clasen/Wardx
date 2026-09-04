@@ -68,7 +68,8 @@ Important groups:
 | `mcpHttp` | Optional loopback Streamable HTTP listener, bearer source, boundary allowlists, and request bounds. |
 | `capacity` | Maximum concurrent HTTP sync handlers. |
 | `experiments` | Maximum active assignment-ledger rows. |
-| `projects` | Initial Remote Config, role routing, experiments, and optional MCP catalog. |
+| `projects` | Initial Remote Config, role routing, experiments, and optional MCP catalog with `inspectEvents`. |
+| `recentClientsMax`, `recentEventsMax`, `recentLogsMax` | Per-project caps for volatile in-memory rings. |
 
 The operational JSON bootstraps each project only when `sqlite.path` is empty.
 After that, SQLite is authoritative for project state. The JSON continues to be
@@ -101,6 +102,19 @@ Credential example:
 A credential cannot claim a role outside `allowedRoles`. Public clients must be
 untrusted. Never store live credentials in version control or secrets in Remote
 Config.
+
+Raw recent event inspection is opt-in per project:
+
+```json
+{
+  "catalog": {
+    "inspectEvents": ["shot.traffic.hot_socket"]
+  }
+}
+```
+
+An absent or empty `inspectEvents` retains no raw event samples. Every event still
+increments its aggregate count.
 
 ## Remote MCP through an SSH tunnel
 
@@ -213,6 +227,23 @@ distincts merge as set unions. MCP exposes the distinct `estimate` and
 Historical rows retain role, environment, app version, and declared dimensions,
 but never event/log attrs, exemplars, instance IDs, or subject hashes.
 
+`get_recent_events` is the intentionally short-lived exception for event
+drill-down. Each project owns a separate circular buffer of at most
+`recentEventsMax` accepted rows whose names appear in that project's
+`catalog.inspectEvents`. The oldest retained row is evicted when that project
+reaches its cap; the cap is a count, not a time-to-live, so traffic rate
+determines the effective retention period. Results are sorted by event timestamp
+newest-first and can be limited or filtered by exact name, role, and listed
+scalar attribute keys.
+
+Allowlisted recent rows contain all of the event's raw attrs and client
+`instanceId`. They are never written to SQLite and the buffer starts empty after
+every process restart. Treat MCP access as privileged, keep both the allowlist
+and `recentEventsMax` no larger than operationally needed, and do not emit
+secrets or direct personal identifiers as event attrs. Events outside the
+allowlist and all historical/current aggregates remain counts by name and role
+without attrs or instance IDs.
+
 Use MCP `get_aggregate_history` with:
 
 ```json
@@ -232,7 +263,7 @@ The range and returned rows are bounded by config. Results include bucket
 finalization, drop counts, and the newest compacted source watermark. Source
 retention never runs ahead of a durable downstream bucket and watermark.
 
-Recent clients/logs and current aggregates are volatile; history survives
+Recent clients/events/logs and current aggregates are volatile; history survives
 restart. `memory` and `ndjson` sinks are debugging outputs and are not read by
 MCP.
 
@@ -326,7 +357,7 @@ disables the experiment, records the mutation, and schedules ledger expiry.
 Read tools include:
 
 - `list_projects`, `get_project_overview`, `get_config`;
-- `get_aggregates`, `get_aggregate_history`, `get_recent_logs`;
+- `get_aggregates`, `get_aggregate_history`, `get_recent_events`, `get_recent_logs`;
 - `list_experiments`, `analyze_experiment`, `list_config_changes`.
 
 Mutation tools include catalog setters, `set_config_value`,

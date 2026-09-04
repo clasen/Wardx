@@ -1,5 +1,6 @@
 function normalize(stored) {
   const catalog = structuredClone(stored.catalog);
+  catalog.inspectEvents = Array.isArray(catalog.inspectEvents) ? [...catalog.inspectEvents] : [];
   catalog.persistLogsByName = Object.fromEntries(catalog.persistLogs.map((name) => [name, true]));
   delete catalog.persistLogs;
   return {

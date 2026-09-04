@@ -6,8 +6,21 @@ function cloneJson(value) {
 
 const ROLE_ENTRY_KEYS = new Set(['description', 'path', 'git']);
 
+function validateNameList(value, label) {
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+  const seen = new Set();
+  for (let index = 0; index < value.length; index++) {
+    const name = value[index];
+    if (typeof name !== 'string' || name.length === 0) {
+      throw new Error(`${label}[${index}] must be a non-empty string`);
+    }
+    if (seen.has(name)) throw new Error(`${label} duplicate name: ${name}`);
+    seen.add(name);
+  }
+}
+
 export function emptyCatalog() {
-  return { description: '', roles: {}, signals: {}, experiments: {}, persistLogs: [] };
+  return { description: '', roles: {}, signals: {}, experiments: {}, inspectEvents: [], persistLogs: [] };
 }
 
 export function normalizeRoleEntry(row) {
@@ -71,6 +84,7 @@ export function normalizeCatalog(catalog) {
     roles,
     signals: catalog.signals && typeof catalog.signals === 'object' ? { ...catalog.signals } : {},
     experiments,
+    inspectEvents: Array.isArray(catalog.inspectEvents) ? [...catalog.inspectEvents] : [],
     persistLogs: Array.isArray(catalog.persistLogs) ? [...catalog.persistLogs] : []
   };
 }
@@ -85,6 +99,7 @@ export function validateCatalog(catalog, label) {
       key !== 'roles' &&
       key !== 'signals' &&
       key !== 'experiments' &&
+      key !== 'inspectEvents' &&
       key !== 'persistLogs'
     ) {
       throw new Error(`${label} unknown key: ${key}`);
@@ -115,20 +130,8 @@ export function validateCatalog(catalog, label) {
       }
     }
   }
-  if (catalog.persistLogs !== undefined) {
-    if (!Array.isArray(catalog.persistLogs)) {
-      throw new Error(`${label}.persistLogs must be an array`);
-    }
-    const seen = new Set();
-    for (let i = 0; i < catalog.persistLogs.length; i++) {
-      const name = catalog.persistLogs[i];
-      if (typeof name !== 'string' || name.length === 0) {
-        throw new Error(`${label}.persistLogs[${i}] must be a non-empty string`);
-      }
-      if (seen.has(name)) throw new Error(`${label}.persistLogs duplicate name: ${name}`);
-      seen.add(name);
-    }
-  }
+  if (catalog.inspectEvents !== undefined) validateNameList(catalog.inspectEvents, `${label}.inspectEvents`);
+  if (catalog.persistLogs !== undefined) validateNameList(catalog.persistLogs, `${label}.persistLogs`);
   if (catalog.experiments !== undefined) {
     if (
       typeof catalog.experiments !== 'object' ||

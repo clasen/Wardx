@@ -21,8 +21,10 @@ editing the server, also read [references/package.md](references/package.md).
    catalog mutation using the overview's current version and a reason.
 3. Use `get_aggregates` for current windows and `get_aggregate_history` for
    bounded hour/day baselines. Filter by role when comparing product surfaces.
-4. Use `get_recent_logs` only to drill into current sample rows. It is not a
-   history search.
+4. Use `get_recent_events` or `get_recent_logs` only to drill into current
+   sample rows. Recent events must first be enabled by `catalog.inspectEvents`.
+   These tools expose raw attrs (and recent events expose `instanceId`), are
+   bounded volatile rings, and are not history searches.
 
 Never invent catalog descriptions, paths, git URLs, identities, or trust.
 Remote Config never contains secrets.
@@ -74,7 +76,8 @@ plan before ledger retention expires. A shipped or expired plan needs a new ID.
 - Counters are deltas summed per bucket.
 - Current gauges are latest-by-timestamp; historical gauges also expose
   min/max/sample count.
-- Events are counts by name; attrs are not historical series.
+- Events are historical counts by name without attrs. `get_recent_events` is an
+  allowlisted, bounded memory-only sample containing raw attrs and instance IDs.
 - Historical allowlisted logs are counts by role/level/name without attrs.
 - Historical histograms merge only identical bounds and never retain exemplars.
 - Distinct rows merge HLL registers across workers and buckets; reads expose

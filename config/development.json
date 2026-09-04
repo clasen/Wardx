@@ -27,6 +27,7 @@
   "aggregateMaxSeriesPerMetric": 1000,
   "memorySinkMaxEnvelopes": 10000,
   "recentClientsMax": 100,
+  "recentEventsMax": 1000,
   "recentLogsMax": 200,
   "sqlite": {
     "path": "wardx-dev.sqlite",
@@ -120,6 +121,7 @@
           "message.sent": "Chat messages that left the client after the delay",
           "purchase": "Completed in-app purchase"
         },
+        "inspectEvents": ["purchase"],
         "experiments": {
           "message-delay-v1": {
             "hypothesis": "Shorter delay increases messages sent"
