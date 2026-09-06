@@ -1,11 +1,12 @@
 import { assertRole } from '../roles.js';
+import { validateConfigConstraint } from './configConstraints.js';
 
 function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
 const ROLE_ENTRY_KEYS = new Set(['description', 'path', 'git']);
-const SIGNAL_ENTRY_KEYS = new Set(['description', 'category']);
+const SIGNAL_ENTRY_KEYS = new Set(['description', 'category', 'constraint']);
 
 function validateNameList(value, label) {
   if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
@@ -34,6 +35,7 @@ export function normalizeRoleEntry(row) {
 export function normalizeSignalEntry(row) {
   const out = { description: typeof row.description === 'string' ? row.description : '' };
   if (typeof row.category === 'string' && row.category.length > 0) out.category = row.category;
+  if (row.constraint !== undefined) out.constraint = structuredClone(row.constraint);
   return out;
 }
 
@@ -85,6 +87,7 @@ export function validateSignalEntry(row, label) {
   if (row.category !== undefined && (typeof row.category !== 'string' || row.category.length === 0)) {
     throw new Error(`${label}.category must be a non-empty string`);
   }
+  if (row.constraint !== undefined) validateConfigConstraint(row.constraint, `${label}.constraint`);
 }
 
 export function normalizeCatalog(catalog) {

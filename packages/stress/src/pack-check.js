@@ -197,6 +197,9 @@ async function verifyPackagedBinary(projectDirectory) {
     const response = await fetch(`${first.endpoint}/health`);
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { ok: true });
+    const readiness = await fetch(`${first.endpoint}/ready`);
+    assert.equal(readiness.status, 200);
+    assert.equal((await readiness.json()).ok, true);
     const experiment = {
       id: 'pack-terminal-v1',
       enabled: true,
@@ -313,6 +316,31 @@ async function verifyPackagedBinary(projectDirectory) {
   } finally {
     await restarted.client.close().catch(() => {});
   }
+
+  const recovery = join(projectDirectory, 'node_modules', '.bin', process.platform === 'win32' ? 'wardx-recovery.cmd' : 'wardx-recovery');
+  const monitor = join(projectDirectory, 'node_modules', '.bin', process.platform === 'win32' ? 'wardx-monitor.cmd' : 'wardx-monitor');
+  const backupDirectory = join(projectDirectory, 'backup');
+  const restoredDirectory = join(projectDirectory, 'restored');
+  for (const args of [
+    ['backup', configPath, backupDirectory],
+    ['verify', backupDirectory],
+    ['restore', backupDirectory, restoredDirectory]
+  ]) {
+    const result = await run(recovery, args, { cwd: projectDirectory });
+    assert.equal(JSON.parse(result.stdout).ok, true);
+  }
+  const restored = await connectPackagedServer(binary, join(restoredDirectory, 'config.json'), projectDirectory, 'wardx-pack-check-restored');
+  try {
+    const config = await callTool(restored.client, 'get_config', { project: 'demo' });
+    assert.equal(config.version, 2);
+    const analysis = await callTool(restored.client, 'analyze_experiment', {
+      project: 'demo', experimentId: 'pack-terminal-v1'
+    });
+    assert.equal(analysis.decision.status, 'winner');
+  } finally {
+    await restored.client.close().catch(() => {});
+  }
+  await assert.rejects(run(monitor, [], { cwd: projectDirectory }), /Wardx readiness monitor could not start/);
 }
 
 export async function checkPackages() {
@@ -340,7 +368,7 @@ export async function checkPackages() {
     await verifyImports(projectDirectory);
     await verifyPackagedBinary(projectDirectory);
     process.stdout.write(
-      'pack:check passed: clean tarballs persisted MCP config, terminal evidence, and two historical days across restart\n'
+      'pack:check passed: clean tarballs served readiness, persisted state across restart and backup/restore, and exposed the monitor CLI\n'
     );
   } finally {
     await rm(directory, { recursive: true, force: true });

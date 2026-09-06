@@ -78,6 +78,12 @@ journal. `list_config_changes` returns bounded public metadata;
 `rollback_config_change` applies a retained inverse as a new version. It never
 rewrites history or exposes reversible values in overview responses.
 
+Optional `catalog.signals[key].constraint` metadata declares Remote Config
+types, inclusive numeric bounds, and scalar enums. The server validates the
+complete resulting values and experiment variants before a mutation or rollback
+commits, and rejects invalid bootstrap or hydrated state. The contract stays
+off the SDK wire.
+
 MCP client identity is recorded only when available; neither transport invents
 a verified identity. MCP reads have configured concurrent and pending bounds.
 The optional HTTP transport adds a single Bearer credential, strict path, Host
@@ -120,7 +126,17 @@ and proxies must not retry `POST /v1/sync`; general telemetry remains
 at-most-once. Experiment evidence is the narrow exception: accepted evidence is
 committed transactionally before the sync succeeds.
 
-`GET /health` is liveness only. Graceful shutdown stops HTTP, drains accepted
+`GET /health` is liveness only. `GET /ready` reports cached SQLite write-probe
+health, persistence failures/lag, bounded capacity, MCP HTTP availability, and
+drain state with non-sensitive boolean checks. `wardx-monitor` runs separately
+and delivers debounced failure/recovery transitions to an environment-configured
+webhook. It has no business-metric or experiment scheduling policy.
+
+`wardx-recovery` snapshots the operational JSON and committed SQLite state,
+verifies hashes/integrity/configuration, and restores only to a fresh directory.
+A drained/stopped server is required for a backup of all accepted history.
+
+Graceful shutdown stops HTTP, drains accepted
 dirty history, runs the configured checkpoint, and closes SQLite. Local disk,
 proxy behavior, production hardware, and the published 5,000 sync/s target must
 be proven separately with the full-feature stress profile; deterministic tests

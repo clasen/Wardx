@@ -49,6 +49,7 @@ export function testServerConfig(overrides = {}) {
     maxAttributeKeys: 32,
     maxAttributeValueLength: 1024,
     persistenceFlushIntervalMs: 250,
+    readiness: { probeIntervalMs: 10000, probeTimeoutMs: 50, maxPersistenceLagMs: 60000 },
     diagnostics: { sink: 'none' },
     aggregateRetentionMinutes: 60,
     aggregateMaxSeriesPerMetric: 1000,

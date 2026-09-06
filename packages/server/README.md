@@ -31,6 +31,11 @@ npm run verify:release
 `GET /health` is liveness only. It does not prove SQLite writability, capacity,
 or MCP readiness.
 
+`GET /ready` returns HTTP 200 when all operational checks pass, or 503 while
+degraded or draining. Its body is `{ "ok": true, "checks": { "running": true,
+"sqlite": true, "persistence": true, "capacity": true, "mcp": true } }`, with
+failed checks set to false. It exposes no project names, values, paths, or errors.
+
 ## Programmatic startup
 
 `createIngestServer` and `startServer` accept the complete configuration object
@@ -67,6 +72,7 @@ Important groups:
 | `control` | Journal capacity and MCP read concurrency/pending bounds. |
 | `mcpHttp` | Optional loopback Streamable HTTP listener, bearer source, boundary allowlists, and request bounds. |
 | `capacity` | Maximum concurrent HTTP sync handlers. |
+| `readiness` | SQLite probe interval/timeout and maximum persistence lag. |
 | `experiments` | Maximum active assignment-ledger rows. |
 | `projects` | Initial Remote Config, role routing, experiments, and optional MCP catalog with categorized signals and `inspectEvents`. |
 | `recentClientsMax`, `recentEventsMax`, `recentLogsMax` | Per-project caps for volatile in-memory rings. |
@@ -312,6 +318,33 @@ also advance the project version. `list_config_changes` returns bounded public
 metadata. `rollback_config_change` applies a retained inverse as a new version;
 it never decrements the version or rewrites history.
 
+Remote Config keys can declare an optional server-only contract in their signal
+metadata. For example, call MCP `set_signal` with:
+
+```json
+{
+  "project": "game",
+  "name": "matchmaking.timeoutMs",
+  "description": "Maximum matchmaking wait in milliseconds",
+  "constraint": { "type": "integer", "min": 0, "max": 60000 },
+  "expectedVersion": 12,
+  "reason": "Reject invalid matchmaking timeouts"
+}
+```
+
+The stored representation is `catalog.signals[key].constraint`. `type` is
+required and accepts `string`, `number`, `integer`, `boolean`, `object`, `array`,
+or `null`. Numeric `min` and `max` are inclusive. Optional `enum` is a nonempty
+list of unique scalar values matching the declared type and range; object and
+array constraints only check type. Values are never coerced.
+
+Constraints apply to bootstrap and hydrated SQLite state, config writes, every
+experiment variant including disabled experiments, and rollback. Invalid
+candidates leave values, version, and journal unchanged. A constraint can be
+declared before the key exists; keys without constraints remain unrestricted.
+`set_signal` replaces the complete signal metadata: omitting `constraint`
+removes it. Constraints appear in MCP metadata and never in SDK config replies.
+
 In-process example:
 
 ```js
@@ -402,6 +435,98 @@ also enforces `mcpHttp.maxConcurrentRequests` and `mcpHttp.maxRequestBytes`.
 purges its retained volatile samples; aggregate event counts remain unchanged.
 
 ## Operations
+
+### Readiness and external monitoring
+
+Every server configuration must explicitly include:
+
+```json
+{
+  "readiness": {
+    "probeIntervalMs": 10000,
+    "probeTimeoutMs": 50,
+    "maxPersistenceLagMs": 60000
+  }
+}
+```
+
+The periodic SQLite probe commits a write while preserving application state.
+Its result is cached; `/ready` performs no database writes. The probe has its own
+bounded SQLite busy timeout and restores the normal busy-timeout setting.
+The persistence check fails after a flush error until a successful drain, or
+when dirty state reaches `maxPersistenceLagMs`. Capacity checks cover concurrent
+sync handlers and each project's pending history limits. MCP readiness covers
+the configured HTTP listener and its request capacity; it does not exercise an
+external SSH tunnel or authenticate a remote MCP client. Shutdown fails readiness
+before draining. SQLite success follows the configured durability mode and does
+not establish power-loss durability or guarantee space for future writes.
+
+Run `wardx-monitor /absolute/path/to/monitor.json` as a separate supervised
+process, preferably on another host so it can detect loss of the Wardx host.
+Its configuration is separate from the server's operational configuration, is
+closed-schema, and requires every field below:
+
+```json
+{
+  "endpoint": "http://127.0.0.1:8787/ready",
+  "intervalMs": 10000,
+  "requestTimeoutMs": 2000,
+  "maxResponseBytes": 4096,
+  "failureThreshold": 3,
+  "recoveryThreshold": 2,
+  "webhookUrlEnvironmentVariable": "WARDX_ALERT_WEBHOOK_URL",
+  "webhookTimeoutMs": 2000
+}
+```
+
+Supply the webhook URL through the named environment variable. The monitor
+uses bounded HTTP requests, rejects redirects, and posts
+`{"type":"wardx.readiness","status":"degraded"}` after consecutive failures,
+then `status: "recovered"` after consecutive successes. Initial healthy state
+and unchanged states are silent. Failed webhook deliveries are retried on later
+cycles without an accumulating queue; obsolete pending states are discarded.
+Webhook receivers should handle duplicates after ambiguous network failures.
+Monitor state is process-local, so a restart can notify a continuing outage
+again. This monitor checks service health; business-metric thresholds and
+experiment follow-up require separately defined policies.
+
+### Backup and recovery
+
+After draining and stopping the original server:
+
+```bash
+wardx-recovery backup /absolute/path/to/server.json /absolute/path/to/new-backup
+wardx-recovery verify /absolute/path/to/new-backup
+wardx-recovery restore /absolute/path/to/new-backup /absolute/path/to/new-restore
+wardx-server /absolute/path/to/new-restore/config.json
+```
+
+In this checkout, invoke the same commands using
+`node packages/server/src/ops/recovery-cli.js` and
+`node packages/server/src/ops/monitor-cli.js` before installing the package.
+
+Backup uses SQLite's snapshot API to include committed WAL state and produces
+`config.json`, `state.sqlite`, and a SHA256 `manifest.json`. Directories are
+private (0700), files are private (0600), and config contains the original
+credentials. Keep the entire backup protected. Checksums detect corruption;
+they do not authenticate a backup from an untrusted source.
+
+Verification checks the manifest, file hashes, SQLite integrity and supported
+schema, effective project configuration, historical row shapes, and persisted
+JSON. Restore only accepts a new directory, verifies copied files, and points
+storage inside it. Existing destinations are rejected and incomplete output is
+retained for inspection. Neither command stops, starts, or overwrites the
+original server. Environment-provided credentials such as the MCP bearer must
+be supplied separately to the restored process.
+
+The snapshot includes durable config/catalog/journal, historical aggregates,
+and experiment evidence/decisions. Stop/drain is required to include accepted
+in-memory history. Volatile recent-event/log/client rings and historical NDJSON
+debug output are outside the backup. Schedule backup and `verify` with your
+existing supervisor, and periodically restore to a fresh directory and exercise
+the restored server. When rehearsing beside the original, use a separate copy
+of the restored configuration with loopback/free ports and MCP HTTP disabled.
+Do not edit the verified backup itself.
 
 - Run exactly one Wardx process against one local SQLite file. Do not put it on
   NFS or share it between processes.

@@ -37,7 +37,7 @@ restart. Events outside the allowlist remain aggregate counts only.
 | `set_project_description` | `description` |
 | `set_role_description` | `role`, `description` |
 | `set_role_source` | `role`, `path` and/or `git` |
-| `set_signal` / `delete_signal` | `name`, plus `description` and optional exact `category` for set |
+| `set_signal` / `delete_signal` | `name`, plus `description`, optional exact `category`, and optional `constraint` for set |
 | `set_inspect_event` / `delete_inspect_event` | exact event `name`; delete also purges its retained volatile samples |
 | `set_persist_log` / `delete_persist_log` | exact `name` |
 | `set_config_value` | `key`, JSON `value`, `roles` |
@@ -46,6 +46,19 @@ restart. Events outside the allowlist remain aggregate counts only.
 | `set_experiment_enabled` | `id`, `enabled` |
 | `ship_experiment` | `experimentId`, optional matching `variant` |
 | `rollback_config_change` | retained `changeId` |
+
+`set_signal` replaces the complete signal metadata. Preserve `category` and
+`constraint` explicitly when editing its description; omitting a field removes
+it. A Remote Config constraint has a required `type` (`string`, `number`,
+`integer`, `boolean`, `object`, `array`, or `null`), optional inclusive numeric
+`min` / `max`, and optional non-empty unique scalar `enum`. Enum members must
+match the type and bounds; object and array constraints support type only.
+For example, `constraint: { type: 'integer', min: 0, max: 60000 }` rejects
+negative, fractional, and string delays. Overview knobs expose these contracts;
+SDK payloads do not. Constraints are opt-in and may be declared before a key
+exists. Bootstrap, persisted state, every value or variant change, and rollback
+must satisfy the resulting catalog. Disabled experiment variants are also
+validated. A rejected mutation changes neither state, version, nor journal.
 
 `roles` is `['*']` or one or more named roles. A fixed-horizon experiment has
 this server-side shape in addition to id/allocation/salt/roles/variants:

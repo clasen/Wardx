@@ -1,6 +1,6 @@
 {
   "name": "@wardx/server",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Wardx ingest server for HTTP sync. Remote Config and experiments are controlled through MCP.",
   "keywords": [
     "wardx",
@@ -29,7 +29,9 @@
     ".": "./src/index.js"
   },
   "bin": {
-    "wardx-server": "src/cli.js"
+    "wardx-server": "src/cli.js",
+    "wardx-monitor": "src/ops/monitor-cli.js",
+    "wardx-recovery": "src/ops/recovery-cli.js"
   },
   "files": [
     "src"

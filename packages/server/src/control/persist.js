@@ -35,6 +35,7 @@ function fileShape(config, registry, override) {
     maxAttributeValueLength: config.maxAttributeValueLength,
     persistenceFlushIntervalMs: config.persistenceFlushIntervalMs,
     diagnostics: config.diagnostics,
+    readiness: config.readiness,
     aggregateRetentionMinutes: config.aggregateRetentionMinutes,
     aggregateMaxSeriesPerMetric: config.aggregateMaxSeriesPerMetric,
     memorySinkMaxEnvelopes: config.memorySinkMaxEnvelopes,

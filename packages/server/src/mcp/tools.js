@@ -1,3 +1,5 @@
+import { CONFIG_CONSTRAINT_SCHEMA } from '../control/configConstraints.js';
+
 const PROJECT = {
   type: 'string',
   minLength: 1,
@@ -118,7 +120,7 @@ export const TOOL_DEFS = [
   {
     name: 'set_signal',
     description:
-      'Document one Remote Config key, metric, event, or log name with an optional category. Advances the project version. Clients never receive this.',
+      'Replace one catalog signal with description, optional category, and optional Remote Config constraint. Omitted metadata is removed. Constraints validate existing values and every experiment variant before commit. Advances the project version. Clients never receive this.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -126,6 +128,7 @@ export const TOOL_DEFS = [
         name: { type: 'string', minLength: 1 },
         description: { type: 'string', minLength: 1 },
         category: CATEGORY,
+        constraint: CONFIG_CONSTRAINT_SCHEMA,
         expectedVersion: EXPECTED_VERSION,
         reason: REASON
       },
@@ -555,7 +558,8 @@ export function executeTool(control, name, args = {}) {
     case 'set_signal':
       return control.setSignal(args.project, args.name, {
         description: args.description,
-        ...(args.category === undefined ? {} : { category: args.category })
+        ...(args.category === undefined ? {} : { category: args.category }),
+        ...(args.constraint === undefined ? {} : { constraint: args.constraint })
       }, mutation);
     case 'delete_signal':
       return control.deleteSignal(args.project, args.name, mutation);

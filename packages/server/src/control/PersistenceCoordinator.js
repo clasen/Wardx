@@ -47,6 +47,8 @@ export class PersistenceCoordinator {
     this.stateStore = stateStore;
     this.compactor = stateStore ? new HistoricalCompactor(stateStore) : null;
     this.dirtyKinds = new Set();
+    this.dirtySince = null;
+    this.writeHealthy = true;
     this.timer = null;
     this.inFlight = null;
     this.metrics = {
@@ -67,6 +69,7 @@ export class PersistenceCoordinator {
   mark(kind) {
     if (!KINDS.has(kind)) throw new Error(`unknown persistence kind: ${kind}`);
     if (kind !== 'history' && !this.config.configPath) return;
+    if (this.dirtySince === null) this.dirtySince = Date.now();
     this.dirtyKinds.add(kind);
     this._schedule();
   }
@@ -119,12 +122,15 @@ export class PersistenceCoordinator {
       try {
         for (const kind of batch) await this._write(kind);
       } catch (error) {
+        this.writeHealthy = false;
         for (const kind of batch) this.dirtyKinds.add(kind);
         this.metrics.writeFailures += 1;
         this.diagnostics.report('persistence.flush_failed', error);
         throw error;
       }
     }
+    this.dirtySince = null;
+    this.writeHealthy = true;
   }
 
   async _write(kind) {
@@ -263,6 +269,23 @@ export class PersistenceCoordinator {
       sqlite: this.stateStore?.snapshotMetrics() || null,
       dirty: this.dirtyKinds.size > 0,
       inFlight: this.inFlight !== null
+    };
+  }
+
+  readiness(now) {
+    let withinCapacity = true;
+    if (this.stateStore) {
+      for (const project of this.registry.names()) {
+        const pending = this.registry.get(project).history.projectedPending({ updates: [] });
+        if (pending.batches >= this.config.sqlite.maxPendingBatches || pending.bytes >= this.config.sqlite.maxPendingBytes) {
+          withinCapacity = false;
+        }
+      }
+    }
+    return {
+      healthy: this.writeHealthy,
+      lagMs: this.dirtySince === null ? 0 : Math.max(0, now - this.dirtySince),
+      withinCapacity
     };
   }
 }

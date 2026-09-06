@@ -6,6 +6,7 @@ import {
   validateExperiment
 } from '../control/validateExperiment.js';
 import { experimentsForRole, validateKeyRoles, valuesForRole } from '../roles.js';
+import { validateConfigConstraints } from '../control/configConstraints.js';
 
 function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
@@ -32,6 +33,7 @@ export class ConfigRepository {
     validateKeyRoles(snapshot.values, snapshot.keyRoles, 'config snapshot');
     for (const experiment of snapshot.experiments) validateExperiment(experiment);
     assertUnambiguousGoalMetrics(snapshot.experiments);
+    validateConfigConstraints(snapshot, snapshot.catalog);
     this.version = snapshot.version;
     this.values = cloneJson(snapshot.values);
     this.keyRoles = cloneJson(snapshot.keyRoles);

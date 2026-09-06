@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { validateCatalog } from './control/catalog.js';
+import { validateConfigConstraints } from './control/configConstraints.js';
 import { requireKeys } from './requireKeys.js';
 import { validateKeyRoles } from './roles.js';
 import { assertUnambiguousGoalMetrics, validateExperiment } from './control/validateExperiment.js';
@@ -21,6 +22,7 @@ const REQUIRED = [
   'maxAttributeValueLength',
   'persistenceFlushIntervalMs',
   'diagnostics',
+  'readiness',
   'aggregateRetentionMinutes',
   'aggregateMaxSeriesPerMetric',
   'memorySinkMaxEnvelopes',
@@ -75,6 +77,7 @@ const REQUIRED_MCP_HTTP = [
   'allowedOrigins'
 ];
 const REQUIRED_CAPACITY = ['maxConcurrentSyncHandlers'];
+const REQUIRED_READINESS = ['probeIntervalMs', 'probeTimeoutMs', 'maxPersistenceLagMs'];
 const REQUIRED_EXPERIMENTS = ['ledgerMaxRows'];
 
 function validateClosedObject(value, required, label) {
@@ -208,6 +211,7 @@ function validateProjectSnapshot(snapshot, label) {
   for (const experiment of snapshot.experiments) validateExperiment(experiment);
   assertUnambiguousGoalMetrics(snapshot.experiments);
   if (snapshot.catalog !== undefined) validateCatalog(snapshot.catalog, `${label}.catalog`);
+  validateConfigConstraints(snapshot, snapshot.catalog, label);
 }
 
 export function loadServerConfig(path) {
@@ -322,6 +326,18 @@ export function validateServerConfig(parsed) {
   validateClosedObject(parsed.control, REQUIRED_CONTROL, 'server config.control');
   validatePositiveIntegers(parsed.control, REQUIRED_CONTROL, 'server config.control');
   validateMcpHttp(parsed.mcpHttp);
+  validateClosedObject(parsed.readiness, REQUIRED_READINESS, 'server config.readiness');
+  validatePositiveIntegers(parsed.readiness, REQUIRED_READINESS, 'server config.readiness');
+  for (const key of REQUIRED_READINESS) {
+    if (!Number.isSafeInteger(parsed.readiness[key])) {
+      throw new Error(`server config.readiness.${key} must be a safe integer`);
+    }
+  }
+  for (const key of ['probeIntervalMs', 'probeTimeoutMs']) {
+    if (parsed.readiness[key] > 2_147_483_647) {
+      throw new Error(`server config.readiness.${key} exceeds the timer range`);
+    }
+  }
   validateClosedObject(parsed.capacity, REQUIRED_CAPACITY, 'server config.capacity');
   validatePositiveIntegers(parsed.capacity, REQUIRED_CAPACITY, 'server config.capacity');
   validateClosedObject(parsed.experiments, REQUIRED_EXPERIMENTS, 'server config.experiments');

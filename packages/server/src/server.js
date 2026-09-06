@@ -15,6 +15,7 @@ import { SqliteStateStore } from './storage/SqliteStateStore.js';
 import { ExperimentLedger } from './storage/ExperimentLedger.js';
 import { normalizeCatalog } from './control/catalog.js';
 import { createConfiguredMcpHttpServer } from './mcp/http.js';
+import { OperationalHealth } from './OperationalHealth.js';
 
 function createSink(config) {
   if (config.sink === 'null') return new NullSink();
@@ -115,9 +116,15 @@ export function createIngestServer(configInput, options = {}) {
   const server = resolveNodeServer(options);
   const config = validateServerConfig(configInput);
   const stateStore = createStateStore(config);
-  hydrateAuthoritativeState(config, stateStore);
-  const registry = new ProjectRegistry(config);
-  hydrateHistoricalState(config, stateStore, registry);
+  let registry;
+  try {
+    hydrateAuthoritativeState(config, stateStore);
+    registry = new ProjectRegistry(config);
+    hydrateHistoricalState(config, stateStore, registry);
+  } catch (error) {
+    stateStore.close({ checkpoint: false });
+    throw error;
+  }
   const credentials = new CredentialRegistry(config.credentials);
   const syncGate = new ConcurrencyGate(config.capacity.maxConcurrentSyncHandlers);
   const diagnostics = createDiagnostics(config);
@@ -134,6 +141,13 @@ export function createIngestServer(configInput, options = {}) {
     experimentLedger,
     diagnostics
   });
+  const health = new OperationalHealth({
+    config: config.readiness,
+    stateStore,
+    persistence,
+    syncGate,
+    mcpReady: () => !config.mcpHttp.enabled || Boolean(server.wardx?.mcpHttp?.isReady())
+  });
 
   server.on('request', (req, res) => {
     const host = req.headers.host || `${config.host}:${config.port}`;
@@ -141,6 +155,12 @@ export function createIngestServer(configInput, options = {}) {
     const work = (async () => {
       if (req.method === 'GET' && url.pathname === '/health') {
         json(res, 200, { ok: true });
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/ready') {
+        const readiness = health.snapshot();
+        res.setHeader('cache-control', 'no-store');
+        json(res, readiness.ok ? 200 : 503, readiness);
         return;
       }
       if (url.pathname === '/v1/sync' && req.method === 'POST') {
@@ -168,6 +188,7 @@ export function createIngestServer(configInput, options = {}) {
   let stopPromise = null;
   async function stop() {
     if (stopPromise) return stopPromise;
+    health.stop();
     stopPromise = (async () => {
       if (server.listening) {
         await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
@@ -189,6 +210,7 @@ export function createIngestServer(configInput, options = {}) {
     experimentLedger,
     diagnostics,
     syncGate,
+    health,
     stop
   };
   return server;
@@ -227,6 +249,7 @@ export async function startServer(config, options = {}) {
     server.wardx.mcpHttp = mcpServer.wardxMcp;
     server.wardx.stop = () => {
       if (!stopPromise) {
+        server.wardx.health.stop();
         stopPromise = mcpServer.wardxMcp.stop().then(stopIngest);
       }
       return stopPromise;

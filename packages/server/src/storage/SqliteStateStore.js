@@ -109,6 +109,27 @@ function storedBucket(row, tier) {
   };
 }
 
+function tableNames(database) {
+  return database
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+    .all()
+    .map((row) => row.name);
+}
+
+export function validateSqliteSchema(database) {
+  const version = database.pragma('user_version', { simple: true });
+  if (version !== SCHEMA_VERSION) {
+    throw new Error(`incompatible SQLite schema version ${version}; expected ${SCHEMA_VERSION}`);
+  }
+  if (JSON.stringify(tableNames(database)) !== JSON.stringify(REQUIRED_TABLES)) {
+    throw new Error(`incompatible SQLite schema tables for version ${SCHEMA_VERSION}`);
+  }
+  const metadata = database.prepare('SELECT version FROM schema_metadata WHERE singleton = 1').get();
+  if (!metadata || metadata.version !== SCHEMA_VERSION) {
+    throw new Error(`incompatible SQLite schema metadata for version ${SCHEMA_VERSION}`);
+  }
+}
+
 export class SqliteStateStore {
   static SCHEMA_VERSION = SCHEMA_VERSION;
 
@@ -257,14 +278,7 @@ export class SqliteStateStore {
   }
 
   _validateSchema() {
-    const actual = this.tableNames();
-    if (JSON.stringify(actual) !== JSON.stringify(REQUIRED_TABLES)) {
-      throw new Error(`incompatible SQLite schema tables for version ${SCHEMA_VERSION}`);
-    }
-    const metadata = this.database.prepare('SELECT version FROM schema_metadata WHERE singleton = 1').get();
-    if (!metadata || metadata.version !== SCHEMA_VERSION) {
-      throw new Error(`incompatible SQLite schema metadata for version ${SCHEMA_VERSION}`);
-    }
+    validateSqliteSchema(this.database);
   }
 
   _prepareStatements() {
@@ -616,10 +630,26 @@ export class SqliteStateStore {
   }
 
   tableNames() {
-    return this.database
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-      .all()
-      .map((row) => row.name);
+    return tableNames(this.database);
+  }
+
+  probeWritable(timeoutMs) {
+    requirePositiveInteger(timeoutMs, 'SQLite probe timeout');
+    if (!this.database.open) throw new Error('SQLite is closed');
+    this.database.pragma(`busy_timeout = ${timeoutMs}`);
+    try {
+      this.database.transaction(() => {
+        const update = this.database.prepare(
+          'UPDATE schema_metadata SET version = ? WHERE singleton = 1 AND version = ?'
+        );
+        const changed = update.run(-SCHEMA_VERSION, SCHEMA_VERSION);
+        if (changed.changes !== 1) throw new Error('SQLite schema metadata is invalid');
+        const restored = update.run(SCHEMA_VERSION, -SCHEMA_VERSION);
+        if (restored.changes !== 1) throw new Error('SQLite probe failed to restore schema metadata');
+      }).immediate();
+    } finally {
+      this.database.pragma(`busy_timeout = ${this.settings.busyTimeoutMs}`);
+    }
   }
 
   close({ checkpoint = true } = {}) {

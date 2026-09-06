@@ -18,6 +18,7 @@ import { assertExperimentKeysExist, toClientExperiment, validateExperiment } fro
 import { MutationConflictError, MutationJournal } from './MutationJournal.js';
 import { applyControlStateChange, diffControlState } from './ControlStateChange.js';
 import { SqliteMutationRepository } from '../storage/SqliteMutationRepository.js';
+import { ConfigConstraintError, validateConfigConstraints } from './configConstraints.js';
 
 function materialize(normalized) {
   const catalog = structuredClone(normalized.catalog);
@@ -107,7 +108,13 @@ export class ControlService {
     this.mutationJournal = new MutationJournal({
       repository: this.mutationRepository,
       capacity: config.control.journalCapacity,
-      applyChange: applyControlStateChange
+      applyChange: (state, change) => {
+        const next = applyControlStateChange(state, change);
+        const candidate = materialize(next);
+        validateCatalog(candidate.catalog, 'catalog');
+        validateConfigConstraints(candidate.snapshot, candidate.catalog);
+        return next;
+      }
     });
   }
 
@@ -692,7 +699,7 @@ export class ControlService {
       this._publish(project);
       return result;
     } catch (error) {
-      if (!(error instanceof MutationConflictError)) {
+      if (!(error instanceof MutationConflictError) && !(error instanceof ConfigConstraintError)) {
         this.diagnostics.report('control.persistence_failed', error, { project });
       }
       throw error;
@@ -717,6 +724,7 @@ export class ControlService {
     const candidate = materialize(after);
     new ConfigRepository({ version: settings.expectedVersion + 1, ...candidate.snapshot });
     validateCatalog(candidate.catalog, `server config.projects.${project}.catalog`);
+    validateConfigConstraints(candidate.snapshot, candidate.catalog, `server config.projects.${project}`);
     const snapshots = this.registry.names().map((name) =>
       name === project ? candidate.snapshot : this.requireStore(name).configRepo.snapshot()
     );

@@ -165,7 +165,15 @@ export function createMcpHttpServer(control, config, token) {
     return stopPromise;
   }
 
-  server.wardxMcp = { config, requestGate, stop };
+  server.wardxMcp = {
+    config,
+    requestGate,
+    stop,
+    isReady: () => {
+      const capacity = requestGate.snapshot();
+      return server.listening && !stopping && capacity.active < capacity.limit;
+    }
+  };
   return server;
 }
 
