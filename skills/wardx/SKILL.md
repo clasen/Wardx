@@ -1,6 +1,6 @@
 ---
 name: wardx
-description: Instruments Node.js with the Wardx SDK (wardx / createWardx) — counters, gauges, histograms, distinct HLL estimates, timers, events, logs, Remote Config, experiment assignment, and volume funnels. Use when the user mentions wardx, createWardx, config.get, experiment.goal, createConsoleTracer, packages/node, packages/core, @wardx/core, funnel, onboarding steps, or asks to add telemetry, metrics, events, logs, unique counts, or A/B assignment in application code. Also use when changing the Node SDK or the core engine. Do not use for MCP tools, catalog onboarding, ingest control, or POST /v1/sync from an agent — that belongs to wardx-server.
+description: Instruments Node.js with the Wardx SDK (wardx / createWardx) — counters, gauges, histograms, distinct HLL estimates, timers, events, logs, Remote Config, experiment assignment, and volume funnels. Use when the user mentions wardx, createWardx, config.get, experiment.goal, createConsoleTracer, packages/node, packages/core, @wardx/core, funnel, onboarding steps, or asks to add telemetry, metrics, events, logs, unique counts, or A/B assignment in application code. Also use when changing the Node SDK or the core engine. Do not use for MCP tools, catalog onboarding, ingest control, or POST /v1/sync from an agent — that belongs to wardx-server. Supports explicit user retention through retentionActivity/RetentionActivity with persistent UTC D1/D7/D30 cohorts.
 ---
 
 # Wardx Node SDK
@@ -228,3 +228,15 @@ if (amount > wardx.config.get('economy.maxAward', 500)) {
 **Agent asking to call `/v1/sync` or MCP from app code.** SDK speaks HTTP sync only. Agents speak MCP on the server process.
 
 **No exposures after an experiment ships.** The app is reading the knob with no subject. On a single-user process, call `identify(userId)` after login. On a `game-server`, pass `{ subjectId }` on each `config.get`. Do not `identify()` on a process that serves many users.
+
+## User retention
+
+Use `wardx.retentionActivity(userId)` on the activity that defines a return. Require an
+explicit nonblank stable user ID and the same stable privacy salt across
+project clients; `Identify`/`identify` does not supply an implicit ID. Keep the
+activity definition consistent. The server persists UTC first-activity cohorts
+and exact received-user returns **on** D1/D7/D30, deduplicating sessions/devices.
+Query MCP `get_retention` by cohort date range (`from` inclusive, `to` exclusive,
+`YYYY-MM-DD`); pending target days have null counts/rates. Lost batches can bias
+results, and earlier delayed activity can correct the cohort. This does not
+change at-most-once delivery. Use separate projects for separate populations.

@@ -109,6 +109,11 @@ namespace Wardx
             lock (_gate) _core.Event(name, attrs);
         }
 
+        public void RetentionActivity(string userId)
+        {
+            lock (_gate) _core.RetentionActivity(userId);
+        }
+
         public void Identify(string subjectId)
         {
             lock (_gate) _core.Identify(subjectId);

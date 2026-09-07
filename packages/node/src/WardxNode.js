@@ -43,6 +43,10 @@ export class WardxNode {
     this._enqueueSync({ bootstrap: true });
   }
 
+  retentionActivity(userId) {
+    this._core.retentionActivity(userId);
+  }
+
   identify(subjectId) {
     this._core.identify(subjectId);
   }

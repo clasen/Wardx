@@ -315,6 +315,43 @@ one step, use `distinct(stepName, dims).add(userId)`. It hashes with the require
 local `privacySalt` and sends only a 512-register HLL sketch (`p=9`, about 4.6%
 standard error). This still does not create a Mixpanel-style per-user funnel.
 
+## User retention: D1 / D7 / D30
+
+Call `wardx.retentionActivity(userId)` on the activity that defines a return,
+for example opening the app or starting a game. Use the same definition in all
+clients of the project. `userId` is required on every call, must be nonblank,
+and must remain stable across sessions and devices. `identify()` is not used
+as an implicit fallback.
+
+```js
+wardx.retentionActivity(userId);
+```
+
+The SDK sends a salted subject hash, never the raw ID. Keep `privacySalt` stable
+and identical across project clients; the server pins its fingerprint on the
+first accepted activity and rejects a different salt. Cohorts and returns are
+project-wide across roles and environments; use separate projects for separate
+populations such as production and testing.
+
+The server persists the earliest received activity date as the cohort and
+counts each user once on each UTC calendar day. D7 means activity **on** the
+seventh calendar day after the cohort date, not activity on or after D7.
+Duplicate activities do not increase the count. Delayed earlier activity can
+correct the cohort and its returns; subsequent activity never advances it.
+
+Query MCP `get_retention` with `project`, inclusive `from`, and exclusive `to`
+as `YYYY-MM-DD` cohort dates. Return dates need not fall inside that range.
+Each cohort contains `users` and D1/D7/D30 `returns` with `users`, `rate` (0–1),
+and `status`. Until the entire target UTC day has elapsed, the return is
+`pending` with null count and rate. Empty cohorts are omitted.
+
+Counts are exact for received activity, not proof of complete delivery. This
+uses the existing bounded, in-memory event buffer and at-most-once sync: lost
+batches can lose initial activity or returns. There is no historical backfill
+from ordinary events or `distinct`. Existing timestamp and late-data limits
+apply. A mature result can still change when accepted delayed activity arrives.
+Retention requires a server with this feature; older servers cannot compute it.
+
 ## Use case 8: Detect abnormal point accumulation
 
 **When:** A game grants points, coins, or XP. You need to see whether the economy is consistent, or whether grants jumped outside the normal range.

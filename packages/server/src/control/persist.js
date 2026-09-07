@@ -44,6 +44,7 @@ function fileShape(config, registry, override) {
     recentLogsMax: config.recentLogsMax,
     sqlite: config.sqlite,
     history: config.history,
+    retention: config.retention,
     control: config.control,
     capacity: config.capacity,
     experiments: config.experiments,

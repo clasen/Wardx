@@ -58,6 +58,19 @@ namespace Wardx.Tests
             AssertX.True(found, "counter n present");
             AssertX.Equal(first.Frames[first.Frames.Count - 1].Seq + 1, second.Frames[0].Seq, "seq");
 
+            var retention = new WardxCore(Fixtures.TestSettings());
+            retention.Identify("implicit-user");
+            foreach (var invalid in new string[] { null, "", "  " })
+                AssertX.Throws(() => retention.RetentionActivity(invalid), "non-empty userId");
+            retention.RetentionActivity("private-user");
+            retention.RetentionActivity("private-user");
+            var activity = AllEvents(retention.SnapshotFrame());
+            AssertX.Equal(2, activity.Count, "retention activity count");
+            AssertX.Equal("retention.activity", activity[0].Name);
+            AssertX.Equal(Hash.SubjectHash("test-salt", "private-user"), (string)activity[0].Attrs["subject"]);
+            AssertX.Equal(Hash.SubjectHash("test-salt", "wardx.retention.identity"), (string)activity[0].Attrs["salt"]);
+            AssertX.Equal((string)activity[0].Attrs["subject"], (string)activity[1].Attrs["subject"]);
+
             var core2 = new WardxCore(Fixtures.TestSettings(o => o.MaxBufferedEvents = 1));
             core2.Event("keep");
             core2.Event("drop-me");

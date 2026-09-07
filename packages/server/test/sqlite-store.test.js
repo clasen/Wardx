@@ -48,7 +48,7 @@ test('SqliteStateStore requires every operational setting', () => {
 
 test('SqliteStateStore initializes the versioned WAL schema and all authoritative tables', () => {
   withStore((store) => {
-    assert.equal(store.schemaVersion(), 1);
+    assert.equal(store.schemaVersion(), 2);
     assert.equal(store.database.pragma('journal_mode', { simple: true }), 'wal');
     assert.deepEqual(store.tableNames(), [
       'compaction_watermarks',
@@ -60,6 +60,8 @@ test('SqliteStateStore initializes the versioned WAL schema and all authoritativ
       'minute_aggregates',
       'mutation_journal',
       'project_state',
+      'retention_projects',
+      'retention_users',
       'schema_metadata'
     ]);
   });
@@ -74,6 +76,34 @@ test('SqliteStateStore rejects an incompatible schema version', () => {
   try {
     assert.throws(() => new SqliteStateStore({ path, settings: settings() }), /incompatible SQLite schema version 99/);
   } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('schema v1 upgrades add retention tables atomically and preserve existing project state', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'wardx-sqlite-upgrade-'));
+  const path = join(directory, 'state.sqlite');
+  let store = new SqliteStateStore({ path, settings: settings() });
+  try {
+    store.saveProjectState({ project: 'demo', version: 3, state: { values: { enabled: true } }, catalog: {} });
+    store.database.exec(`
+      DROP TABLE retention_users;
+      DROP TABLE retention_projects;
+      UPDATE schema_metadata SET version = 1;
+      PRAGMA user_version = 1;
+    `);
+    const before = store.readProjectState('demo');
+    store.close();
+    store = new SqliteStateStore({ path, settings: settings() });
+    assert.deepEqual(store.readProjectState('demo'), before);
+    assert.equal(store.schemaVersion(), 2);
+    store.database.prepare('INSERT INTO retention_projects VALUES (?, ?, ?)').run('demo', 'a'.repeat(64), 0);
+    store.close();
+    store = new SqliteStateStore({ path, settings: settings() });
+    assert.deepEqual(store.readProjectState('demo'), before);
+    assert.equal(store.database.prepare('SELECT COUNT(*) AS count FROM retention_projects').get().count, 1);
+  } finally {
+    store.close();
     rmSync(directory, { recursive: true, force: true });
   }
 });

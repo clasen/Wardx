@@ -177,6 +177,7 @@ const server = createIngestServer({
   },
   control: { journalCapacity: 1000, maxConcurrentMcpReads: 8, maxPendingMcpReads: 32 },
   capacity: { maxConcurrentSyncHandlers: 256 },
+  retention: { maxUsersPerProject: 1000000, maxQueryDays: 366 },
   experiments: { ledgerMaxRows: 1000000 },
   projects: {
     demo: {

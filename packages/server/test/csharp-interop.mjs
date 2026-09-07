@@ -165,6 +165,11 @@ async function verify() {
     const distinct = aggregates.windows.flatMap((window) => window.distincts).find((row) => row.name === 'interop.hids');
     assert.equal(distinct.estimate, 1);
     assert.equal('registers' in distinct, false);
+    const today = new Date().toISOString().slice(0, 10);
+    const tomorrow = new Date(Date.parse(today) + 86_400_000).toISOString().slice(0, 10);
+    const retention = await callTool(client, 'get_retention', { project: 'demo', from: today, to: tomorrow });
+    assert.equal(retention.cohorts[0].users, 1);
+    assert.ok(retention.cohorts[0].returns.every((row) => row.status === 'pending'));
     await client.close();
 
     const envelopes = (await readFile(ndjsonPath, 'utf8'))
@@ -185,6 +190,9 @@ async function verify() {
     assert.equal(events.filter((row) => row[1] === 'experiment.exposure').length, 1);
     assert.equal(events.filter((row) => row[1] === 'experiment.goal').length, 1);
     assert.ok(events.some((row) => row[1] === 'interop.event'));
+    const activity = events.find((row) => row[1] === 'retention.activity');
+    const exposure = events.find((row) => row[1] === 'experiment.exposure');
+    assert.equal(activity[2].subject, exposure[2].subject);
     for (let index = 1; index < frames.length; index++) {
       assert.equal(frames[index].seq, frames[index - 1].seq + 1);
     }

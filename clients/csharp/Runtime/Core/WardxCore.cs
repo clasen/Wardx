@@ -95,6 +95,19 @@ namespace Wardx
             TracerEmit.Log(_tracer, new LogRecord { Level = level, Message = message, Attrs = attrs, Dropped = dropped });
         }
 
+        public void RetentionActivity(string userId)
+        {
+            if (string.IsNullOrWhiteSpace(userId))
+                throw new ArgumentException("retentionActivity requires a non-empty userId");
+            if (string.IsNullOrWhiteSpace(_settings.PrivacySalt))
+                throw new ArgumentException("retentionActivity requires a non-empty privacySalt");
+            Event("retention.activity", new Dictionary<string, object>
+            {
+                ["subject"] = Hash.SubjectHash(_settings.PrivacySalt, userId),
+                ["salt"] = Hash.SubjectHash(_settings.PrivacySalt, "wardx.retention.identity")
+            });
+        }
+
         public void Identify(string subjectId)
         {
             if (subjectId != null && subjectId.Length == 0)

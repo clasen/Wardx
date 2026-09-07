@@ -94,13 +94,14 @@ function evidenceHealth(rows) {
 }
 
 export class ControlService {
-  constructor({ config, registry, persistence, diagnostics, stateStore, experimentLedger }) {
+  constructor({ config, registry, persistence, diagnostics, stateStore, experimentLedger, retentionLedger }) {
     this.config = config;
     this.registry = registry;
     this.persistence = persistence;
     this.diagnostics = diagnostics;
     this.stateStore = stateStore;
     this.experimentLedger = experimentLedger;
+    this.retentionLedger = retentionLedger;
     this.mutationRepository = new SqliteMutationRepository({
       store: stateStore,
       capacity: config.control.journalCapacity
@@ -624,6 +625,11 @@ export class ControlService {
 
   analyzeExperiment(project, experimentId) {
     return this.experimentStats(project, experimentId);
+  }
+
+  retention(project, filter) {
+    this.requireStore(project);
+    return this.retentionLedger.query(project, filter);
   }
 
   aggregateHistory(project, filter) {

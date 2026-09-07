@@ -13,7 +13,7 @@ X-Wardx-Key: <project key>
 
 General telemetry delivery is **at-most-once**. A failed sync discards the batch;
 there is no client disk queue and no retry of the same frames. Experiment
-exposure/goal evidence is the explicit exception: the server transactionally
+exposure/goal evidence and explicit retention activity are exceptions: the server transactionally
 commits accepted deduplicated evidence before returning success.
 
 ## Request
@@ -203,3 +203,33 @@ contract.
 Remote Config, experiments, aggregates, recent events/logs, and analysis are MCP tools on the ingest process, exposed over stdio or optional loopback-only Streamable HTTP. There is no admin REST API. Each project has its own snapshot, aggregator, and bounded recent-client/event/log rings. Catalog signal entries contain a required description and optional category; this metadata is attached by name at read time and never enters ingest frames or stored aggregate series. Overview, current aggregates, and historical aggregates accept an exact category filter. `get_recent_events` retains only names explicitly listed in that project's `catalog.inspectEvents` and returns their raw attrs and instance IDs newest-first with exact name, role, and scalar-attribute filters. Its `recentEventsMax` buffer is memory-only, evicts the oldest retained rows, and is empty after restart. Events outside the allowlist still increment current and historical aggregate counts, which never contain attrs or instance IDs. Aggregates, clients, events, and logs are tagged with the sender's role. MCP `get_project_overview` groups aggregate outcomes and clients by role and exposes the active categories and inspection allowlist.
 
 How the SDK HTTP sync and the MCP agent share that process: [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Retention activity
+
+SDK methods `retentionActivity(userId)` / `RetentionActivity(userId)` require
+an explicit nonblank user ID and emit an ordinary event tuple with a reserved
+name and closed attrs:
+
+```text
+[timestampMs, "retention.activity", { "subject": "<64 lowercase hex>", "salt": "<64 lowercase hex>" }]
+```
+
+`subject` uses the existing `subjectHash(privacySalt, userId)` algorithm.
+`salt` is `subjectHash(privacySalt, "wardx.retention.identity")`, a project
+identity-salt fingerprint. Neither the raw user ID nor salt is sent. Missing,
+non-hash or extra attrs are rejected. The first accepted fingerprint is pinned
+per project; a mismatch is HTTP 400. An exhausted user capacity is HTTP 503.
+Both failures roll back the retention batch and any accepted experiment
+evidence from the same envelope.
+
+The event timestamp supplies the UTC activity day under existing timestamp and
+late-data validation. SQLite preserves the earliest received activity day and
+activity days 0–30. Reordering or resending activity is idempotent for retention;
+earlier delayed activity may revise the cohort. This is independent of role,
+environment, instance ID and session ID within a project.
+
+MCP `get_retention` selects cohort dates, `from` inclusive and `to` exclusive.
+It reports exact received-user counts and rates for activity **on** D1/D7/D30.
+A target UTC day must fully elapse before its count/rate stops being null.
+Maturity does not certify delivery completeness or freeze late corrections.
+The SDK's existing at-most-once transport remains unchanged.

@@ -1,6 +1,21 @@
 import Database from 'better-sqlite3';
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
+const RETENTION_SCHEMA = `
+  CREATE TABLE retention_projects (
+    project TEXT PRIMARY KEY,
+    salt_hash TEXT NOT NULL,
+    user_count INTEGER NOT NULL CHECK (user_count >= 0)
+  ) STRICT;
+  CREATE TABLE retention_users (
+    project TEXT NOT NULL,
+    subject_hash BLOB NOT NULL CHECK (length(subject_hash) = 32),
+    cohort_day INTEGER NOT NULL CHECK (cohort_day >= 0),
+    activity_days INTEGER NOT NULL CHECK (activity_days BETWEEN 1 AND 2147483647),
+    PRIMARY KEY(project, subject_hash)
+  ) STRICT;
+  CREATE INDEX retention_cohorts ON retention_users(project, cohort_day);
+`;
 const TIERS = new Set(['minute', 'hour', 'day']);
 const TABLE_BY_TIER = Object.freeze({
   minute: 'minute_aggregates',
@@ -30,6 +45,8 @@ const REQUIRED_TABLES = [
   'minute_aggregates',
   'mutation_journal',
   'project_state',
+  'retention_projects',
+  'retention_users',
   'schema_metadata'
 ];
 
@@ -116,17 +133,20 @@ function tableNames(database) {
     .map((row) => row.name);
 }
 
-export function validateSqliteSchema(database) {
+export function validateSqliteSchema(database, expectedVersion = SCHEMA_VERSION) {
   const version = database.pragma('user_version', { simple: true });
-  if (version !== SCHEMA_VERSION) {
-    throw new Error(`incompatible SQLite schema version ${version}; expected ${SCHEMA_VERSION}`);
+  if (version !== expectedVersion) {
+    throw new Error(`incompatible SQLite schema version ${version}; expected ${expectedVersion}`);
   }
-  if (JSON.stringify(tableNames(database)) !== JSON.stringify(REQUIRED_TABLES)) {
-    throw new Error(`incompatible SQLite schema tables for version ${SCHEMA_VERSION}`);
+  const requiredTables = expectedVersion === 1
+    ? REQUIRED_TABLES.filter((name) => !name.startsWith('retention_'))
+    : REQUIRED_TABLES;
+  if (JSON.stringify(tableNames(database)) !== JSON.stringify(requiredTables)) {
+    throw new Error(`incompatible SQLite schema tables for version ${expectedVersion}`);
   }
   const metadata = database.prepare('SELECT version FROM schema_metadata WHERE singleton = 1').get();
-  if (!metadata || metadata.version !== SCHEMA_VERSION) {
-    throw new Error(`incompatible SQLite schema metadata for version ${SCHEMA_VERSION}`);
+  if (!metadata || metadata.version !== expectedVersion) {
+    throw new Error(`incompatible SQLite schema metadata for version ${expectedVersion}`);
   }
 }
 
@@ -165,6 +185,15 @@ export class SqliteStateStore {
 
   _initializeSchema() {
     const version = this.database.pragma('user_version', { simple: true });
+    if (version === 1) {
+      validateSqliteSchema(this.database, 1);
+      this.database.transaction(() => {
+        this.database.exec(RETENTION_SCHEMA);
+        this.database.exec(`UPDATE schema_metadata SET version = ${SCHEMA_VERSION} WHERE singleton = 1`);
+        this.database.pragma(`user_version = ${SCHEMA_VERSION}`);
+      }).immediate();
+      return;
+    }
     if (version !== 0 && version !== SCHEMA_VERSION) {
       throw new Error(`incompatible SQLite schema version ${version}; expected ${SCHEMA_VERSION}`);
     }
@@ -268,6 +297,7 @@ export class SqliteStateStore {
           PRIMARY KEY(project, experiment)
         ) STRICT;
 
+        ${RETENTION_SCHEMA}
         PRAGMA user_version = ${SCHEMA_VERSION};
       `);
       this.database.exec('COMMIT');

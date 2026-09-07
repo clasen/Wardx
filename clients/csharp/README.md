@@ -18,10 +18,10 @@ Unity 2021.3 or later, or .NET Standard 2.1.
 https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime
 ```
 
-Pin a release with `#v0.4.0`. In `Packages/manifest.json`:
+Pin a release with `#v0.5.0`. In `Packages/manifest.json`:
 
 ```json
-"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.4.0"
+"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.5.0"
 ```
 
 **Unity (this checkout).** Package Manager → Add package from disk → `clients/csharp/Runtime/package.json`.
@@ -170,3 +170,23 @@ Verify the C# suite, real CLI interoperability, formatting, and SDK analyzers fr
 npm run test:csharp
 npm run check:csharp
 ```
+
+## User retention
+
+Call `wardx.RetentionActivity(userId)` when the user performs the activity you
+choose to count as a return. The method is available on `WardxClient` and
+`WardxCore`, including Unity. It requires an explicit nonblank, stable user ID;
+`Identify()` does not supply a fallback. All clients of a project must use the
+same activity definition and stable `PrivacySalt`.
+
+Only salted hashes are sent. The server persists project-wide first-activity
+cohorts and exact received-user counts for activity **on** D1, D7 and D30, using
+UTC calendar days. Repeated sessions and devices with the same identity do not
+increase a day's count. A changed salt is rejected. Earlier delayed activity
+can correct the cohort. Separate production and test populations by project.
+
+Read results through MCP `get_retention` using inclusive `from` and exclusive
+`to` cohort dates (`YYYY-MM-DD`). Days that have not fully elapsed return
+`pending` with null count and rate. Rates are fractions from 0 to 1.
+This retains the SDK's bounded buffer and at-most-once delivery: dropped or
+failed batches can bias retention. Use a server that supports retention.

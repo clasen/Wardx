@@ -83,3 +83,14 @@ npx skills add https://github.com/clasen/Wardx --skill wardx
 npx skills add https://github.com/clasen/Wardx --skill wardx-unity
 npx skills add https://github.com/clasen/Wardx --skill wardx-csharp
 ```
+
+## User retention
+
+Use `wardx.retentionActivity(userId)` in Node or
+`wardx.RetentionActivity(userId)` in C#/Unity on the activity that defines a
+return. A stable explicit user ID and project privacy salt are required.
+Wardx persists UTC first-activity cohorts and exact received-user D1/D7/D30
+counts; MCP `get_retention` queries cohort dates and marks unfinished days as
+pending. Delivery remains at-most-once, so lost activity can bias results.
+See the [server retention contract](packages/server/README.md#persistent-user-retention)
+for required configuration, limits and the SQLite schema upgrade.

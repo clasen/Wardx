@@ -431,6 +431,20 @@ export const TOOL_DEFS = [
     }
   },
   {
+    name: 'get_retention',
+    description: 'Exact D1/D7/D30 retention for received explicit user activity. Cohorts use the earliest received activity timestamp in UTC; return means active ON that day. Pending days return null. Date range selects cohorts, not return events. Late activity can revise cohorts and counts. No user identifiers are returned.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: PROJECT,
+        from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'Inclusive cohort date, YYYY-MM-DD UTC.' },
+        to: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'Exclusive cohort date, YYYY-MM-DD UTC.' }
+      },
+      required: ['project', 'from', 'to'],
+      additionalProperties: false
+    }
+  },
+  {
     name: 'get_aggregate_history',
     description: 'Read bounded closed hourly or daily aggregate history with catalog descriptions/categories and completeness metadata. Optional names and category filters intersect. Distinct rows expose merged HLL estimates without identifiers or registers.',
     inputSchema: {
@@ -612,6 +626,8 @@ export function executeTool(control, name, args = {}) {
           limit: args.limit
         })
       };
+    case 'get_retention':
+      return control.retention(args.project, { from: args.from, to: args.to });
     case 'get_aggregate_history':
       return control.aggregateHistory(args.project, {
         tier: args.tier,

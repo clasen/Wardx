@@ -38,7 +38,7 @@ test('readiness probes SQLite write capability and recovers without changing app
   assert.equal((await fetch(`${endpoint}/ready`)).status, 200);
   assert.deepEqual(control.getConfig('demo'), before);
   assert.deepEqual(control.listConfigChanges('demo'), journal);
-  assert.equal(stateStore.schemaVersion(), 1);
+  assert.equal(stateStore.schemaVersion(), 2);
 });
 
 test('SQLite probe reports writer contention and restores the normal busy timeout', async (t) => {

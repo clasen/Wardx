@@ -440,6 +440,7 @@ export class WardxCore {
   distinct(name: string, dims?: Dimensions | null): DistinctHandle;
   timer(name: string, dims?: Dimensions | null): StopTimer;
   event(name: string, attrs?: Attrs | null): void;
+  retentionActivity(userId: string): void;
   identify(subjectId: string | null | undefined): void;
   configGet<T>(key: string, fallback: T, context?: SubjectContext): T;
   experimentGoal(name: string, context?: ExperimentGoalContext): void;

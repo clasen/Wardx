@@ -68,6 +68,7 @@ Important groups:
 | --- | --- |
 | `credentials` | Raw key to `{ label, project, allowedRoles, trustedForDecisions, enabled }`. |
 | `sqlite` | Local path, WAL/synchronous/checkpoint policy, transaction and pending-write bounds. |
+| `retention` | Persistent user capacity per project and maximum cohort query range. |
 | `history` | Late-data policy, hour/day retention, app-version and query bounds. |
 | `control` | Journal capacity and MCP read concurrency/pending bounds. |
 | `mcpHttp` | Optional loopback Streamable HTTP listener, bearer source, boundary allowlists, and request bounds. |
@@ -559,3 +560,61 @@ Do not edit the verified backup itself.
 
 Detailed wire and component contracts live in `docs/PROTOCOL.md` and
 `docs/ARCHITECTURE.md`.
+
+## Persistent user retention
+
+Node `retentionActivity(userId)` and C#/Unity `RetentionActivity(userId)` emit
+explicit activity for D1/D7/D30 retention. Ordinary events, `identify`, session
+IDs and HLL distinct metrics do not establish retention cohorts.
+
+Required centralized configuration:
+
+```json
+"retention": { "maxUsersPerProject": 1000000, "maxQueryDays": 366 }
+```
+
+`get_retention({ project, from, to })` reads cohorts in the half-open UTC date
+range `[from, to)`, using `YYYY-MM-DD`. It includes the original cohort size
+and exact received-user counts and rates (fractions 0–1) for activity **on**
+D1/D7/D30. Return dates are independent of the query range. A day is `pending`
+until its UTC midnight end, with null users/rate; empty cohorts are omitted.
+`exact: true` describes counting accuracy and `basis: "received_activity"`
+limits the claim to received activity, not delivery completeness.
+
+Each project's first activity pins a fingerprint of the client's privacy salt.
+All clients must keep that salt and user identity stable. A mismatched salt
+returns HTTP 400. Roles and environments share the project's population; use
+separate projects when those populations must not mix. The application defines
+what counts as activity by where it calls the SDK method. Do not mix app-open
+and gameplay definitions within the same project.
+
+SQLite stores one salted subject hash, earliest activity UTC day and a 31-bit
+activity mask per user. The mask also preserves intermediate days so that an
+earlier delayed activity can correct the cohort without losing D1/D7/D30
+returns. Processing duplicates, different arrival orders and process restarts
+does not double-count users. Queries expose no subject hashes. Counts can be
+revised by delayed accepted activity even after a target day is mature.
+
+User rows and salt fingerprints do not expire: forgetting an old user would
+incorrectly enroll them again. Capacity is bounded by `maxUsersPerProject`;
+a batch that would exceed it is rejected atomically with HTTP 503 instead of
+evicting old users. Existing users can still report activity at capacity.
+`maxQueryDays` bounds the query date span, and the user capacity bounds the
+population scanned. Hashes are pseudonymous per-user state; account for this
+in the deployment's data-retention policy. This feature adds no user-history
+or per-user query API. Raw diagnostic sinks/allowlisted recent event inspection
+can retain the hashed activity payload under their existing policies.
+
+The SQLite schema is now version 2. On startup, a validated version 1 database
+is upgraded transactionally by adding the retention tables and index, retaining
+existing state. Back up before upgrading; older server binaries cannot open
+version 2. Other schema versions are rejected. Existing external configuration
+files must add the required `retention` object before startup.
+
+Accepted retention and experiment evidence commit in one SQLite transaction
+before sync success. General telemetry persistence retains its existing
+behavior. The SDK still has no durable outbox or same-batch retry: buffer drops,
+failed requests and late-data rejection can bias cohorts and returns. Existing
+`history.maxAcceptedPastAgeMs` and clock-skew settings apply to activity too.
+D30 does not require 30-day-old incoming events; its initial cohort is already
+persisted independently of aggregate history.

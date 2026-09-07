@@ -12,6 +12,7 @@ import { CredentialRegistry } from './auth/CredentialRegistry.js';
 import { ConcurrencyGate } from './capacity/ConcurrencyGate.js';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { SqliteStateStore } from './storage/SqliteStateStore.js';
+import { RetentionLedger } from './storage/RetentionLedger.js';
 import { ExperimentLedger } from './storage/ExperimentLedger.js';
 import { normalizeCatalog } from './control/catalog.js';
 import { createConfiguredMcpHttpServer } from './mcp/http.js';
@@ -130,8 +131,9 @@ export function createIngestServer(configInput, options = {}) {
   const diagnostics = createDiagnostics(config);
   const persistence = new PersistenceCoordinator({ config, registry, diagnostics, stateStore });
   const experimentLedger = new ExperimentLedger({ store: stateStore, maxRows: config.experiments.ledgerMaxRows });
+  const retentionLedger = new RetentionLedger({ store: stateStore, settings: config.retention });
   const sink = createSink(config);
-  const control = new ControlService({ config, registry, persistence, diagnostics, stateStore, experimentLedger });
+  const control = new ControlService({ config, registry, persistence, diagnostics, stateStore, experimentLedger, retentionLedger });
   const handleSync = createSyncHandler({
     config,
     registry,
@@ -139,6 +141,8 @@ export function createIngestServer(configInput, options = {}) {
     sink,
     persistence,
     experimentLedger,
+    retentionLedger,
+    stateStore,
     diagnostics
   });
   const health = new OperationalHealth({
@@ -208,6 +212,7 @@ export function createIngestServer(configInput, options = {}) {
     persistence,
     stateStore,
     experimentLedger,
+    retentionLedger,
     diagnostics,
     syncGate,
     health,

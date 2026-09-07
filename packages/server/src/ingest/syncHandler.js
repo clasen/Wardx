@@ -2,6 +2,7 @@ import { gunzipSync } from 'node:zlib';
 import { PayloadTooLargeError, readBody } from './readBody.js';
 import { validateEnvelope, validateExperimentEvents } from './validate.js';
 import { CredentialAuthorizationError } from '../auth/CredentialRegistry.js';
+import { RetentionInputError, RetentionCapacityError } from '../storage/RetentionLedger.js';
 
 function json(res, status, body) {
   const payload = typeof body === 'string' ? body : JSON.stringify(body);
@@ -49,6 +50,8 @@ export function createSyncHandler({
   sink,
   persistence,
   experimentLedger,
+  retentionLedger,
+  stateStore,
   diagnostics
 }) {
   return async function handleSync(req, res) {
@@ -145,10 +148,27 @@ export function createSyncHandler({
       json(res, 503, { ok: false, error: 'overloaded' });
       return;
     }
-    const evidence = experimentLedger.ingestBatch(project, experimentEvents(body), source);
-    const rejectedEvidence = evidence.find(
-      (result) => result.status === 'variant_conflict' || result.status === 'missing_exposure'
-    );
+    const activity = body.frames.flatMap((frame) => frame.events
+      .filter((row) => row[1] === 'retention.activity')
+      .map(([timestamp, , attrs]) => ({ timestamp, subject: attrs.subject, salt: attrs.salt })));
+    let rejectedEvidence;
+    try {
+      const ingestEvidence = () => {
+        const evidence = experimentLedger.ingestBatch(project, experimentEvents(body), source);
+        rejectedEvidence = evidence.find(
+          (result) => result.status === 'variant_conflict' || result.status === 'missing_exposure'
+        );
+        if (rejectedEvidence) return;
+        retentionLedger.ingestBatch(project, activity);
+      };
+      if (activity.length > 0) stateStore.transaction(ingestEvidence);
+      else ingestEvidence();
+    } catch (error) {
+      if (!(error instanceof RetentionInputError) && !(error instanceof RetentionCapacityError)) throw error;
+      diagnostics.report('ingest.retention_rejected', error, { project });
+      json(res, error instanceof RetentionCapacityError ? 503 : 400, { ok: false, error: error.message });
+      return;
+    }
     if (rejectedEvidence) {
       diagnostics.report('ingest.experiment_rejected', new Error(rejectedEvidence.status), {
         project,

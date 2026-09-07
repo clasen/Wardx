@@ -3,6 +3,7 @@ import { EventBuffer } from './buffers/EventBuffer.js';
 import { LogBuffer } from './buffers/LogBuffer.js';
 import { ConfigStore } from './config/ConfigStore.js';
 import { ExperimentResolver } from './config/ExperimentResolver.js';
+import { subjectHash } from './config/hash.js';
 import { FrameBuilder } from './frame/FrameBuilder.js';
 import { InternalMetrics } from './internal/InternalMetrics.js';
 import { NOOP_COUNTER } from './metrics/Counter.js';
@@ -104,6 +105,20 @@ export class WardxCore {
     wrapped = factory(series, false);
     this._wrappers.set(series, wrapped);
     return wrapped;
+  }
+
+  retentionActivity(userId) {
+    if (typeof userId !== 'string' || userId.trim().length === 0) {
+      throw new Error('retentionActivity requires a non-empty userId');
+    }
+    const salt = this.settings.privacySalt;
+    if (typeof salt !== 'string' || salt.trim().length === 0) {
+      throw new Error('retentionActivity requires a non-empty privacySalt');
+    }
+    this.event('retention.activity', {
+      subject: subjectHash(salt, userId),
+      salt: subjectHash(salt, 'wardx.retention.identity')
+    });
   }
 
   identify(subjectId) {

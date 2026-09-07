@@ -33,13 +33,15 @@ This roadmap does not add:
 
 - durable raw event history or a general event warehouse (the explicitly
   allowlisted, bounded process-local recent-event ring is ephemeral);
-- user journeys, per-account queries, cohorts, or retention analytics;
+- user journeys or per-account queries; explicit D1/D7/D30 cohort retention is
+  supported separately through `retentionActivity` and `get_retention`;
 - a billing ledger or authoritative game-economy store;
 - arbitrary SQL through MCP;
 - an HTTP admin API, dashboard, or approval UI;
 - horizontal ingest replicas, leader election, multi-host replication, or
   automatic failover;
-- migration, import, or compatibility paths for pre-existing Wardx deployments;
+- generic migration/import paths for pre-existing Wardx deployments (the
+  retention feature provides a transactional SQLite schema v1-to-v2 upgrade);
 - automatic scheduling of a later agent run.
 
 Cluster mode is not a prerequisite for a production Wardx deployment. It is an

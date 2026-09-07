@@ -76,6 +76,7 @@ export class WardxNode {
   config: ConfigApi;
   experiment: ExperimentApi;
   constructor(settings: ResolvedSettings);
+  retentionActivity(userId: string): void;
   identify(subjectId: string | null | undefined): void;
   counter(name: string, dims?: Dimensions | null): CounterHandle;
   gauge(name: string, dims?: Dimensions | null): GaugeHandle;

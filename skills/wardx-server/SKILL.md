@@ -1,6 +1,6 @@
 ---
 name: wardx-server
-description: Operate or change the Wardx single-process ingest, historical aggregate, Remote Config, experiment, trust, and MCP control plane. Use for wardx-server, @wardx/server, get_aggregate_history, safe config mutations, fixed-horizon experiments, or packages/server work. Use an SDK-specific skill for application instrumentation.
+description: Operate or change the Wardx single-process ingest, historical aggregate, Remote Config, experiment, trust, and MCP control plane. Use for wardx-server, @wardx/server, get_retention, D1/D7/D30 retention cohorts, get_aggregate_history, safe config mutations, fixed-horizon experiments, or packages/server work. Use an SDK-specific skill for application instrumentation.
 ---
 
 # Wardx server
@@ -131,3 +131,20 @@ hardware, settings, duration, commit, and local-SSD details.
   `wardx-server <config.json>` on stdio. For remote operation, check the SSH
   tunnel and configure Streamable HTTP at its local endpoint; do not substitute
   an HTTP admin call.
+
+## Persistent retention
+
+Use `get_retention({ project, from, to })` for explicit activity cohorts and
+exact received-user D1/D7/D30 counts/rates. Dates are UTC `YYYY-MM-DD`, from
+inclusive and to exclusive, selecting cohort dates independently of return
+dates. Returns mean activity **on** each day. Days are pending with null values
+until their UTC end; maturity does not guarantee complete delivery. No subject
+hashes are returned. Ordinary events and HLL metrics cannot backfill cohorts.
+
+The required `retention` configuration contains `maxUsersPerProject` and
+`maxQueryDays`. User state does not expire; capacity rejects new users instead
+of reenrolling old ones. Salt fingerprints are pinned per project and changes
+are rejected. Counts span all project roles/environments. Delayed earlier
+activity can correct cohorts and returns. SQLite schema v1 is transactionally
+upgraded to v2 on startup; older binaries cannot open v2. Follow the production
+boundary above before starting an existing deployment with the new binary.

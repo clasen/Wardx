@@ -34,6 +34,7 @@ const REQUIRED = [
   'control',
   'mcpHttp',
   'capacity',
+  'retention',
   'experiments',
   'projects'
 ];
@@ -78,6 +79,7 @@ const REQUIRED_MCP_HTTP = [
 ];
 const REQUIRED_CAPACITY = ['maxConcurrentSyncHandlers'];
 const REQUIRED_READINESS = ['probeIntervalMs', 'probeTimeoutMs', 'maxPersistenceLagMs'];
+const REQUIRED_RETENTION = ['maxUsersPerProject', 'maxQueryDays'];
 const REQUIRED_EXPERIMENTS = ['ledgerMaxRows'];
 
 function validateClosedObject(value, required, label) {
@@ -321,6 +323,8 @@ export function validateServerConfig(parsed) {
     ],
     'server config.sqlite'
   );
+  validateClosedObject(parsed.retention, REQUIRED_RETENTION, 'server config.retention');
+  validatePositiveIntegers(parsed.retention, REQUIRED_RETENTION, 'server config.retention');
   validateClosedObject(parsed.history, REQUIRED_HISTORY, 'server config.history');
   validatePositiveIntegers(parsed.history, REQUIRED_HISTORY, 'server config.history');
   validateClosedObject(parsed.control, REQUIRED_CONTROL, 'server config.control');

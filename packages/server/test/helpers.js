@@ -86,6 +86,7 @@ export function testServerConfig(overrides = {}) {
     },
     mcpHttp: { enabled: false },
     capacity: { maxConcurrentSyncHandlers: 256 },
+    retention: { maxUsersPerProject: 1000000, maxQueryDays: 366 },
     experiments: { ledgerMaxRows: 1000000 },
     projects: {
       demo: {

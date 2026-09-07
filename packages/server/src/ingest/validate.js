@@ -177,7 +177,20 @@ function validateEvent(row, label, limits, earliestTimestamp, latestTimestamp) {
   if (invalidTimestamp) return invalidTimestamp;
   const invalidName = validateNonEmptyString(row[1], `${label}[1]`, limits.maxNameBytes);
   if (invalidName) return invalidName;
-  return validateAttrs(row[2], `${label}[2]`, limits);
+  const invalidAttrs = validateAttrs(row[2], `${label}[2]`, limits);
+  if (invalidAttrs) return invalidAttrs;
+  if (row[1] === 'retention.activity') {
+    const attrs = row[2];
+    if (!isObject(attrs)) return `${label} retention activity requires subject and salt hashes`;
+    const invalidKey = unknownKey(attrs, new Set(['subject', 'salt']), label);
+    if (invalidKey) return invalidKey;
+    for (const key of ['subject', 'salt']) {
+      if (typeof attrs[key] !== 'string' || !/^[0-9a-f]{64}$/.test(attrs[key])) {
+        return `${label}.${key} must be a 256-bit lowercase hex hash`;
+      }
+    }
+  }
+  return null;
 }
 
 function validateLog(row, label, limits, earliestTimestamp, latestTimestamp) {

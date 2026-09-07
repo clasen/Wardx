@@ -302,3 +302,12 @@ Internal series use the prefix `wardx.internal.`.
 - Ingest server: `@wardx/server`
 
 The wire contract is protocol version 1. A runtime sends `POST /v1/sync` with JSON and gzip. The request header is `X-Wardx-Key`.
+
+## Retention activity
+
+`WardxCore.retentionActivity(userId)` requires an explicit nonblank user ID and
+emits salted `retention.activity` evidence into the existing event buffer. The
+server persists UTC cohorts and exact received-user D1/D7/D30 returns; the core
+does not infer activity or keep a durable client identity/outbox. Use the same
+user ID and privacy salt across sessions and clients. See the
+[Node retention contract](../node/README.md#user-retention-d1--d7--d30).
