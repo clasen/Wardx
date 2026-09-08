@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { assertHistoryBoundary } from '../aggregation/history/HistoryBucket.js';
 
 const SCHEMA_VERSION = 2;
 const RETENTION_SCHEMA = `
@@ -107,6 +108,7 @@ function validateBucket(bucket, tier) {
   if (!Number.isInteger(bucket.from) || !Number.isInteger(bucket.to) || bucket.to <= bucket.from) {
     throw new Error('bucket.from and bucket.to must be integer timestamps with to > from');
   }
+  assertHistoryBoundary(tier, bucket.from, bucket.to);
   if (!Array.isArray(bucket.rows)) throw new Error('bucket.rows must be an array');
   if (typeof bucket.finalized !== 'boolean') throw new Error('bucket.finalized must be a boolean');
   if (!Number.isInteger(bucket.dropCount) || bucket.dropCount < 0) {
@@ -165,7 +167,14 @@ export class SqliteStateStore {
       checkpoints: 0,
       checkpointBusy: 0,
       checkpointLogFrames: 0,
-      checkpointedFrames: 0
+      checkpointedFrames: 0,
+      checkpointFailures: 0,
+      checkpointLatencyTotalMs: 0,
+      checkpointLatencyMaxMs: 0,
+      optimizations: 0,
+      optimizationFailures: 0,
+      optimizationLatencyTotalMs: 0,
+      optimizationLatencyMaxMs: 0
     };
     this.database = new Database(path, { timeout: this.settings.busyTimeoutMs });
     try {
@@ -177,6 +186,7 @@ export class SqliteStateStore {
       this._initializeSchema();
       this._validateSchema();
       this._prepareStatements();
+      this.optimize(true);
     } catch (error) {
       this.database.close();
       throw error;
@@ -520,6 +530,21 @@ export class SqliteStateStore {
       .map((row) => row.bucket_from);
   }
 
+  compactionStarts(project, sourceTier, destinationTier) {
+    const source = tableForTier(sourceTier);
+    const destination = tableForTier(destinationTier);
+    const width = WIDTH_BY_TIER[destinationTier];
+    return this.database.prepare(`
+      SELECT DISTINCT CAST(source.bucket_from / ? AS INTEGER) * ? AS start
+      FROM ${source} AS source
+      WHERE source.project = ? AND NOT EXISTS (
+        SELECT 1 FROM ${destination} AS destination
+        WHERE destination.project = source.project AND destination.finalized = 1
+          AND destination.bucket_from = CAST(source.bucket_from / ? AS INTEGER) * ?
+      ) ORDER BY start
+    `).all(width, width, project, width, width).map((row) => row.start);
+  }
+
   finalizeBucketsThrough(project, tier, through) {
     requireNonEmptyString(project, 'project');
     const table = tableForTier(tier);
@@ -582,21 +607,34 @@ export class SqliteStateStore {
     }
     requirePositiveInteger(limit, 'history limit');
     if (limit > this.settings.maxHistoryRows) throw new Error('history limit exceeds configured maximum');
-    const rows = this.database
-      .prepare(`SELECT * FROM ${table} WHERE project = ? AND bucket_from < ? AND bucket_to > ? ORDER BY bucket_from LIMIT ?`)
-      .all(project, to, from, this.settings.maxHistoryBuckets + 1);
+    const predicates = [];
+    const parameters = [];
+    for (const [field, value] of Object.entries({ role, environment, appVersion })) {
+      if (value !== undefined) {
+        predicates.push(`json_extract(value, '$.${field}') = ?`);
+        parameters.push(value);
+      }
+    }
+    if (names !== undefined) {
+      predicates.push("json_extract(value, '$.name') IN (SELECT value FROM json_each(?))");
+      parameters.push(JSON.stringify(names));
+    }
+    const projection = predicates.length === 0 ? 'rows_json' : `(
+      SELECT json_group_array(json(value)) FROM jsonb_each(aggregates.rows_json)
+      WHERE ${predicates.join(' AND ')}
+    ) AS rows_json`;
+    const rows = this.database.prepare(`
+      SELECT project, bucket_from, bucket_to, finalized, drop_count, ${projection}
+      FROM ${table} AS aggregates
+      WHERE project = ? AND bucket_from >= ? AND bucket_from < ? AND bucket_to > ?
+      ORDER BY bucket_from LIMIT ?
+    `).all(...parameters, project, Math.floor(from / WIDTH_BY_TIER[tier]) * WIDTH_BY_TIER[tier],
+      to, from, this.settings.maxHistoryBuckets + 1);
     if (rows.length > this.settings.maxHistoryBuckets) throw new Error('history range exceeds configured bucket maximum');
-    const nameSet = names === undefined ? null : new Set(names);
     const buckets = [];
     let returnedRows = 0;
     for (const stored of rows) {
       const bucket = storedBucket(stored, tier);
-      bucket.rows = bucket.rows.filter((row) => {
-        if (role !== undefined && row.role !== role) return false;
-        if (environment !== undefined && row.environment !== environment) return false;
-        if (appVersion !== undefined && row.appVersion !== appVersion) return false;
-        return !nameSet || nameSet.has(row.name);
-      });
       returnedRows += bucket.rows.length;
       if (returnedRows > limit) throw new Error('history result exceeds requested row limit');
       buckets.push(bucket);
@@ -639,19 +677,59 @@ export class SqliteStateStore {
   }
 
   checkpoint() {
-    const rows = this.database.pragma(`wal_checkpoint(${this.settings.checkpointMode})`);
-    this.metrics.checkpoints += 1;
-    for (const row of rows) {
-      this.metrics.checkpointBusy += row.busy || 0;
-      this.metrics.checkpointLogFrames += row.log || 0;
-      this.metrics.checkpointedFrames += row.checkpointed || 0;
+    const started = process.hrtime.bigint();
+    try {
+      const rows = this.database.pragma(`wal_checkpoint(${this.settings.checkpointMode})`);
+      this.metrics.checkpoints += 1;
+      for (const row of rows) {
+        this.metrics.checkpointBusy += row.busy || 0;
+        this.metrics.checkpointLogFrames += row.log || 0;
+        this.metrics.checkpointedFrames += row.checkpointed || 0;
+      }
+      return rows;
+    } catch (error) {
+      this.metrics.checkpointFailures += 1;
+      throw error;
+    } finally {
+      const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+      this.metrics.checkpointLatencyTotalMs += elapsedMs;
+      this.metrics.checkpointLatencyMaxMs = Math.max(this.metrics.checkpointLatencyMaxMs, elapsedMs);
     }
-    return rows;
+  }
+
+  optimize(onOpen = false) {
+    const started = process.hrtime.bigint();
+    try {
+      this.database.pragma(onOpen ? 'optimize=0x10002' : 'optimize');
+      this.metrics.optimizations += 1;
+    } catch (error) {
+      this.metrics.optimizationFailures += 1;
+      throw error;
+    } finally {
+      const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+      this.metrics.optimizationLatencyTotalMs += elapsedMs;
+      this.metrics.optimizationLatencyMaxMs = Math.max(this.metrics.optimizationLatencyMaxMs, elapsedMs);
+    }
   }
 
   snapshotMetrics() {
+    const wal = this.database.open ? this.database.pragma('wal_checkpoint(NOOP)')[0] : null;
     return {
       ...this.metrics,
+      wal: wal === null ? null : {
+        busy: wal.busy,
+        logFrames: wal.log,
+        checkpointedFrames: wal.checkpointed,
+        pendingFrames: wal.log < 0 || wal.checkpointed < 0 ? null : Math.max(0, wal.log - wal.checkpointed)
+      },
+      checkpointLatencyMs: {
+        total: this.metrics.checkpointLatencyTotalMs,
+        max: this.metrics.checkpointLatencyMaxMs
+      },
+      optimizationLatencyMs: {
+        total: this.metrics.optimizationLatencyTotalMs,
+        max: this.metrics.optimizationLatencyMaxMs
+      },
       transactionLatencyMs: {
         total: this.metrics.transactionLatencyTotalMs,
         max: this.metrics.transactionLatencyMaxMs

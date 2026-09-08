@@ -293,6 +293,49 @@ function admitSeries(map, byName, capKey, key, max) {
   return true;
 }
 
+const OUTCOME_ORDER = {
+  counter: (a, b) => b.value - a.value,
+  event: (a, b) => b.count - a.count,
+  histogram: (a, b) => b.max - a.max || b.count - a.count,
+  log: (a, b) => b.count - a.count || a.name.localeCompare(b.name)
+};
+
+export function rankOutcomes(rows, kind, limit) {
+  const compare = OUTCOME_ORDER[kind];
+  if (!Number.isInteger(limit) || limit < 0 || limit >= rows.length) {
+    const ranked = rows.slice().sort(compare);
+    return limit === undefined || limit === null ? ranked : ranked.slice(0, limit);
+  }
+  if (limit === 0) return [];
+  const heap = [];
+  const order = (a, b) => compare(a.row, b.row) || a.index - b.index;
+  for (let index = 0; index < rows.length; index++) {
+    const entry = { row: rows[index], index };
+    if (heap.length < limit) {
+      let child = heap.length;
+      heap.push(entry);
+      while (child > 0) {
+        const parent = Math.floor((child - 1) / 2);
+        if (order(heap[parent], entry) >= 0) break;
+        heap[child] = heap[parent];
+        child = parent;
+      }
+      heap[child] = entry;
+    } else if (order(entry, heap[0]) < 0) {
+      let parent = 0;
+      while (parent * 2 + 1 < heap.length) {
+        let child = parent * 2 + 1;
+        if (child + 1 < heap.length && order(heap[child + 1], heap[child]) > 0) child++;
+        if (order(entry, heap[child]) >= 0) break;
+        heap[parent] = heap[child];
+        parent = child;
+      }
+      heap[parent] = entry;
+    }
+  }
+  return heap.sort(order).map((entry) => entry.row);
+}
+
 export class FrameAggregator {
   constructor({ aggregateRetentionMinutes, aggregateMaxSeriesPerMetric }) {
     if (!Number.isInteger(aggregateRetentionMinutes) || aggregateRetentionMinutes < 1) {
@@ -724,11 +767,31 @@ export class FrameAggregator {
     return total;
   }
 
+  overviewRows() {
+    return {
+      counters: this._counterTotals(),
+      events: this._eventTotals(),
+      histograms: this._histogramTotals(),
+      logs: [...this.persistLogLifetime.values()].map(serializePersistLog)
+    };
+  }
+
   topCounters(limit) {
+    return rankOutcomes(this._counterTotals(), 'counter', limit);
+  }
+
+  topEventNames(limit) {
+    return rankOutcomes(this._eventTotals(), 'event', limit);
+  }
+
+  topHistograms(limit) {
+    return rankOutcomes(this._histogramTotals(), 'histogram', limit);
+  }
+
+  _counterTotals() {
     const totals = new Map();
     for (const window of this.windows.values()) {
-      for (const row of window.counters.values()) {
-        const key = seriesKey(row.role, row.name, row.dims);
+      for (const [key, row] of window.counters) {
         const prev = totals.get(key);
         if (!prev) {
           totals.set(key, { name: row.name, dims: row.dims, role: row.role, value: row.value });
@@ -737,39 +800,29 @@ export class FrameAggregator {
         }
       }
     }
-    const ranked = [...totals.values()].sort((a, b) => b.value - a.value);
-    if (limit === undefined || limit === null) return ranked;
-    return ranked.slice(0, limit);
+    return [...totals.values()];
   }
 
-  topEventNames(limit) {
+  _eventTotals() {
     const totals = new Map();
     for (const window of this.windows.values()) {
-      for (const row of window.eventNames.values()) {
-        const key = eventKey(row.role, row.name);
+      for (const [key, row] of window.eventNames) {
         const prev = totals.get(key);
         if (!prev) totals.set(key, { name: row.name, role: row.role, count: row.count });
         else prev.count += row.count;
       }
     }
-    const ranked = [...totals.values()].sort((a, b) => b.count - a.count);
-    if (limit === undefined || limit === null) return ranked;
-    return ranked.slice(0, limit);
+    return [...totals.values()];
   }
 
   topPersistLogs(limit) {
-    const ranked = [...this.persistLogLifetime.values()]
-      .map((row) => serializePersistLog(row))
-      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
-    if (limit === undefined || limit === null) return ranked;
-    return ranked.slice(0, limit);
+    return rankOutcomes([...this.persistLogLifetime.values()].map(serializePersistLog), 'log', limit);
   }
 
-  topHistograms(limit) {
+  _histogramTotals() {
     const totals = new Map();
     for (const window of this.windows.values()) {
-      for (const row of window.histograms.values()) {
-        const key = seriesKey(row.role, row.name, row.dims);
+      for (const [key, row] of window.histograms) {
         const incoming = row.body;
         const prev = totals.get(key);
         if (!prev) {
@@ -799,8 +852,6 @@ export class FrameAggregator {
         }
       }
     }
-    const ranked = [...totals.values()].sort((a, b) => b.max - a.max || b.count - a.count);
-    if (limit === undefined || limit === null) return ranked;
-    return ranked.slice(0, limit);
+    return [...totals.values()];
   }
 }

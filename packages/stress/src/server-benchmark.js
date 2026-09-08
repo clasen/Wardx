@@ -122,6 +122,10 @@ function persistenceDelta(before, after) {
     sqliteTransactionFailures: after.sqlite.transactionFailures - before.sqlite.transactionFailures,
     sqliteBusyFailures: after.sqlite.busyFailures - before.sqlite.busyFailures,
     checkpoints: after.sqlite.checkpoints - before.sqlite.checkpoints,
+    checkpointLatencyTotalMs: after.sqlite.checkpointLatencyMs.total - before.sqlite.checkpointLatencyMs.total,
+    checkpointLatencyMaxMs: after.sqlite.checkpointLatencyMs.max,
+    sqliteTransactionLatencyMaxMs: after.sqlite.transactionLatencyMs.max,
+    walPendingFrames: after.sqlite.wal.pendingFrames,
     dirty: after.dirty,
     inFlight: after.inFlight
   };
@@ -424,6 +428,10 @@ export async function testD({ rate, durationMs, mode = 'smoke', profile: profile
       'SQLite transaction failures': disk?.sqliteTransactionFailures ?? 0,
       'SQLite busy failures': disk?.sqliteBusyFailures ?? 0,
       'WAL checkpoints': disk?.checkpoints ?? 0,
+      'explicit checkpoint latency total ms': disk?.checkpointLatencyTotalMs.toFixed(2) ?? 'disabled',
+      'explicit checkpoint latency max ms': disk?.checkpointLatencyMaxMs.toFixed(2) ?? 'disabled',
+      'SQLite transaction latency max ms (includes automatic checkpoints)': disk?.sqliteTransactionLatencyMaxMs.toFixed(2) ?? 'disabled',
+      'WAL pending frames': disk ? (disk.walPendingFrames ?? 'unavailable') : 'disabled',
       'feature exercises': featureExercises,
       'burst overload responses': burstOverloads,
       'burst unexpected responses': burstUnexpected,

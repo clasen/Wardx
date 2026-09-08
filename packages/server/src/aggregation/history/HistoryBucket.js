@@ -173,13 +173,17 @@ function expectedWidth(tier) {
   return 86_400_000;
 }
 
+export function assertHistoryBoundary(tier, from, to, label = 'history bucket') {
+  if (!TIERS.has(tier)) throw new Error(`${label}.tier must be minute, hour, or day`);
+  const width = expectedWidth(tier);
+  if (!Number.isInteger(from) || from % width !== 0 || to !== from + width) {
+    throw new Error(`${label} must have a UTC-aligned ${tier} boundary`);
+  }
+}
+
 export function normalizeHistoryBucket(bucket, label = 'history bucket') {
   if (!bucket || typeof bucket !== 'object' || Array.isArray(bucket)) throw new Error(`${label} must be an object`);
-  if (!TIERS.has(bucket.tier)) throw new Error(`${label}.tier must be minute, hour, or day`);
-  const width = expectedWidth(bucket.tier);
-  if (!Number.isInteger(bucket.from) || bucket.from % width !== 0 || bucket.to !== bucket.from + width) {
-    throw new Error(`${label} must have a UTC-aligned ${bucket.tier} boundary`);
-  }
+  assertHistoryBoundary(bucket.tier, bucket.from, bucket.to, label);
   if (!Array.isArray(bucket.rows)) throw new Error(`${label}.rows must be an array`);
   if (typeof bucket.finalized !== 'boolean') throw new Error(`${label}.finalized must be a boolean`);
   const rows = bucket.rows.map((row, index) => normalizeHistoricalRow(row, `${label}.rows[${index}]`));

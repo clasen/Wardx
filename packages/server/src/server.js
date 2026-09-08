@@ -94,7 +94,7 @@ function hydrateAuthoritativeState(config, stateStore) {
 
 function hydrateHistoricalState(config, stateStore, registry) {
   for (const project of registry.names()) {
-    const buckets = [];
+    const history = registry.get(project).history;
     for (const tier of ['minute', 'hour', 'day']) {
       let afterFrom = -1;
       while (true) {
@@ -104,12 +104,14 @@ function hydrateHistoricalState(config, stateStore, registry) {
           afterFrom,
           limit: config.sqlite.maxWriteBatchRows
         });
-        for (const from of starts) buckets.push(stateStore.readBucket(project, tier, from));
+        for (const from of starts) {
+          history.seed([stateStore.readBucket(project, tier, from)]);
+        }
+        history.prunePersisted(Date.now() - config.history.maxAcceptedPastAgeMs);
         if (starts.length < config.sqlite.maxWriteBatchRows) break;
         afterFrom = starts.at(-1);
       }
     }
-    registry.get(project).history.seed(buckets);
   }
 }
 

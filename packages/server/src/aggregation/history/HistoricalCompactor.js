@@ -18,7 +18,7 @@ export class HistoricalCompactor {
     this.inFlight = new Set();
   }
 
-  compact({ project, sourceTier, destinationTier, destinationFrom, finalized }) {
+  compact({ project, sourceTier, destinationTier, destinationFrom, finalized, sourceBuckets }) {
     const expectedDestination = sourceTier === 'minute' ? 'hour' : sourceTier === 'hour' ? 'day' : null;
     if (destinationTier !== expectedDestination) {
       throw new Error('compaction tier pair must be minute-to-hour or hour-to-day');
@@ -30,7 +30,7 @@ export class HistoricalCompactor {
     if (this.inFlight.has(key)) throw new Error('compaction is already in flight for project and tier');
     this.inFlight.add(key);
     try {
-      const sourceBuckets = this.store.readBuckets({ project, tier: sourceTier, from, to });
+      sourceBuckets ??= this.store.readBuckets({ project, tier: sourceTier, from, to });
       if (sourceBuckets.some((bucket) => !bucket.finalized)) {
         throw new Error('compaction requires closed source buckets');
       }

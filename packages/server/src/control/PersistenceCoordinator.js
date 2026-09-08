@@ -12,7 +12,7 @@ import {
 } from './persist.js';
 import { HistoricalCompactor, utcBucketStart } from '../aggregation/history/index.js';
 
-const KINDS = new Set(['aggregateWindows', 'experimentStats', 'logStats', 'history']);
+const KINDS = new Set(['aggregateWindows', 'experimentStats', 'logStats', 'history', 'sqliteMaintenance']);
 
 async function exists(path) {
   try {
@@ -47,6 +47,7 @@ export class PersistenceCoordinator {
     this.stateStore = stateStore;
     this.compactor = stateStore ? new HistoricalCompactor(stateStore) : null;
     this.dirtyKinds = new Set();
+    this.compactionCandidates = new Map();
     this.dirtySince = null;
     this.writeHealthy = true;
     this.timer = null;
@@ -60,7 +61,10 @@ export class PersistenceCoordinator {
       historyRowsPruned: 0
     };
     this.compactionTimer = stateStore
-      ? setInterval(() => this.mark('history'), config.history.compactionIntervalMs)
+      ? setInterval(() => {
+          this.mark('history');
+          this.mark('sqliteMaintenance');
+        }, config.history.compactionIntervalMs)
       : null;
     this.compactionTimer?.unref?.();
     if (stateStore) this.mark('history');
@@ -68,7 +72,7 @@ export class PersistenceCoordinator {
 
   mark(kind) {
     if (!KINDS.has(kind)) throw new Error(`unknown persistence kind: ${kind}`);
-    if (kind !== 'history' && !this.config.configPath) return;
+    if (kind !== 'history' && kind !== 'sqliteMaintenance' && !this.config.configPath) return;
     if (this.dirtySince === null) this.dirtySince = Date.now();
     this.dirtyKinds.add(kind);
     this._schedule();
@@ -134,6 +138,10 @@ export class PersistenceCoordinator {
   }
 
   async _write(kind) {
+    if (kind === 'sqliteMaintenance') {
+      this.stateStore.optimize();
+      return;
+    }
     if (kind === 'history') {
       await this._writeHistory();
       return;
@@ -172,7 +180,11 @@ export class PersistenceCoordinator {
       for (let index = 0; index < pending.length; index += this.config.sqlite.maxWriteBatchRows) {
         this.stateStore.saveBuckets('minute', pending.slice(index, index + this.config.sqlite.maxWriteBatchRows));
       }
+      for (const bucket of pending) {
+        this._scheduleCompaction(project, 'minute', 'hour', bucket.from);
+      }
       history.acknowledge(pending);
+      history.prunePersisted(now - this.config.history.maxAcceptedPastAgeMs);
       this.stateStore.finalizeBucketsThrough(
         project,
         'minute',
@@ -188,40 +200,55 @@ export class PersistenceCoordinator {
     if (latencyMs > this.metrics.writeLatencyMaxMs) this.metrics.writeLatencyMaxMs = latencyMs;
   }
 
+  _candidates(project, sourceTier, destinationTier) {
+    const key = `${project}\0${sourceTier}`;
+    if (!this.compactionCandidates.has(key)) {
+      const candidates = new Map();
+      for (const from of this.stateStore.compactionStarts(project, sourceTier, destinationTier)) {
+        candidates.set(from, 0);
+      }
+      this.compactionCandidates.set(key, candidates);
+    }
+    return this.compactionCandidates.get(key);
+  }
+
+  _scheduleCompaction(project, sourceTier, destinationTier, sourceFrom) {
+    this._candidates(project, sourceTier, destinationTier)
+      .set(utcBucketStart(sourceFrom, destinationTier), 0);
+  }
+
   _scanCompaction(project, sourceTier, destinationTier, now) {
     const destinationWidth = destinationTier === 'hour' ? 3_600_000 : 86_400_000;
-    let afterFrom = -1;
-    let lastDestinationFrom = null;
-    while (true) {
-      const starts = this.stateStore.listBucketStarts({
+    const candidates = this._candidates(project, sourceTier, destinationTier);
+    for (const [destinationFrom, nextAt] of candidates) {
+      if (now < nextAt) continue;
+      const source = this.stateStore.readBuckets({
         project,
         tier: sourceTier,
-        afterFrom,
-        limit: this.config.sqlite.maxWriteBatchRows
+        from: destinationFrom,
+        to: destinationFrom + destinationWidth
       });
-      if (starts.length === 0) return;
-      for (const sourceFrom of starts) {
-        const destinationFrom = utcBucketStart(sourceFrom, destinationTier);
-        if (destinationFrom === lastDestinationFrom) continue;
-        lastDestinationFrom = destinationFrom;
-        const source = this.stateStore.readBuckets({
-          project,
-          tier: sourceTier,
-          from: destinationFrom,
-          to: destinationFrom + destinationWidth
-        });
-        if (source.length === 0 || source.some((bucket) => !bucket.finalized)) continue;
-        this.compactor.compact({
-          project,
-          sourceTier,
-          destinationTier,
-          destinationFrom,
-          finalized: now >= destinationFrom + destinationWidth + this.config.history.maxAcceptedPastAgeMs
-        });
-        this.metrics.historyCompactions += 1;
+      if (source.length === 0) {
+        candidates.delete(destinationFrom);
+        continue;
       }
-      afterFrom = starts.at(-1);
-      if (starts.length < this.config.sqlite.maxWriteBatchRows) return;
+      const open = source.filter((bucket) => !bucket.finalized);
+      if (open.length > 0) {
+        const allowance = sourceTier === 'minute'
+          ? this.config.history.clockSkewAllowanceMs
+          : this.config.history.maxAcceptedPastAgeMs;
+        candidates.set(destinationFrom, Math.max(...open.map((bucket) => bucket.to + allowance)));
+        continue;
+      }
+      const finalizesAt = destinationFrom + destinationWidth + this.config.history.maxAcceptedPastAgeMs;
+      const finalized = now >= finalizesAt;
+      this.compactor.compact({
+        project, sourceTier, destinationTier, destinationFrom, finalized, sourceBuckets: source
+      });
+      if (destinationTier === 'hour') this._scheduleCompaction(project, 'hour', 'day', destinationFrom);
+      if (finalized) candidates.delete(destinationFrom);
+      else candidates.set(destinationFrom, finalizesAt);
+      this.metrics.historyCompactions += 1;
     }
   }
 

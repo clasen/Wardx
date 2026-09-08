@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { FrameAggregator } from '../src/aggregation/FrameAggregator.js';
+import { FrameAggregator, rankOutcomes } from '../src/aggregation/FrameAggregator.js';
 import { HyperLogLog } from '@wardx/core';
 import { sampleEnvelope } from './helpers.js';
 
@@ -10,6 +10,27 @@ function aggregator(max = 2) {
     aggregateMaxSeriesPerMetric: max
   });
 }
+
+test('bounded rankings preserve full-sort order including ties and do not mutate inputs', () => {
+  const rows = Array.from({ length: 127 }, (_, index) => ({
+    name: `metric.${index % 9}`, value: (index * 37) % 19, count: index % 7, max: (index * 13) % 17,
+    role: `role.${index % 3}`, index
+  }));
+  const comparators = {
+    counter: (a, b) => b.value - a.value,
+    event: (a, b) => b.count - a.count,
+    histogram: (a, b) => b.max - a.max || b.count - a.count,
+    log: (a, b) => b.count - a.count || a.name.localeCompare(b.name)
+  };
+  const original = structuredClone(rows);
+  for (const [kind, compare] of Object.entries(comparators)) {
+    for (const limit of [0, 1, 3, 17, 126, 127, 200, undefined]) {
+      const expected = rows.slice().sort(compare);
+      assert.deepEqual(rankOutcomes(rows, kind, limit), limit === undefined ? expected : expected.slice(0, limit));
+    }
+  }
+  assert.deepEqual(rows, original);
+});
 
 function distinctBody(ids, salt = 'test-salt') {
   const hll = new HyperLogLog('shot.traffic.hids', null, salt);

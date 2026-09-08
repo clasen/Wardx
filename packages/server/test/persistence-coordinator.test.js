@@ -226,9 +226,125 @@ test('PersistenceCoordinator restart scan compacts persisted minutes through hou
     assert.equal(store.readWatermark('demo', 'minute', 'hour'), from + 3_600_000);
     assert.equal(store.readWatermark('demo', 'hour', 'day'), from + 86_400_000);
     assert.equal(coordinator.snapshotMetrics().historyCompactions, 2);
+    coordinator.mark('history');
+    await coordinator.flush();
+    assert.equal(coordinator.snapshotMetrics().historyCompactions, 2);
+    assert.deepEqual(store.compactionStarts('demo', 'minute', 'hour'), []);
+    assert.deepEqual(store.compactionStarts('demo', 'hour', 'day'), []);
   } finally {
     await coordinator.close();
     store.close();
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('PersistenceCoordinator schedules late updates and finalization without recompacting unchanged buckets', async (t) => {
+  const from = Date.UTC(2026, 7, 20, 12);
+  let now = from + 30_000;
+  t.mock.method(Date, 'now', () => now);
+  const config = testServerConfig({
+    history: { ...testServerConfig().history, clockSkewAllowanceMs: 1000, maxAcceptedPastAgeMs: 3_600_000 }
+  });
+  const store = new SqliteStateStore({ path: config.sqlite.path, settings: sqliteSettings(config) });
+  const registry = new ProjectRegistry(config);
+  const history = registry.get('demo').history;
+  const coordinator = new PersistenceCoordinator({ config, registry, diagnostics, stateStore: store });
+  const envelope = sampleEnvelope();
+  envelope.frames[0].from = from;
+  const flush = async () => {
+    coordinator.mark('history');
+    await coordinator.flush();
+  };
+  try {
+    history.ingest(envelope, []);
+    await flush();
+    assert.equal(store.readBucket('demo', 'hour', from), null);
+    now = from + 180_000;
+    await flush();
+    assert.equal(store.readBucket('demo', 'hour', from).rows.find((row) => row.kind === 'counter').value, 4);
+    const initial = coordinator.snapshotMetrics().historyCompactions;
+    const read = t.mock.method(store, 'readBuckets');
+    await flush();
+    assert.equal(read.mock.callCount(), 0);
+    assert.equal(coordinator.snapshotMetrics().historyCompactions, initial);
+
+    history.ingest(envelope, []);
+    await flush();
+    assert.equal(store.readBucket('demo', 'hour', from).rows.find((row) => row.kind === 'counter').value, 8);
+    assert.equal(coordinator.snapshotMetrics().historyCompactions, initial + 1);
+
+    now = from + 2 * 3_600_000;
+    await flush();
+    assert.equal(store.readBucket('demo', 'hour', from).finalized, true);
+    assert.equal(store.readBucket('demo', 'day', Date.UTC(2026, 7, 20)).rows.find((row) => row.kind === 'counter').value, 8);
+    assert.equal(history.states.size, 0);
+
+    now = Date.UTC(2026, 7, 21, 1);
+    await flush();
+    assert.equal(store.readBucket('demo', 'day', Date.UTC(2026, 7, 20)).finalized, true);
+    const final = coordinator.snapshotMetrics().historyCompactions;
+    await flush();
+    assert.equal(coordinator.snapshotMetrics().historyCompactions, final);
+  } finally {
+    await coordinator.close();
+    store.close();
+  }
+});
+
+test('PersistenceCoordinator retries a failed compaction without losing persisted late data', async (t) => {
+  const config = testServerConfig({
+    history: { ...testServerConfig().history, clockSkewAllowanceMs: 1 }
+  });
+  const store = new SqliteStateStore({ path: config.sqlite.path, settings: sqliteSettings(config) });
+  const registry = new ProjectRegistry(config);
+  const coordinator = new PersistenceCoordinator({ config, registry, diagnostics, stateStore: store });
+  const envelope = sampleEnvelope();
+  envelope.frames[0].from = Math.floor((Date.now() - 600_000) / 60_000) * 60_000;
+  registry.get('demo').history.ingest(envelope, []);
+  const replace = store.replaceCompactedBucket;
+  t.mock.method(store, 'replaceCompactedBucket', () => { throw new Error('write failed'); }, { times: 1 });
+  try {
+    await assert.rejects(coordinator.flush(), /write failed/);
+    assert.equal(registry.get('demo').history.dirty.size, 0);
+    store.replaceCompactedBucket = replace;
+    await coordinator.flush();
+    const hour = Math.floor(envelope.frames[0].from / 3_600_000) * 3_600_000;
+    assert.equal(store.readBucket('demo', 'hour', hour).rows.find((row) => row.kind === 'counter').value, 4);
+  } finally {
+    await coordinator.close();
+    store.close();
+  }
+});
+
+test('SQLite optimization follows the maintenance timer and retries failed maintenance', async (t) => {
+  const config = testServerConfig();
+  const store = new SqliteStateStore({ path: config.sqlite.path, settings: sqliteSettings(config) });
+  const originalSetInterval = globalThis.setInterval;
+  let maintenance;
+  t.mock.method(globalThis, 'setInterval', (callback, delay) => {
+    maintenance = callback;
+    return originalSetInterval(callback, delay);
+  });
+  const coordinator = new PersistenceCoordinator({
+    config, registry: new ProjectRegistry(config), diagnostics, stateStore: store
+  });
+  try {
+    const initial = store.snapshotMetrics().optimizations;
+    await coordinator.flush();
+    assert.equal(store.snapshotMetrics().optimizations, initial);
+    maintenance();
+    await coordinator.flush();
+    assert.equal(store.snapshotMetrics().optimizations, initial + 1);
+    t.mock.method(store, 'optimize', () => { throw new Error('maintenance failed'); }, { times: 1 });
+    maintenance();
+    await assert.rejects(coordinator.flush(), /maintenance failed/);
+    assert.ok(coordinator.dirtyKinds.has('sqliteMaintenance'));
+    assert.equal(coordinator.readiness(Date.now()).healthy, false);
+    await coordinator.flush();
+    assert.equal(store.snapshotMetrics().optimizations, initial + 2);
+    assert.equal(coordinator.readiness(Date.now()).healthy, true);
+  } finally {
+    await coordinator.close();
+    store.close();
   }
 });

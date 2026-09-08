@@ -61,6 +61,43 @@ test('loadAggregateWindows returns empty when the sidecar is missing', () => {
   }
 });
 
+test('restart hydrates only mutable minute state and preserves accepted late totals', async (t) => {
+  const now = Date.UTC(2026, 7, 20, 12, 30);
+  t.mock.method(Date, 'now', () => now);
+  const directory = mkdtempSync(join(tmpdir(), 'wardx-hydrate-'));
+  const config = testServerConfig();
+  config.sqlite.path = join(directory, 'state.sqlite');
+  config.history.clockSkewAllowanceMs = 1;
+  const old = now - 70 * 60_000;
+  const recent = now - 30 * 60_000;
+  let server = createIngestServer(config);
+  const row = {
+    kind: 'counter', name: 'requests', role: 'client', environment: 'test', appVersion: '0.0.0',
+    dimensions: null, value: 4
+  };
+  try {
+    server.wardx.stateStore.saveBuckets('minute', [old, recent].map((from) => ({
+      project: 'demo', tier: 'minute', from, to: from + 60_000, finalized: true, dropCount: 0, rows: [row]
+    })));
+    await server.wardx.stop();
+    server = createIngestServer(config);
+    assert.ok(server.wardx.stateStore.readBucket('demo', 'minute', old));
+    const history = server.wardx.registry.get('demo').history;
+    assert.equal(history.states.has(old), false);
+    assert.equal(history.states.has(recent), true);
+    const envelope = sampleEnvelope();
+    envelope.frames[0].from = recent;
+    envelope.frames[0].metrics.counters = [['requests', null, 3]];
+    history.ingest(envelope, []);
+    server.wardx.persistence.mark('history');
+    await server.wardx.persistence.flush();
+    assert.equal(server.wardx.stateStore.readBucket('demo', 'minute', recent).rows.find((entry) => entry.name === 'requests').value, 7);
+  } finally {
+    await server.wardx.stop();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('historical aggregate buckets persist across ingest server restarts', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'wardx-'));
   const path = join(dir, 'server.json');

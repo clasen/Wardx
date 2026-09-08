@@ -50,6 +50,48 @@ function executeMutation(control, name, args) {
   });
 }
 
+test('overview limits rankings per role and kind after category filtering without hiding onboarding gaps', async () => {
+  const server = createIngestServer(testServerConfig());
+  const store = server.wardx.registry.get('demo');
+  try {
+    for (const role of ['shot', 'unity']) {
+      const envelope = sampleEnvelope({ client: { role } });
+      const frame = envelope.frames[0];
+      frame.metrics.counters = [];
+      frame.metrics.histograms = [];
+      frame.events = [];
+      frame.logs = [];
+      for (let index = 0; index < 30; index++) {
+        const name = `metric.${index}`;
+        store.catalog.signals[name] = {
+          description: index % 5 === 0 ? '' : name, category: index % 2 === 0 ? 'performance' : 'business'
+        };
+        frame.metrics.counters.push([name, null, (index * 17) % 11]);
+        frame.metrics.histograms.push([name, null, {
+          count: 1, sum: index, min: index, max: index, buckets: [[100, 1]]
+        }]);
+        frame.events.push([frame.from, name, null]);
+      }
+      store.aggregator.ingest(envelope);
+    }
+    const control = server.wardx.control;
+    const all = control.getOverview('demo');
+    assert.ok(all.onboarding.undescribedOutcomes.length > 3);
+    for (const category of [undefined, 'performance', 'missing']) {
+      const limited = control.getOverview('demo', 3, category);
+      assert.deepEqual(limited.onboarding, all.onboarding);
+      for (const [role, data] of Object.entries(all.roles)) {
+        const expected = ['counter', 'event', 'histogram', 'log'].flatMap((kind) => data.outcomes
+          .filter((row) => row.kind === kind && (category === undefined || row.category === category))
+          .slice(0, 3));
+        assert.deepEqual(limited.roles[role].outcomes, expected);
+      }
+    }
+  } finally {
+    await server.wardx.stop();
+  }
+});
+
 test('ControlService upserts experiments and increments version', () => {
   const server = createIngestServer(testServerConfig());
   const control = server.wardx.control;

@@ -1,3 +1,4 @@
+import { rankOutcomes } from '../aggregation/FrameAggregator.js';
 import {
   annotateSignal,
   annotateWindows,
@@ -532,7 +533,8 @@ export class ControlService {
         roles: [...snapshot.keyRoles[key]],
         ...annotateSignal(catalog, key)
       }));
-    const counterRows = store.aggregator.topCounters().map((row) => ({
+    const summary = store.aggregator.overviewRows();
+    const counterRows = summary.counters.map((row) => ({
       kind: 'counter',
       name: row.name,
       dims: row.dims,
@@ -540,14 +542,14 @@ export class ControlService {
       role: row.role,
       ...annotateSignal(catalog, row.name)
     }));
-    const eventRows = store.aggregator.topEventNames().map((row) => ({
+    const eventRows = summary.events.map((row) => ({
       kind: 'event',
       name: row.name,
       count: row.count,
       role: row.role,
       ...annotateSignal(catalog, row.name)
     }));
-    const histogramRows = store.aggregator.topHistograms().map((row) => {
+    const histogramRows = summary.histograms.map((row) => {
       const peak = {
         kind: 'histogram',
         name: row.name,
@@ -562,7 +564,7 @@ export class ControlService {
       if (row.exemplar) peak.exemplar = row.exemplar;
       return peak;
     });
-    const logRows = store.aggregator.topPersistLogs().map((row) => ({
+    const logRows = summary.logs.map((row) => ({
       kind: 'log',
       ...row,
       ...annotateSignal(catalog, row.name)
@@ -581,21 +583,25 @@ export class ControlService {
     for (const row of clients) roleNames.add(row.role);
     for (const row of outcomes) roleNames.add(row.role);
     const names = [...roleNames].sort();
+    const grouped = new Map(names.map((name) => [name, {
+      counter: [], event: [], histogram: [], log: [], clients: []
+    }]));
+    for (const row of outcomes) {
+      if (matchesCategory(row)) grouped.get(row.role)[row.kind].push(row);
+    }
+    for (const client of clients) grouped.get(client.role).clients.push(client);
     const roles = {};
     for (const name of names) {
-      const counters = counterRows.filter((row) => row.role === name && matchesCategory(row));
-      const events = eventRows.filter((row) => row.role === name && matchesCategory(row));
-      const histograms = histogramRows.filter((row) => row.role === name && matchesCategory(row));
-      const logs = logRows.filter((row) => row.role === name && matchesCategory(row));
+      const group = grouped.get(name);
       roles[name] = {
         ...presentRole(catalog.roles[name]),
         outcomes: [
-          ...(limit === undefined || limit === null ? counters : counters.slice(0, limit)),
-          ...(limit === undefined || limit === null ? events : events.slice(0, limit)),
-          ...(limit === undefined || limit === null ? histograms : histograms.slice(0, limit)),
-          ...(limit === undefined || limit === null ? logs : logs.slice(0, limit))
+          ...rankOutcomes(group.counter, 'counter', limit),
+          ...rankOutcomes(group.event, 'event', limit),
+          ...rankOutcomes(group.histogram, 'histogram', limit),
+          ...rankOutcomes(group.log, 'log', limit)
         ],
-        clients: clients.filter((row) => row.role === name)
+        clients: group.clients
       };
     }
     return {
@@ -605,7 +611,12 @@ export class ControlService {
       onboarding: buildOnboarding({
         description: catalog.description,
         knobs: allKnobs,
-        outcomes,
+        outcomes: [
+          ...rankOutcomes(counterRows.filter((row) => row.undescribed), 'counter'),
+          ...rankOutcomes(eventRows.filter((row) => row.undescribed), 'event'),
+          ...rankOutcomes(histogramRows.filter((row) => row.undescribed), 'histogram'),
+          ...rankOutcomes(logRows.filter((row) => row.undescribed), 'log')
+        ],
         roleNames: names,
         catalogRoles: catalog.roles
       }),

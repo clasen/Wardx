@@ -126,6 +126,14 @@ Important groups:
 | `projects` | Initial Remote Config, role routing, experiments, and optional MCP catalog with categorized signals and `inspectEvents`. |
 | `recentClientsMax`, `recentEventsMax`, `recentLogsMax` | Per-project caps for volatile in-memory rings. |
 
+SQLite runs `PRAGMA optimize=0x10002` after opening and `PRAGMA optimize` during
+the maintenance cycle controlled by `history.compactionIntervalMs`. This does
+not change the configured WAL checkpoint threshold or synchronous mode.
+`server.wardx.persistence.snapshotMetrics().sqlite` includes optimization and
+explicit-checkpoint durations, plus a read-only WAL backlog sample. Transaction
+duration includes any automatic checkpoint; explicit-checkpoint duration does
+not measure automatic checkpoints. The server stress report exposes both.
+
 The startup configuration, supplied as an object or loaded from JSON, bootstraps
 each configured project only when that project has no stored state in SQLite.
 This also applies to new projects added to an existing database. After bootstrap,

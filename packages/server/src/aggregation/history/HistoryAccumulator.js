@@ -227,6 +227,12 @@ export class HistoryAccumulator {
     for (const bucket of buckets) this.dirty.delete(bucket.from);
   }
 
+  prunePersisted(through) {
+    for (const from of this.states.keys()) {
+      if (from + 60_000 <= through && !this.dirty.has(from)) this.states.delete(from);
+    }
+  }
+
   projectedPending(prepared) {
     const pending = new Map();
     for (const from of this.dirty) pending.set(from, this.states.get(from).bytes);

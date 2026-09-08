@@ -72,3 +72,26 @@ test('HistoryAccumulator prepares only touched series while projecting the compl
   assert.equal(bucket.rows.length, 1000);
   assert.equal(bucket.rows.find((row) => row.name === 'metric.500').value, 3);
 });
+
+test('HistoryAccumulator prunes only persisted minutes outside the late-arrival window', () => {
+  const accumulator = new HistoryAccumulator({
+    project: 'demo', clockSkewAllowanceMs: 1000, maxAppVersionsPerProjectRoleTier: 1
+  });
+  const envelope = sampleEnvelope();
+  for (let minute = 0; minute < 1440; minute++) {
+    envelope.frames[0].from = minute * 60_000;
+    accumulator.ingest(envelope, []);
+    accumulator.acknowledge(accumulator.pending());
+    accumulator.prunePersisted((minute - 60) * 60_000);
+    assert.ok(accumulator.states.size <= 61);
+  }
+  const from = envelope.frames[0].from;
+  accumulator.prunePersisted(from + 59_999);
+  accumulator.ingest(envelope, []);
+  assert.equal(accumulator.pending()[0].rows.find((row) => row.kind === 'counter').value, 8);
+  accumulator.prunePersisted(from + 60_000);
+  assert.equal(accumulator.states.size, 1);
+  accumulator.acknowledge(accumulator.pending());
+  accumulator.prunePersisted(from + 60_000);
+  assert.equal(accumulator.states.size, 0);
+});
