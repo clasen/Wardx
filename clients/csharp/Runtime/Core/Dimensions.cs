@@ -39,6 +39,7 @@ namespace Wardx
             {
                 return DimensionCheck.Fail("maxDimensionKeys");
             }
+            dims = EnumNames.Normalize(dims);
             foreach (var pair in dims)
             {
                 var value = pair.Value;

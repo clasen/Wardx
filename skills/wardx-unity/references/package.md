@@ -15,10 +15,11 @@ Use this file when changing `clients/csharp`. Application instrumentation stays 
 | `Runtime/Client/ConsoleTracer.cs` | stdout tracer. |
 | `Runtime/Dotnet/HttpClientTransport.cs` | `#if !UNITY`. `HttpClient` + timer bootstrap. `sdk.name = wardx-csharp`. |
 | `Runtime/Unity/UnityRuntime.cs` | `#if UNITY`. `UnityWebRequestTransport`, `WardxHost`, `WardxBehaviour`. `sdk.name = wardx-unity`. |
+| `Runtime/Core/WardxNameAttribute.cs` | Optional enum wire-name attribute and cached `EnumNames` resolution. |
 | `Runtime/Core/` | Engine: settings, metrics, buffers, config, frames, hashes. `Wardx.Core.csproj` / `Wardx.Core.asmdef`. |
 | `Tests/Wardx.Tests.csproj` | `dotnet run` test host (`npm run test:csharp`). |
 
-Exports: `WardxClient`, `WardxOptions`, `WardxBehaviour` (Unity), `Dims`, `ConsoleTracer`. Namespace `Wardx`.
+Exports: `WardxClient`, `WardxOptions`, `WardxBehaviour` (Unity), `Dims`, `ConsoleTracer`, `WardxNameAttribute`. Namespace `Wardx`.
 
 `WardxClient.Create(options)` is `UnityBootstrap.Start` or `DotnetBootstrap.Start` after `Settings.Resolve`.
 
@@ -30,7 +31,7 @@ Exports: `WardxClient`, `WardxOptions`, `WardxBehaviour` (Unity), `Dims`, `Conso
 - Histogram buckets are immutable per series. Changing them throws.
 - Distinct identifiers are salted and hashed locally; frames contain only the
   fixed `p=9` HLL sketch. Keep `PrivacySalt` stable across workers.
-- Invalid or over-cap dimensions return no-op series and increment `CardinalityDropped`. Do not throw on cardinality.
+- Dimension count/length limits and series caps return no-op series and increment `CardinalityDropped`. Invalid value types and invalid enum values throw; do not turn cardinality limits into exceptions.
 - `Config.Get` never blocks on network. Missing key → caller fallback.
 - `Identify(subjectId)` sets the instance default subject. `Identify(null)` clears it. Empty string throws. Per-call `subjectId` overrides it. A `game-server` that serves many users must pass `subjectId` per call and must not `Identify()`.
 - `Experiment.Goal` throws without a subject (`Identify` or `subjectId`). Exposure payload hashes the subject with the required explicit `PrivacySalt`. Raw `subjectId` does not go on the wire. Same `subjectId` + experiment `id` + `salt` → same variant; do not persist the group.
@@ -38,6 +39,25 @@ Exports: `WardxClient`, `WardxOptions`, `WardxBehaviour` (Unity), `Dims`, `Conso
 - Envelope `sdk.name` is `wardx-unity` under `#if UNITY`, else `wardx-csharp`. `client.platform` matches. Every `WardxClient.Create(...)` instance owns one ULID `instanceId` and one ULID `sessionId`; they are not process-wide.
 - Sync delay is `SyncIntervalMs * random(SyncJitterMin, SyncJitterMax)`, recomputed every cycle.
 - `FlushAsync` snapshots if dirty and sends; it does not stop timers. `ShutdownAsync` stops timers, flushes, closes the transport, and is idempotent. Unity `Stop()` / `OnApplicationQuit` must not block the main thread on HTTP.
+
+## Enum implementation
+
+`WardxClient`, `WardxCore`, their log APIs, config reads, and goals use constrained
+generic enum overloads that resolve names and delegate to the existing string
+methods. Preserve those string signatures and their behavior. `EnumNames`
+caches member names or `WardxNameAttribute` mappings; reject undefined values,
+ambiguous aliases, and blank mappings rather than sending numeric enum values.
+
+`Dims.Of` object-key overloads accept only strings or enums. `Dimensions.Validate`
+normalizes enum values before checking limits and constructing series keys.
+Event/log buffers normalize enum attrs before storage. Do not mutate caller
+collections or serialize enum ordinals. The server still receives strings;
+this feature requires no protocol or catalog changes.
+
+`Tests/EnumTests.cs` covers string/enum series equivalence, serialized payloads,
+config and goals, dictionary preservation, mapped-value limits, and rejected
+values. Include these cases when changing enum handling. .NET tests do not
+establish Unity/IL2CPP runtime behavior.
 
 ## Settings
 

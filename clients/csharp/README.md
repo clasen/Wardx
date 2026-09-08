@@ -18,10 +18,11 @@ Unity 2021.3 or later, or .NET Standard 2.1.
 https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime
 ```
 
-Pin a release with `#v0.5.2`. In `Packages/manifest.json`:
+Pin release `#v0.6.0` to use the optional enum API shown below. In
+`Packages/manifest.json`:
 
 ```json
-"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.5.2"
+"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.6.0"
 ```
 
 **Unity (this checkout).** Package Manager → Add package from disk → `clients/csharp/Runtime/package.json`.
@@ -36,7 +37,164 @@ Pin a release with `#v0.5.2`. In `Packages/manifest.json`:
 > npx skills add https://github.com/clasen/Wardx --skill wardx-csharp
 > ```
 
+## Names used in the examples
+
+The examples use application-owned enums consistently. Enums are optional: all
+existing string calls remain supported. Define these types once in your application
+and import `Wardx` in the files that use them. Each `WardxName` preserves the
+existing name sent to the server.
+
+```csharp
+using Wardx;
+
+enum Signal
+{
+    [WardxName("match.started")] MatchStarted,
+    [WardxName("match.completed")] MatchCompleted,
+    [WardxName("players.online")] PlayersOnline,
+    [WardxName("request.duration")] RequestDuration,
+    [WardxName("shot.traffic.hids")] TrafficIdentifiers,
+    [WardxName("matchmaking.duration")] MatchmakingDuration,
+    [WardxName("coins.awarded")] CoinsAwarded,
+    [WardxName("matchmaking.queue_depth")] QueueDepth,
+    [WardxName("http.duration_ms")] HttpDuration,
+    [WardxName("http.payload_bytes")] HttpPayloadBytes,
+    [WardxName("coins.award_size")] CoinAwardSize,
+    [WardxName("purchase")] Purchase,
+    [WardxName("purchase.count")] PurchaseCount,
+    [WardxName("purchase.amount")] PurchaseAmount,
+    [WardxName("coins.grants")] CoinGrants,
+    [WardxName("coins.anomaly")] CoinAnomaly,
+    [WardxName("onboarding.start")] OnboardingStart,
+    [WardxName("onboarding.done")] OnboardingDone,
+    [WardxName("session.duration")] SessionDuration,
+    [WardxName("session.time_ms")] SessionTime,
+    [WardxName("session.ended")] SessionEnded,
+    [WardxName("message.sent")] MessageSent,
+    [WardxName("level.start")] LevelStart,
+    [WardxName("payment.error")] PaymentError
+}
+
+enum ConfigKey
+{
+    [WardxName("economy.maxAward")] MaxAward,
+    [WardxName("level.3.enemyHp")] Level3EnemyHp,
+    [WardxName("matchmaking.timeoutMs")] MatchmakingTimeout,
+    [WardxName("message.delayMs")] MessageDelay
+}
+
+enum LogMessage
+{
+    [WardxName("match_started")] MatchStarted,
+    [WardxName("coins_anomaly")] CoinAnomaly,
+    [WardxName("payment_failed")] PaymentFailed
+}
+
+enum Dimension
+{
+    [WardxName("mode")] Mode,
+    [WardxName("result")] Result,
+    [WardxName("source")] Source,
+    [WardxName("region")] Region,
+    [WardxName("route")] Route,
+    [WardxName("grantId")] GrantId,
+    [WardxName("product")] Product,
+    [WardxName("currency")] Currency,
+    [WardxName("amount")] Amount,
+    [WardxName("channel")] Channel,
+    [WardxName("level")] Level,
+    [WardxName("code")] Code
+}
+
+enum GameMode
+{
+    [WardxName("ranked")] Ranked,
+    [WardxName("casual")] Casual
+}
+
+enum Result
+{
+    [WardxName("success")] Success,
+    [WardxName("error")] Error,
+    [WardxName("violating")] Violating
+}
+
+enum GrantSource
+{
+    [WardxName("match")] Match,
+    [WardxName("daily")] Daily,
+    [WardxName("purchase")] Purchase,
+    [WardxName("admin")] Admin
+}
+
+enum Region
+{
+    [WardxName("south-america")] SouthAmerica
+}
+
+enum Route
+{
+    [WardxName("checkout")] Checkout
+}
+
+enum Product
+{
+    [WardxName("coins-small")] SmallCoins
+}
+
+enum Currency
+{
+    [WardxName("USD")] Usd
+}
+
+enum PaymentCode
+{
+    [WardxName("provider_timeout")] ProviderTimeout
+}
+```
+
+For example, these calls contribute to the same metric series:
+
+```csharp
+wardx.Counter(Signal.MatchCompleted, Dims.Of(Dimension.Mode, GameMode.Ranked)).Inc();
+wardx.Counter("match.completed", Dims.Of("mode", "ranked")).Inc();
+```
+
+Without `WardxName`, a member such as `MatchCompleted` sends `"MatchCompleted"`
+with its original case. Runtime data such as `userId`, `hid`, `grantId`, and
+`channel` remains application data; connection options also remain strings.
+
+`Dims.Of` accepts mixed string and enum keys in its one-, two-, and three-pair
+forms. Its object-key overloads reject keys that are neither strings nor enums.
+Enum values also work in ordinary `IReadOnlyDictionary<string, object>` inputs,
+including event/log attrs, histogram exemplars, and timer end dimensions. The
+SDK converts them to strings without changing the caller's dictionary; the
+usual limits apply to the converted strings. For collection initializer keys,
+use strings or build the dictionary with `Dims.Of`.
+
+The same enum name overloads are available on `WardxCore` (`ConfigGet` and
+`ExperimentGoal` there). `Config.Get` infers the return type from the fallback;
+enums are supported as keys, not as Remote Config return types. Subject IDs,
+distinct identifiers, and connection options keep their existing string APIs.
+
+Undefined numeric enum values, ambiguous aliases sharing a numeric value, and
+blank `WardxName` mappings throw. A flags combination is accepted only when it
+has exactly one declared member. No casing or underscore-to-dot conversion is
+implicit. Renaming an unmapped member changes its wire name; use a stable
+`WardxName` mapping to preserve existing catalog names and history. Name lookup
+is cached after the first reflection lookup for each enum value.
+
 ## Start
+
+| Required option | Meaning |
+| --- | --- |
+| `Endpoint` | Ingest base URL, for example `http://127.0.0.1:8787`. |
+| `ProjectKey` | Project credential sent as `X-Wardx-Key`. |
+| `Project` | Project name matching the server mapping. |
+| `Role` | Routing name such as `unity`, `desktop`, or `game-server`. |
+| `AppVersion` | Application version. |
+| `Environment` | Environment name. |
+| `PrivacySalt` | Stable, project-specific salt for one-way subject hashes. |
 
 Required keys: `Endpoint`, `ProjectKey`, `Project`, `Role`, `AppVersion`, `Environment`, `PrivacySalt`. `PrivacySalt` must be stable, non-empty, and project-specific; it is never derived from `ProjectKey`. `Role` cannot be `*`. Use `unity` for a player build. The project key authenticates only the project; client-selected `Role` is routing metadata, not authorization. Never put secrets in Remote Config.
 
@@ -54,15 +212,15 @@ var wardx = WardxClient.Create(new WardxOptions
     PrivacySalt = "demo-subject-hash-v1"
 });
 
-wardx.Log.Info("match_started", Dims.Of("mode", "ranked"));
-wardx.Event("match.started", Dims.Of("mode", "ranked"));
-wardx.Counter("match.completed", Dims.Of("mode", "ranked")).Inc();
-wardx.Gauge("players.online").Set(12);
-wardx.Histogram("request.duration").Observe(42);
-wardx.Distinct("shot.traffic.hids", Dims.Of("result", "violating")).Add(hid);
+wardx.Log.Info(LogMessage.MatchStarted, Dims.Of(Dimension.Mode, GameMode.Ranked));
+wardx.Event(Signal.MatchStarted, Dims.Of(Dimension.Mode, GameMode.Ranked));
+wardx.Counter(Signal.MatchCompleted, Dims.Of(Dimension.Mode, GameMode.Ranked)).Inc();
+wardx.Gauge(Signal.PlayersOnline).Set(12);
+wardx.Histogram(Signal.RequestDuration).Observe(42);
+wardx.Distinct(Signal.TrafficIdentifiers, Dims.Of(Dimension.Result, Result.Violating)).Add(hid);
 
-var end = wardx.Timer("matchmaking.duration");
-end.Stop(Dims.Of("result", "success"));
+var end = wardx.Timer(Signal.MatchmakingDuration);
+end.Stop(Dims.Of(Dimension.Result, Result.Success));
 
 await wardx.FlushAsync();
 await wardx.ShutdownAsync();
@@ -73,6 +231,17 @@ In Unity you can also add `WardxBehaviour` to a GameObject and set the same fiel
 Unity sends `sdk.name = wardx-unity` and `client.platform = unity`. A plain C# process sends `wardx-csharp` / `csharp`.
 
 Each `WardxClient.Create(...)` SDK instance creates its own `instanceId` and `sessionId`. They are not process-wide singletons or subject/journey keys.
+
+The standard `Create(options)` starts a bootstrap sync immediately, then syncs
+on `SyncIntervalMs` with jitter. Defaults are 15 seconds and a factor from 0.85
+to 1.15. Optional `WardxOptions` fields override the centralized SDK defaults;
+see [Settings.cs](Runtime/Core/Settings.cs) and [SdkDefaults.cs](Runtime/Core/SdkDefaults.cs).
+The overload accepting an `ISyncTransport` does not attach a scheduler; its
+caller drives flush and shutdown.
+
+Measure calls neither send HTTP nor return tasks. Keep a metric handle when
+measuring in a loop. Names go over the wire; descriptions belong in the server
+catalog, supplied through server configuration or MCP onboarding.
 
 ## Signals
 
@@ -86,7 +255,7 @@ Each `WardxClient.Create(...)` SDK instance creates its own `instanceId` and `se
 | Discrete product fact | `Event(name, attrs)` |
 | Volume funnel (drop-off between steps) | one `Event` + one `Counter` per step name |
 | Failure | `Log.Error(message, attrs)` with a clipped `stack` or provider `code`. MCP returns the row; the agent edits source via the role `path`/`git`. |
-| Play-session length | App clock; on end `Histogram("session.duration")` + `Counter("session.time_ms").Add(ms)` + `Experiment.Goal("session.duration", value: ms)`. Not the SDK `sessionId`. |
+| Play-session length | App clock; on end `Histogram(Signal.SessionDuration)` + `Counter(Signal.SessionTime).Add(ms)` + `Experiment.Goal(Signal.SessionDuration, value: ms)`. Not the SDK `sessionId`. |
 | Remote value / variant | `Config.Get(key, fallback)` after `Identify(userId)`, or `Config.Get(key, fallback, subjectId)` |
 | Experiment conversion | `Experiment.Goal(name)` after `Identify`, or `Experiment.Goal(name, subjectId)` |
 
@@ -97,6 +266,127 @@ HyperLogLog (`p=9`, 512 registers, about 4.6% standard error). Only the sketch
 is serialized. Keep the same stable salt on every worker and across the hour/day
 range being compared; Wardx never stores or returns the identifier.
 
+## Count occurrences or quantities
+
+Use a counter for requests, completed matches, or awarded currency:
+
+```csharp
+var completed = wardx.Counter(Signal.MatchCompleted, Dims.Of(Dimension.Mode, GameMode.Ranked));
+completed.Inc();
+wardx.Counter(Signal.CoinsAwarded, Dims.Of(Dimension.Source, GrantSource.Match)).Add(50);
+```
+
+`Inc()` adds one; `Add(n)` adds a finite number. Each name and dimension set
+identifies a series. Frames contain window deltas, not lifetime totals. At
+`MaxSeriesPerMetric`, a new series returns a no-op handle. Keep dimension values
+to small sets such as mode, region, or result.
+
+## Record a current value
+
+Use a gauge for the latest player count or queue depth:
+
+```csharp
+wardx.Gauge(Signal.PlayersOnline, Dims.Of(Dimension.Region, Region.SouthAmerica)).Set(12);
+wardx.Gauge(Signal.QueueDepth).Set(3);
+```
+
+`Set(value)` requires a finite number and replaces the previous value. The
+frame contains the last value and its timestamp. A series with no `Set` in
+that window is omitted. Gauges do not expose `Inc()`.
+
+## Record a distribution
+
+Use a histogram when you already have a numeric sample:
+
+```csharp
+wardx.Histogram(Signal.HttpDuration, Dims.Of(Dimension.Route, Route.Checkout)).Observe(42);
+wardx.Histogram(Signal.HttpPayloadBytes, buckets: new double[] { 256, 1024, 4096, 16384, 65536 })
+    .Observe(2048);
+wardx.Histogram(Signal.CoinAwardSize).Observe(50, Dims.Of(Dimension.GrantId, "grant-42"));
+```
+
+Frames contain count, sum, min, max, and buckets. Default bounds are
+`[10, 25, 50, 100, 250, 500, 1000]`; choose bounds appropriate to the unit.
+Bounds must be finite and strictly increasing. Changing the buckets of an
+existing series throws. A sample above the last bound contributes to the
+summary but not to a bucket.
+
+`Observe(value, attrs)` retains attrs only for the window maximum as an
+`exemplar`. Use a lookup key such as `grantId` to find the corresponding record
+in your own database. Exemplar attrs obey dimension limits.
+
+## Measure elapsed time
+
+Use a timer when the SDK should measure an operation in milliseconds:
+
+```csharp
+var timer = wardx.Timer(Signal.MatchmakingDuration, Dims.Of(Dimension.Mode, GameMode.Ranked));
+try
+{
+    await FindMatchAsync();
+    timer.Stop(Dims.Of(Dimension.Result, Result.Success));
+}
+catch
+{
+    timer.Stop(Dims.Of(Dimension.Result, Result.Error));
+    throw;
+}
+```
+
+`FindMatchAsync` represents application work. `Stop` observes a histogram;
+end dimensions merge with start dimensions, replacing matching keys. Stop the
+token when the operation ends; subsequent `Stop` calls on that token do nothing.
+
+## Record a product event
+
+Use an event for an individual product fact and a counter for its aggregate:
+
+```csharp
+wardx.Event(Signal.Purchase, Dims.Of(Dimension.Product, Product.SmallCoins, Dimension.Currency, Currency.Usd, Dimension.Amount, 2.99));
+wardx.Counter(Signal.PurchaseCount, Dims.Of(Dimension.Product, Product.SmallCoins)).Inc();
+wardx.Counter(Signal.PurchaseAmount, Dims.Of(Dimension.Currency, Currency.Usd)).Add(2.99);
+```
+
+An event is a buffered row; a counter adds to a window sum. Prefer a counter
+when the aggregate is all you need. When the event buffer is full, the new
+event is discarded and `wardx.internal.events_dropped` increases.
+
+Dimensions and attrs accept string, enum, finite numeric, and boolean values, not
+nested objects. `Dims.Of` builds up to three pairs; for more, use a `Dims`
+collection initializer. Metric dimension limits come from `MaxDimensionKeys`
+and `MaxDimensionValueLength`. Event and log attrs must fit the server's
+`maxAttributeKeys` and `maxAttributeValueLength`; see the [protocol](../../docs/PROTOCOL.md).
+
+## Detect abnormal currency or point grants
+
+Record quantity, frequency, and grant size together. This example assumes the
+application has already committed the grant in its own database:
+
+```csharp
+void RecordGrant(WardxClient wardx, GrantSource source, double amount, string grantId)
+{
+    var dims = Dims.Of(Dimension.Source, source);
+    wardx.Counter(Signal.CoinsAwarded, dims).Add(amount);
+    wardx.Counter(Signal.CoinGrants, dims).Inc();
+    wardx.Histogram(Signal.CoinAwardSize, dims, new double[] { 10, 50, 100, 250, 500, 1000, 5000 })
+        .Observe(amount, Dims.Of(Dimension.GrantId, grantId));
+
+    var maxAward = wardx.Config.Get(ConfigKey.MaxAward, 500.0);
+    if (amount > maxAward)
+    {
+        var attrs = Dims.Of(Dimension.Source, source, Dimension.Amount, amount, Dimension.GrantId, grantId);
+        wardx.Event(Signal.CoinAnomaly, attrs);
+        wardx.Log.Warn(LogMessage.CoinAnomaly, attrs);
+    }
+}
+```
+
+Keep `source` to a small set such as match, daily, purchase, or admin. Compare
+histogram maxima and `coins.awarded / coins.grants` with the configured bound
+through MCP `get_aggregates`. Inspect the exemplar's `grantId` in the game
+database and query `get_recent_logs` for `coins_anomaly`. Wardx's at-most-once
+telemetry is not a wallet ledger or a per-player audit trail.
+
 ## Funnels
 
 Wardx compares how often each named step fired. It does not reconstruct a per-user path.
@@ -104,12 +394,12 @@ Wardx compares how often each named step fired. It does not reconstruct a per-us
 Give each step its own name. Emit the event and increment a counter of the same name. Read the drop in `get_aggregates`. Event attrs do not split that count. `Experiment.Goal` is one conversion or one quantitative value, not an N-step funnel.
 
 ```csharp
-wardx.Event("onboarding.start", Dims.Of("channel", channel));
-wardx.Counter("onboarding.start", Dims.Of("channel", channel)).Inc();
+wardx.Event(Signal.OnboardingStart, Dims.Of(Dimension.Channel, channel));
+wardx.Counter(Signal.OnboardingStart, Dims.Of(Dimension.Channel, channel)).Inc();
 
-wardx.Event("onboarding.done");
-wardx.Counter("onboarding.done").Inc();
-wardx.Experiment.Goal("onboarding.done", userId);
+wardx.Event(Signal.OnboardingDone);
+wardx.Counter(Signal.OnboardingDone).Inc();
+wardx.Experiment.Goal(Signal.OnboardingDone, userId);
 ```
 
 See [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md).
@@ -121,16 +411,16 @@ A play session is an interval you own (app open to close, login to logout). The 
 ```csharp
 wardx.Identify(userId);
 var started = DateTime.UtcNow;
-var enemyHp = wardx.Config.Get("level.3.enemyHp", 100);
+var enemyHp = wardx.Config.Get(ConfigKey.Level3EnemyHp, 100);
 
 // … play session …
 
 var durationMs = (DateTime.UtcNow - started).TotalMilliseconds;
-wardx.Histogram("session.duration", null, new double[] { 30000, 60000, 180000, 300000, 600000, 1200000, 1800000, 3600000 })
+wardx.Histogram(Signal.SessionDuration, null, new double[] { 30000, 60000, 180000, 300000, 600000, 1200000, 1800000, 3600000 })
     .Observe(durationMs);
-wardx.Counter("session.time_ms").Add(durationMs);
-wardx.Counter("session.ended").Inc();
-wardx.Experiment.Goal("session.duration", value: durationMs);
+wardx.Counter(Signal.SessionTime).Add(durationMs);
+wardx.Counter(Signal.SessionEnded).Inc();
+wardx.Experiment.Goal(Signal.SessionDuration, value: durationMs);
 ```
 
 `get_aggregates` reads fleet `session.time_ms`. `analyze_experiment` compares `goalMean` by variant and returns a `decision`. Close a winner with `ship_experiment`. Instrument `level.start` / `level.fail` / `level.complete` as a volume funnel. Do not also emit `Experiment.Goal` for those steps if the experiment goal is session duration. See the Node SDK use cases 14 and 15.
@@ -145,20 +435,142 @@ With no subject, `Get` returns Remote Config and that call is not in an experime
 
 ```csharp
 wardx.Identify(userId);
-var timeoutMs = wardx.Config.Get("matchmaking.timeoutMs", 5000);
-var delayMs = wardx.Config.Get("message.delayMs", 1000);
-wardx.Experiment.Goal("message.sent", value: 1);
+var timeoutMs = wardx.Config.Get(ConfigKey.MatchmakingTimeout, 5000);
+var delayMs = wardx.Config.Get(ConfigKey.MessageDelay, 1000);
+wardx.Experiment.Goal(Signal.MessageSent, value: 1);
 
-var otherDelayMs = wardx.Config.Get("message.delayMs", 1000, otherUserId);
+var otherDelayMs = wardx.Config.Get(ConfigKey.MessageDelay, 1000, otherUserId);
 ```
 
 Until a sync applies a snapshot, `Get` returns the fallback. Assignment is local and deterministic: the same `subjectId`, experiment `id`, and `salt` always map to the same variant. You do not persist the group. Changing the experiment `salt` redistributes the population. Exposure is event `experiment.exposure` with a hashed subject. The raw id does not go on the wire.
+
+### Resolution and goals
+
+1. If the key is absent from the snapshot, return the fallback.
+2. Without a subject, return the shared Remote Config value.
+3. With a subject and an applicable experiment, return its variant value;
+   otherwise return the shared value.
+
+Sync responses supply snapshots. Reads continue using the last snapshot
+between syncs. `Get<T>` infers its result type from the fallback and converts
+the stored value to that type; incompatible conversions can throw.
+
+Define experiment variants on the server over existing Remote Config keys.
+The application continues reading those keys:
+
+```csharp
+var delayMs = wardx.Config.Get(ConfigKey.MessageDelay, 1000, userId);
+await System.Threading.Tasks.Task.Delay(delayMs);
+await DeliverMessageAsync();
+wardx.Counter(Signal.MessageSent).Inc();
+wardx.Experiment.Goal(Signal.MessageSent, userId, value: 1);
+```
+
+`DeliverMessageAsync` is application code. Reading a variant can emit
+`experiment.exposure` with the experiment, variant, and hashed subject. A goal
+emits nothing until that subject has an exposure whose `goalMetric` matches
+the goal name. A valid goal refers to exactly that assignment; calling without
+a subject throws. Keep the experiment salt stable to preserve assignment.
+
+## Experiment on level difficulty
+
+Read difficulty from Remote Config and instrument the level's volume funnel:
+
+```csharp
+var enemyHp = wardx.Config.Get(ConfigKey.Level3EnemyHp, 100, userId);
+wardx.Event(Signal.LevelStart, Dims.Of(Dimension.Level, 3));
+wardx.Counter(Signal.LevelStart, Dims.Of(Dimension.Level, 3)).Inc();
+```
+
+On failure or completion, record `level.fail` or `level.complete` with the same
+dimension. Compare those counts with starts through `get_aggregates`; they
+count occurrences, not unique players. Use the session-duration example above
+to record one quantitative `Experiment.Goal(Signal.SessionDuration, value: durationMs)`
+at session end. If that is the experiment goal, do not emit level steps as goals.
+
+Configure the experiment through server MCP `upsert_experiment`, using existing
+keys, a hypothesis, `primaryMetric: "session.time_ms"`,
+`goalMetric: "session.duration"`, `assignmentUnitKind: "session"`,
+`outcomeKind: "mean"`, and the complete fixed-horizon policy. Use
+`analyze_experiment` for the persisted decision and variant `goalMean`;
+`ship_experiment` requires the current `expectedVersion` and a reason.
+See the [server guide](../../packages/server/README.md) for experiment operations.
+
+## Surface errors for investigation
+
+Count failures and log a stable message with primitive attrs:
+
+```csharp
+wardx.Counter(Signal.PaymentError, Dims.Of(Dimension.Code, PaymentCode.ProviderTimeout)).Inc();
+wardx.Log.Error(LogMessage.PaymentFailed, Dims.Of(Dimension.Code, PaymentCode.ProviderTimeout));
+```
+
+For an exception, send its type name and a sanitized, clipped stack string,
+not the exception object. Keep each attr within the server's
+`maxAttributeValueLength`; invalid attrs can cause the envelope to be rejected. Do not send credentials
+or sensitive request data.
+
+Query MCP `get_aggregates` for the failure rate and `get_recent_logs` with the
+error level and message for recent evidence. A role's catalog `path` or `git`
+provides the source location for an agent with access to that checkout. Wardx
+does not edit source. The bounded recent-log ring is not a historical log store.
+
+## Continue when the server is unavailable
+
+Measurements continue in local memory. Failed batches are discarded and
+`wardx.internal.frames_failed` increases. The next cycle sends new data;
+there is no disk queue or replay of the failed frames. Remote Config reads
+continue returning the last snapshot or the supplied fallback. Use a durable
+system for events that must not be lost.
 
 ## Lifecycle
 
 `FlushAsync` sends pending frames and leaves timers running. `ShutdownAsync` stops timers, sends pending frames, and closes the transport. In Unity, `OnApplicationQuit` stops timers without blocking the main thread on HTTP.
 
-Pass `new ConsoleTracer()` as `WardxOptions.Tracer` while instrumenting. It does not go over the wire.
+```csharp
+await wardx.FlushAsync();
+// At application shutdown:
+await wardx.ShutdownAsync();
+```
+
+Concurrent `ShutdownAsync` callers receive the same task and await one final
+flush and transport close. `Stop()` stops scheduling and closes the transport
+without flushing. `Dispose()` waits for shutdown in .NET and calls `Stop()` in
+Unity. Prefer awaiting shutdown at a controlled point before Unity quits;
+quitting itself does not guarantee final delivery.
+
+## Trace instrumentation locally
+
+Set `Tracer = new ConsoleTracer()` in `WardxOptions` before creating the client.
+It writes measurement, event, log, frame, and sync diagnostics to stderr. Pass
+a `TextWriter` to select another output, or derive from `TracerBase` and
+override the hooks you need. Unity can route a custom tracer to its own console.
+
+Tracer callbacks run on the instrumentation path. Use them during development;
+they are local diagnostics and do not go over the wire.
+
+## API reference
+
+| API | Purpose |
+| --- | --- |
+| `WardxClient.Create(options)` | Creates a client with automatic scheduling. |
+| `Counter(name, dims)` | `Inc()` or `Add(n)` for window sums. |
+| `Gauge(name, dims)` | `Set(value)` for the latest value. |
+| `Histogram(name, dims, buckets)` | `Observe(value, attrs)` for distributions and an optional exemplar. |
+| `Distinct(name, dims)` | `Add(identifier)` for approximate unique counts. |
+| `Timer(name, dims)` | Returns a token with `Stop(endDims)` to record milliseconds. |
+| `Event(name, attrs)` | Buffers a product event. |
+| `Log.Debug/Info/Warn/Error(message, attrs)` | Buffers a structured log. |
+| `Identify(subjectId)` | Sets the instance default subject; `null` clears it. |
+| `Config.Get<T>(key, fallback, subjectId)` | Reads a local shared or variant value. |
+| `Experiment.Goal(name, subjectId, value)` | Records a conversion or quantitative outcome for an exposed subject. |
+| `RetentionActivity(userId)` | Records activity with an explicit stable identity. |
+| `FlushAsync()` | Sends pending frames and keeps scheduling. |
+| `ShutdownAsync()` | Stops scheduling, sends pending frames, and closes transport. |
+| `Stop()` | Stops without a final flush. |
+
+Optional dimensions, attrs, bucket arrays, and subject arguments can be omitted.
+Examples use application-owned identifiers and functions where indicated.
 
 ## Protocol
 

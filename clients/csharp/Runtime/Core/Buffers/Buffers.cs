@@ -26,7 +26,7 @@ namespace Wardx
                 throw new ArgumentException("event name must be a non-empty string");
             }
             if (_buf.Count >= _max) return false;
-            _buf.Add(new EventSample(Clock.UnixMs(), name, attrs));
+            _buf.Add(new EventSample(Clock.UnixMs(), name, EnumNames.Normalize(attrs)));
             return true;
         }
 
@@ -78,7 +78,7 @@ namespace Wardx
             {
                 throw new ArgumentException("log message must be a non-empty string");
             }
-            var entry = new LogSample(Clock.UnixMs(), level, message, attrs);
+            var entry = new LogSample(Clock.UnixMs(), level, message, EnumNames.Normalize(attrs));
             if (_buf.Count < _max)
             {
                 _buf.Add(entry);

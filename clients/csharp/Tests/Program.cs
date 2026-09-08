@@ -12,6 +12,7 @@ namespace Wardx.Tests
             failed += Run("hash", HashTests.Run);
             failed += Run("experiments", ExperimentTests.Run);
             failed += Run("metrics", MetricsTests.Run);
+            failed += Run("enums", EnumTests.Run);
             failed += Run("buffers", BufferTests.Run);
             failed += Run("frames", FrameTests.Run);
             failed += Run("settings", SettingsTests.Run);

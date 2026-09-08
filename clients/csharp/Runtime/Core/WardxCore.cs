@@ -46,10 +46,20 @@ namespace Wardx
             Log = new CoreLogApi(this);
         }
 
+        public ICounter Counter<TName>(TName name, IReadOnlyDictionary<string, object> dims = null) where TName : struct, Enum
+        {
+            return Counter(EnumNames.Resolve(name), dims);
+        }
+
         public ICounter Counter(string name, IReadOnlyDictionary<string, object> dims = null)
         {
             return Wrap(_metrics.Counter(name, dims), NoopCounter.Instance, name, dims,
                 (series, noop) => new TracedCounter(series, _tracer, name, dims, noop));
+        }
+
+        public IGauge Gauge<TName>(TName name, IReadOnlyDictionary<string, object> dims = null) where TName : struct, Enum
+        {
+            return Gauge(EnumNames.Resolve(name), dims);
         }
 
         public IGauge Gauge(string name, IReadOnlyDictionary<string, object> dims = null)
@@ -58,16 +68,31 @@ namespace Wardx
                 (series, noop) => new TracedGauge(series, _tracer, name, dims, noop));
         }
 
+        public IHistogram Histogram<TName>(TName name, IReadOnlyDictionary<string, object> dims = null, double[] buckets = null) where TName : struct, Enum
+        {
+            return Histogram(EnumNames.Resolve(name), dims, buckets);
+        }
+
         public IHistogram Histogram(string name, IReadOnlyDictionary<string, object> dims = null, double[] buckets = null)
         {
             return Wrap(_metrics.Histogram(name, dims, buckets), NoopHistogram.Instance, name, dims,
                 (series, noop) => new TracedHistogram(series, _tracer, name, dims, noop));
         }
 
+        public IDistinct Distinct<TName>(TName name, IReadOnlyDictionary<string, object> dims = null) where TName : struct, Enum
+        {
+            return Distinct(EnumNames.Resolve(name), dims);
+        }
+
         public IDistinct Distinct(string name, IReadOnlyDictionary<string, object> dims = null)
         {
             return Wrap(_metrics.Distinct(name, dims), NoopDistinct.Instance, name, dims,
                 (series, noop) => new TracedDistinct(series, _tracer, name, dims, noop));
+        }
+
+        public TimerToken Timer<TName>(TName name, IReadOnlyDictionary<string, object> dims = null) where TName : struct, Enum
+        {
+            return Timer(EnumNames.Resolve(name), dims);
         }
 
         public TimerToken Timer(string name, IReadOnlyDictionary<string, object> dims = null)
@@ -79,6 +104,11 @@ namespace Wardx
                 var duration = (System.Diagnostics.Stopwatch.GetTimestamp() - start) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
                 Histogram(name, Dimensions.Merge(dims, endDims)).Observe(duration);
             });
+        }
+
+        public void Event<TName>(TName name, IReadOnlyDictionary<string, object> attrs = null) where TName : struct, Enum
+        {
+            Event(EnumNames.Resolve(name), attrs);
         }
 
         public void Event(string name, IReadOnlyDictionary<string, object> attrs = null)
@@ -131,12 +161,22 @@ namespace Wardx
             return _experiments.Resolve(key, remote, resolved, ConfigStore.ExperimentsByKey);
         }
 
+        public T ConfigGet<TKey, T>(TKey key, T fallback, string subjectId = null) where TKey : struct, Enum
+        {
+            return ConfigGet(EnumNames.Resolve(key), fallback, subjectId);
+        }
+
         public T ConfigGet<T>(string key, T fallback, string subjectId = null)
         {
             var value = ConfigGet(key, (object)fallback, subjectId);
             if (value is T typed) return typed;
             if (value == null) return fallback;
             return (T)Convert.ChangeType(value, typeof(T), System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        public void ExperimentGoal<TName>(TName name, string subjectId = null, object value = null) where TName : struct, Enum
+        {
+            ExperimentGoal(EnumNames.Resolve(name), subjectId, value);
         }
 
         public void ExperimentGoal(string name, string subjectId = null, object value = null)
@@ -256,9 +296,19 @@ namespace Wardx
             _core = core;
         }
 
+        public void Debug<TName>(TName message, IReadOnlyDictionary<string, object> attrs = null) where TName : struct, Enum
+        {
+            Debug(EnumNames.Resolve(message), attrs);
+        }
+
         public void Debug(string message, IReadOnlyDictionary<string, object> attrs = null)
         {
             _core.WriteLog("debug", message, attrs);
+        }
+
+        public void Info<TName>(TName message, IReadOnlyDictionary<string, object> attrs = null) where TName : struct, Enum
+        {
+            Info(EnumNames.Resolve(message), attrs);
         }
 
         public void Info(string message, IReadOnlyDictionary<string, object> attrs = null)
@@ -266,9 +316,19 @@ namespace Wardx
             _core.WriteLog("info", message, attrs);
         }
 
+        public void Warn<TName>(TName message, IReadOnlyDictionary<string, object> attrs = null) where TName : struct, Enum
+        {
+            Warn(EnumNames.Resolve(message), attrs);
+        }
+
         public void Warn(string message, IReadOnlyDictionary<string, object> attrs = null)
         {
             _core.WriteLog("warn", message, attrs);
+        }
+
+        public void Error<TName>(TName message, IReadOnlyDictionary<string, object> attrs = null) where TName : struct, Enum
+        {
+            Error(EnumNames.Resolve(message), attrs);
         }
 
         public void Error(string message, IReadOnlyDictionary<string, object> attrs = null)

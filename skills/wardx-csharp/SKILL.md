@@ -50,7 +50,7 @@ Use the cheapest signal that still answers the question.
 
 A counter in a frame is a window delta, not a lifetime total. A gauge that is never `Set` in a window is absent. Keep the series object when you increment in a loop. Build dims with `Dims.Of(...)`.
 
-**Dimensions.** Small sets: `mode`, `route`, `code`, `source`, `result`. Values are string, number, or boolean. Never `userId`, email, or a unique id on a metric dimension. The SDK caps series per name (`MaxSeriesPerMetric`); extra series become no-ops and increment `wardx.internal.cardinality_dropped`. Histogram `Observe(value, attrs)` keeps attrs only for the window max (`exemplar`). A lookup key (`grantId`, `matchId`) belongs there, not on the series.
+**Dimensions.** Small sets: `mode`, `route`, `code`, `source`, `result`. Values are string, enum (converted to its wire name), number, or boolean. Never `userId`, email, or a unique id on a metric dimension. The SDK caps series per name (`MaxSeriesPerMetric`); extra series become no-ops and increment `wardx.internal.cardinality_dropped`. Histogram `Observe(value, attrs)` keeps attrs only for the window max (`exemplar`). A lookup key (`grantId`, `matchId`) belongs there, not on the series.
 
 **Distinct.** `Distinct(name, dims).Add(identifier)` hashes locally with the
 required stable `PrivacySalt` and sends only a fixed mergeable HLL sketch. Use
@@ -63,6 +63,46 @@ it for approximate unique counts, never for an identity list or ordered path.
 **Economy.** Wardx is not a ledger. Wallet rows live in the application database. On the grant path: `coins.awarded` (`.Add(amount)`), `coins.grants` (`.Inc()`), `coins.award_size` histogram with exemplar. Emit `coins.anomaly` and `Log.Warn("coins_anomaly", …)` only when amount exceeds a Remote Config cap.
 
 Do not ship catalog descriptions from the SDK. Name the metric; meaning is onboarded on the server.
+
+## Optional enum names
+
+Strings remain fully supported. Use application-owned enums when requested or
+when the application already uses them; do not migrate existing string calls
+just to adopt enums. Confirm the referenced SDK contains the enum overloads
+before using them in a consumer pinned to an older release.
+
+Metric names, event names, log messages, Remote Config keys, and experiment goal
+names accept enums. The wire name is the member name with its original case;
+`[WardxName("match.completed")]` supplies an explicit stable mapping. There is
+no automatic casing or underscore-to-dot conversion. Preserve existing wire
+names so catalog entries, config keys, and metric history continue to match.
+
+Declare these types in application code with `using Wardx;`:
+
+```csharp
+enum Signal { [WardxName("match.completed")] MatchCompleted }
+enum Dimension { [WardxName("mode")] Mode }
+enum GameMode { [WardxName("ranked")] Ranked, Casual }
+```
+
+Inside an application method, these calls contribute to the same series:
+
+```csharp
+wardx.Counter(Signal.MatchCompleted, Dims.Of(Dimension.Mode, GameMode.Ranked)).Inc();
+wardx.Counter("match.completed", Dims.Of("mode", "ranked")).Inc();
+```
+
+`Dims.Of` accepts mixed string/enum keys. Enum values also work in ordinary
+string-keyed dictionaries for dimensions, event/log attrs, histogram exemplars,
+and timer end dimensions. Conversion does not mutate the caller's dictionary;
+limits apply to the mapped strings. Subject IDs, distinct identifiers, and
+connection options remain strings. `Config.Get` supports enum keys, not enum
+return values; its fallback determines the result type.
+
+Undefined enum values, ambiguous numeric aliases, and blank mappings throw.
+Flags combinations need exactly one declared member. Enum goals retain the
+usual subject and exposure requirements. See [references/package.md](references/package.md)
+when changing this implementation.
 
 ## Remote Config and experiments
 

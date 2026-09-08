@@ -8,6 +8,21 @@ namespace Wardx
 
         public Dims(int capacity) : base(capacity) { }
 
+        public static Dims Of(object k, object v)
+        {
+            return Of(EnumNames.Key(k), v);
+        }
+
+        public static Dims Of(object k1, object v1, object k2, object v2)
+        {
+            return Of(EnumNames.Key(k1), v1, EnumNames.Key(k2), v2);
+        }
+
+        public static Dims Of(object k1, object v1, object k2, object v2, object k3, object v3)
+        {
+            return Of(EnumNames.Key(k1), v1, EnumNames.Key(k2), v2, EnumNames.Key(k3), v3);
+        }
+
         public static Dims Of(string k, object v)
         {
             return new Dims(1) { { k, v } };
