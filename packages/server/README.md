@@ -17,8 +17,69 @@ release. Streamable HTTP exposes the same MCP tools, not a second control API.
 
 ```bash
 npm install @wardx/server
-wardx-server /absolute/path/to/wardx-server.json
 ```
+
+### Start from code
+
+`startServer` accepts a complete configuration object from your application's
+configuration module; no JSON file is required. In this example, `wardx.config.js`
+is your own module exporting that object. Use the
+[complete development configuration](https://github.com/clasen/Wardx/blob/main/config/development.json)
+as a reference for the required fields, then supply your deployment's settings
+and credentials.
+
+```js
+import { startServer } from '@wardx/server';
+import config from './wardx.config.js';
+
+const { server, address, mcpAddress } = await startServer(config);
+
+// Call during application shutdown.
+async function stopWardx() {
+  await server.wardx.stop();
+}
+```
+
+The result is `{ server, address, mcpAddress, config }`. `address` is the bound
+ingest address; `mcpAddress` is null unless MCP HTTP is enabled. `startServer`
+opens the listeners and installs `SIGINT`/`SIGTERM` handlers that drain Wardx
+and exit the process.
+
+If your application owns signal handling, use `createIngestServer(config)` and
+`await listen(server, config.port, config.host)` instead, then call
+`await server.wardx.stop()` from its shutdown handler. `createIngestServer`
+returns the server directly; it does not listen, install signal handlers, or
+start MCP HTTP.
+
+### HTTPS and custom transport
+
+Both startup functions accept a dedicated Node HTTP-compatible server:
+
+```js
+import https from 'node:https';
+import { startServer } from '@wardx/server';
+
+export function startWardx(config, { key, cert }) {
+  const transport = https.createServer({ key, cert });
+  return startServer(config, { server: transport });
+}
+```
+
+The supplied server must not already have a `request` listener. Wardx owns its
+request handling and closes the server during `server.wardx.stop()`. The same
+strict configuration validation applies to objects and JSON-loaded config.
+
+### CLI with a JSON configuration
+
+Alternatively, save the complete configuration as JSON and run the local binary:
+
+```bash
+npx wardx-server /absolute/path/to/wardx-server.json
+```
+
+The CLI also starts MCP over stdio when stdin is not a TTY. Programmatic
+`startServer` does not start stdio MCP; it starts the optional HTTP MCP listener
+when `mcpHttp.enabled` is true.
 
 Repository commands:
 
@@ -36,31 +97,18 @@ degraded or draining. Its body is `{ "ok": true, "checks": { "running": true,
 "sqlite": true, "persistence": true, "capacity": true, "mcp": true } }`, with
 failed checks set to false. It exposes no project names, values, paths, or errors.
 
-## Programmatic startup
-
-`createIngestServer` and `startServer` accept the complete configuration object
-directly; no JSON file is involved. Pass a dedicated Node HTTP-compatible server
-to use HTTPS or customize the transport:
-
-```js
-import https from 'node:https';
-import { startServer } from '@wardx/server';
-
-export function startWardx(config, { key, cert }) {
-  const transport = https.createServer({ key, cert });
-  return startServer(config, { server: transport });
-}
-```
-
-The supplied server must not already have a `request` listener. Wardx owns its
-request handling and closes the server during `server.wardx.stop()`. The same
-strict configuration validation applies to objects and JSON-loaded config.
-
 ## Required configuration
 
 The configuration is closed-schema: every operational, retention, capacity, and
-durability value is required and unknown keys fail startup. See
-`config/development.json` for a complete example.
+durability value is required and unknown keys fail startup. See the
+[complete development configuration](https://github.com/clasen/Wardx/blob/main/config/development.json)
+in the repository; it is not included in the npm package. Configuration snippets
+below show individual fields or groups, not complete startup configurations.
+
+Use an absolute `sqlite.path` when configuring Wardx from code. A relative path
+in an object without `configPath` is relative to the process working directory;
+when using `loadServerConfig(path)` or the CLI, it is relative to the JSON
+configuration file's directory.
 
 Important groups:
 
@@ -78,10 +126,14 @@ Important groups:
 | `projects` | Initial Remote Config, role routing, experiments, and optional MCP catalog with categorized signals and `inspectEvents`. |
 | `recentClientsMax`, `recentEventsMax`, `recentLogsMax` | Per-project caps for volatile in-memory rings. |
 
-The operational JSON bootstraps each project only when `sqlite.path` is empty.
-After that, SQLite is authoritative for project state. The JSON continues to be
-the authority for process settings and credentials. Wardx does not import or
-dual-write old JSON sidecars.
+The startup configuration, supplied as an object or loaded from JSON, bootstraps
+each configured project only when that project has no stored state in SQLite.
+This also applies to new projects added to an existing database. After bootstrap,
+SQLite is authoritative for that project's values, role routing, experiments,
+and catalog; editing their startup definitions does not overwrite stored state.
+Use MCP or `server.wardx.control` to change that state. The startup configuration
+continues to define process settings, credentials, and which projects are loaded.
+Wardx does not import or dual-write old JSON sidecars.
 
 Credential example:
 
@@ -492,6 +544,14 @@ again. This monitor checks service health; business-metric thresholds and
 experiment follow-up require separately defined policies.
 
 ### Backup and recovery
+
+The recovery CLI requires a JSON configuration file, even when Wardx is started
+from code. For that setup, serialize the complete startup configuration object
+to a private JSON file (0600) for recovery, using an absolute `sqlite.path` that
+points to the same database. Include the resolved settings and ingest credentials;
+do not commit this file. The MCP bearer remains environment-provided. Recovery
+does not execute your JavaScript configuration module or preserve a custom HTTPS
+transport, so preserve your application entry point and TLS setup separately.
 
 After draining and stopping the original server:
 
