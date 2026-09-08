@@ -18,10 +18,10 @@ Unity 2021.3 or later, or .NET Standard 2.1.
 https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime
 ```
 
-Pin a release with `#v0.5.0`. In `Packages/manifest.json`:
+Pin a release with `#v0.5.1`. In `Packages/manifest.json`:
 
 ```json
-"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.5.0"
+"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.5.1"
 ```
 
 **Unity (this checkout).** Package Manager → Add package from disk → `clients/csharp/Runtime/package.json`.

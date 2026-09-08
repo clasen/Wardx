@@ -1,6 +1,7 @@
-#if UNITY
+#if UNITY_5_3_OR_NEWER
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
@@ -11,14 +12,26 @@ namespace Wardx
 {
     public sealed class UnityWebRequestTransport : ISyncTransport
     {
-        readonly MonoBehaviour _runner;
+        readonly SynchronizationContext _context;
+        readonly int _threadId;
+        readonly HashSet<PendingRequest> _pending = new HashSet<PendingRequest>();
         readonly string _url;
         readonly string _projectKey;
         readonly int _timeoutSeconds;
+        int _closed;
+
+        sealed class PendingRequest
+        {
+            public readonly TaskCompletionSource<SyncResult> Completion = new TaskCompletionSource<SyncResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+            public UnityWebRequest Request;
+            public CancellationTokenRegistration Cancellation;
+        }
 
         public UnityWebRequestTransport(MonoBehaviour runner, string endpoint, string projectKey, int httpTimeoutMs)
         {
-            _runner = runner;
+            if (runner == null) throw new ArgumentNullException(nameof(runner));
+            _context = SynchronizationContext.Current ?? throw new InvalidOperationException("Create the Unity transport on the Unity main thread.");
+            _threadId = Thread.CurrentThread.ManagedThreadId;
             _url = SyncUrl(endpoint);
             _projectKey = projectKey;
             _timeoutSeconds = Math.Max(1, (httpTimeoutMs + 999) / 1000);
@@ -26,45 +39,90 @@ namespace Wardx
 
         public Task<SyncResult> PostAsync(byte[] gzippedBody, CancellationToken cancellationToken)
         {
-            var tcs = new TaskCompletionSource<SyncResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-            _runner.StartCoroutine(Post(gzippedBody, tcs, cancellationToken));
-            return tcs.Task;
+            var pending = new PendingRequest();
+            OnMainThread(() => Post(gzippedBody, pending, cancellationToken));
+            return pending.Completion.Task;
         }
 
-        public void Close() { }
-
-        IEnumerator Post(byte[] body, TaskCompletionSource<SyncResult> tcs, CancellationToken cancellationToken)
+        public void Close()
         {
-            var request = new UnityWebRequest(_url, UnityWebRequest.kHttpVerbPOST);
-            request.uploadHandler = new UploadHandlerRaw(body);
-            request.downloadHandler = new DownloadHandlerBuffer();
-            request.SetRequestHeader("Content-Type", "application/json");
-            request.SetRequestHeader("Content-Encoding", "gzip");
-            request.SetRequestHeader("X-Wardx-Key", _projectKey);
-            request.SetRequestHeader("Accept", "application/json");
-            request.timeout = _timeoutSeconds;
-            var op = request.SendWebRequest();
-            while (!op.isDone)
+            if (Interlocked.Exchange(ref _closed, 1) != 0) return;
+            OnMainThread(() =>
             {
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    request.Abort();
-                    request.Dispose();
-                    tcs.TrySetCanceled(cancellationToken);
-                    yield break;
-                }
-                yield return null;
+                foreach (var pending in new List<PendingRequest>(_pending)) Cancel(pending);
+            });
+        }
+
+        void OnMainThread(Action action)
+        {
+            if (Thread.CurrentThread.ManagedThreadId == _threadId) action();
+            else _context.Post(_ => action(), null);
+        }
+
+        void Post(byte[] body, PendingRequest pending, CancellationToken cancellationToken)
+        {
+            if (Volatile.Read(ref _closed) != 0 || cancellationToken.IsCancellationRequested)
+            {
+                pending.Completion.TrySetCanceled();
+                return;
             }
+            _pending.Add(pending);
             try
             {
+                var request = pending.Request = new UnityWebRequest(_url, UnityWebRequest.kHttpVerbPOST);
+                request.uploadHandler = new UploadHandlerRaw(body);
+                request.downloadHandler = new DownloadHandlerBuffer();
+                request.SetRequestHeader("Content-Type", "application/json");
+                request.SetRequestHeader("Content-Encoding", "gzip");
+                request.SetRequestHeader("X-Wardx-Key", _projectKey);
+                request.SetRequestHeader("Accept", "application/json");
+                request.timeout = _timeoutSeconds;
+                pending.Cancellation = cancellationToken.Register(() => _context.Post(_ => Cancel(pending), null));
+                request.SendWebRequest().completed += _ => Complete(pending);
+            }
+            catch (Exception error)
+            {
+                Release(pending);
+                pending.Completion.TrySetException(error);
+            }
+        }
+
+        void Complete(PendingRequest pending)
+        {
+            if (!_pending.Contains(pending)) return;
+            try
+            {
+                var request = pending.Request;
                 var status = (int)request.responseCode;
                 var text = request.downloadHandler != null ? request.downloadHandler.text : "";
-                tcs.TrySetResult(new SyncResult(status >= 200 && status < 300, status, text));
+                var result = new SyncResult(status >= 200 && status < 300, status, text);
+                Release(pending);
+                pending.Completion.TrySetResult(result);
             }
+            catch (Exception error)
+            {
+                Release(pending);
+                pending.Completion.TrySetException(error);
+            }
+        }
+
+        void Cancel(PendingRequest pending)
+        {
+            if (!_pending.Remove(pending)) return;
+            try { pending.Request?.Abort(); }
             finally
             {
-                request.Dispose();
+                Release(pending);
+                pending.Completion.TrySetCanceled();
             }
+        }
+
+        void Release(PendingRequest pending)
+        {
+            _pending.Remove(pending);
+            pending.Cancellation.Dispose();
+            pending.Request?.Dispose();
+            pending.Request = null;
         }
 
         public static string SyncUrl(string endpoint)
@@ -124,6 +182,11 @@ namespace Wardx
         {
             if (_client == null) return;
             _client.Stop();
+        }
+
+        void OnDestroy()
+        {
+            _client?.Stop();
         }
     }
 

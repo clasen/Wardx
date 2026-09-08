@@ -50,7 +50,7 @@ namespace Wardx
 
         public static WardxClient Create(WardxOptions options)
         {
-#if UNITY
+#if UNITY_5_3_OR_NEWER
             return UnityBootstrap.Start(Settings.Resolve(options));
 #else
             return DotnetBootstrap.Start(Settings.Resolve(options));
@@ -64,7 +64,7 @@ namespace Wardx
 
         static SdkIdentity DefaultIdentity()
         {
-#if UNITY
+#if UNITY_5_3_OR_NEWER
             return new SdkIdentity { Name = "wardx-unity", Version = SdkDefaults.Version, Platform = "unity" };
 #else
             return new SdkIdentity { Name = "wardx-csharp", Version = SdkDefaults.Version, Platform = "csharp" };
@@ -170,7 +170,7 @@ namespace Wardx
 
         public void Dispose()
         {
-#if UNITY
+#if UNITY_5_3_OR_NEWER
             Stop();
 #else
             ShutdownAsync().GetAwaiter().GetResult();

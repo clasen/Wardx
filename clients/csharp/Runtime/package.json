@@ -1,6 +1,6 @@
 {
   "name": "com.wardx.sdk",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "displayName": "Wardx",
   "description": "Wardx SDK for Unity and C#: metrics, events, logs, Remote Config, and experiments over POST /v1/sync.",
   "unity": "2021.3",

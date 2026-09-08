@@ -20,6 +20,6 @@ namespace Wardx
 
         public static readonly double[] HistogramBuckets = { 10, 25, 50, 100, 250, 500, 1000 };
 
-        public const string Version = "0.5.0";
+        public const string Version = "0.5.1";
     }
 }
