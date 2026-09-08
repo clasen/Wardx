@@ -76,7 +76,9 @@ test('Streamable HTTP authenticates one bearer credential and exposes Wardx tool
     try {
       await client.connect(transport);
       const tools = await client.listTools();
-      assert.ok(tools.tools.some((tool) => tool.name === 'list_projects'));
+      assert.equal(tools.tools.find((tool) => tool.name === 'list_projects').annotations?.readOnlyHint, true);
+      assert.notEqual(tools.tools.find((tool) => tool.name === 'set_config_value').annotations?.readOnlyHint, true);
+      assert.notEqual(tools.tools.find((tool) => tool.name === 'analyze_experiment').annotations?.readOnlyHint, true);
       const result = await client.callTool({ name: 'list_projects', arguments: {} });
       assert.equal(result.isError, undefined);
       assert.deepEqual(JSON.parse(result.content[0].text), { projects: ['demo'] });

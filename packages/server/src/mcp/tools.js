@@ -37,11 +37,13 @@ const CATEGORY = {
 export const TOOL_DEFS = [
   {
     name: 'list_projects',
+    annotations: { readOnlyHint: true },
     description: 'List project names isolated on this ingest server.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
     name: 'get_project_overview',
+    annotations: { readOnlyHint: true },
     description:
       'Project description, onboarding gaps, catalog categories, Remote Config knobs (each with the roles that receive them), telemetry and clients grouped by role, inspectEvents/persistLogs allowlists, and previously proposed experiments. Optional category filters knobs and outcomes by exact catalog category. Outcomes include counters, events, histogram peaks (max + exemplar of the window max), and allowlisted persist log rollups (count + last exemplar). Each role may include optional path (local checkout) and git (repository URL). A predefined catalog can make onboarding.complete true. If it is false, ask only about the listed gaps and persist with set_project_description / set_role_description / set_signal before proposing experiments.',
     inputSchema: {
@@ -217,6 +219,7 @@ export const TOOL_DEFS = [
   },
   {
     name: 'get_config',
+    annotations: { readOnlyHint: true },
     description: 'Read the Remote Config snapshot for a project: version, values, experiments.',
     inputSchema: {
       type: 'object',
@@ -260,6 +263,7 @@ export const TOOL_DEFS = [
   },
   {
     name: 'list_experiments',
+    annotations: { readOnlyHint: true },
     description: 'List previously proposed experiment definitions for a project, including MCP-only hypothesis when set.',
     inputSchema: {
       type: 'object',
@@ -414,6 +418,7 @@ export const TOOL_DEFS = [
   },
   {
     name: 'get_aggregates',
+    annotations: { readOnlyHint: true },
     description:
       'Read 1-minute telemetry windows for a project, with catalog descriptions and categories on names. Distinct rows expose mergeable HLL estimates without identifiers or registers. Windows include logNames for catalog persistLogs (count + last exemplar). Optional names and category filters intersect; from, to, and role also filter the payload.',
     inputSchema: {
@@ -432,6 +437,7 @@ export const TOOL_DEFS = [
   },
   {
     name: 'get_retention',
+    annotations: { readOnlyHint: true },
     description: 'Exact D1/D7/D30 retention for received explicit user activity. Cohorts use the earliest received activity timestamp in UTC; return means active ON that day. Pending days return null. Date range selects cohorts, not return events. Late activity can revise cohorts and counts. No user identifiers are returned.',
     inputSchema: {
       type: 'object',
@@ -446,6 +452,7 @@ export const TOOL_DEFS = [
   },
   {
     name: 'get_aggregate_history',
+    annotations: { readOnlyHint: true },
     description: 'Read bounded closed hourly or daily aggregate history with catalog descriptions/categories and completeness metadata. Optional names and category filters intersect. Distinct rows expose merged HLL estimates without identifiers or registers.',
     inputSchema: {
       type: 'object',
@@ -466,6 +473,7 @@ export const TOOL_DEFS = [
   },
   {
     name: 'list_config_changes',
+    annotations: { readOnlyHint: true },
     description: 'List the bounded durable Remote Config mutation journal.',
     inputSchema: {
       type: 'object',
@@ -495,6 +503,7 @@ export const TOOL_DEFS = [
   },
   {
     name: 'get_recent_events',
+    annotations: { readOnlyHint: true },
     description:
       'Recent catalog.inspectEvents rows for one isolated project, newest timestamp first. Optional name, role, scalar attrs (exact match on listed keys), and limit. Rows include raw attrs and instanceId and exist only in the bounded in-memory ring. Events outside the allowlist remain aggregate counts only.',
     inputSchema: {
@@ -516,6 +525,7 @@ export const TOOL_DEFS = [
   },
   {
     name: 'get_recent_logs',
+    annotations: { readOnlyHint: true },
     description:
       'Recent log rows for a project, newest first. Drill from a series into a sample row. Optional level, message, attrs (exact match on listed keys), and limit.',
     inputSchema: {
