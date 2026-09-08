@@ -675,6 +675,23 @@ Stop every Wardx process using the database, then run:
 wardx-recovery reset-data /absolute/path/to/state.sqlite
 ```
 
+To preserve CPU and other numeric history while changing hash algorithms:
+
+```bash
+wardx-recovery reset-data /absolute/path/to/state.sqlite --hash-data-only
+```
+
+This removes only `distinct` rows from minute/hour/day history and clears user
+retention and experiment exposures/goals, totals, and terminal results. It
+preserves counters, gauges, histograms, event/log counts, bucket boundaries,
+finalization, drop counts, and compaction watermarks. Empty buckets remain in
+place. The result additionally reports `removedDistincts`, the number of sketch
+rows removed across all history tiers. `removedRows` counts deleted SQLite rows
+in the reset tables. Both modes preserve definitions and upgrade schemas 1/2 to
+3 atomically; malformed historical JSON aborts the filtered reset with rollback.
+
+Without `--hash-data-only`, the full reset behaves as follows.
+
 This permanently clears historical aggregates, compaction watermarks, user
 retention, experiment exposures/goals, totals, and terminal results for **all
 projects** in that SQLite database. It preserves Remote Config values, metric

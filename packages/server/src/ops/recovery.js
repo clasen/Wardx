@@ -176,7 +176,8 @@ export async function restore(directory, destination) {
   }
 }
 
-export async function resetData(sqlitePath) {
+export async function resetData(sqlitePath, { hashDataOnly = false } = {}) {
+  if (typeof hashDataOnly !== 'boolean') throw new Error('hashDataOnly must be a boolean');
   const source = resolve(sqlitePath);
   await requireFile(source);
   const template = new Database(':memory:');
@@ -184,6 +185,10 @@ export async function resetData(sqlitePath) {
   try {
     SqliteStateStore.initializeSchema(template);
     const preserved = new Set(['schema_metadata', 'project_state', 'mutation_journal']);
+    const historyTables = ['minute_aggregates', 'hour_aggregates', 'day_aggregates'];
+    if (hashDataOnly) {
+      for (const table of [...historyTables, 'compaction_watermarks']) preserved.add(table);
+    }
     const schema = template.prepare(
       "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END"
     ).all().filter((row) => !preserved.has(row.tbl_name));
@@ -198,6 +203,25 @@ export async function resetData(sqlitePath) {
       if (integrity.length !== 1 || integrity[0].integrity_check !== 'ok') {
         throw new Error('SQLite integrity check failed');
       }
+      let removedDistincts = 0;
+      if (hashDataOnly) {
+        for (const table of historyTables) {
+          const update = database.prepare(`UPDATE ${table} SET rows_json = ? WHERE project = ? AND bucket_from = ?`);
+          const select = `SELECT rowid AS id, project, bucket_from, rows_json FROM ${table}`;
+          const first = database.prepare(`${select} ORDER BY rowid LIMIT 1`).safeIntegers();
+          const next = database.prepare(`${select} WHERE rowid > ? ORDER BY rowid LIMIT 1`).safeIntegers();
+          for (let bucket = first.get(); bucket; bucket = next.get(bucket.id)) {
+            const rows = JSON.parse(bucket.rows_json);
+            if (!Array.isArray(rows) || rows.some((row) => !row || typeof row.kind !== 'string')) {
+              throw new Error('invalid historical rows');
+            }
+            const retained = rows.filter((row) => row.kind !== 'distinct');
+            if (retained.length === rows.length) continue;
+            removedDistincts += rows.length - retained.length;
+            update.run(JSON.stringify(retained), bucket.project, bucket.bucket_from);
+          }
+        }
+      }
       const tables = schema.filter((row) => row.type === 'table');
       let removedRows = 0;
       for (const { name } of tables) {
@@ -209,7 +233,7 @@ export async function resetData(sqlitePath) {
       database.prepare('UPDATE schema_metadata SET version = ? WHERE singleton = 1').run(SqliteStateStore.SCHEMA_VERSION);
       database.pragma(`user_version = ${SqliteStateStore.SCHEMA_VERSION}`);
       validateSqliteSchema(database);
-      return { ok: true, removedRows, schemaVersion: SqliteStateStore.SCHEMA_VERSION };
+      return { ok: true, removedRows, ...(hashDataOnly ? { removedDistincts } : {}), schemaVersion: SqliteStateStore.SCHEMA_VERSION };
     }).immediate();
   } finally {
     if (database) database.close();

@@ -292,3 +292,80 @@ test('reset-data refuses a missing database and a database with an active writer
   }
   assert.equal(loadServerConfig(configPath).sqlite.path, './live.sqlite');
 });
+
+for (const version of [1, 2, 3]) {
+  test(`hash-data-only preserves numeric history and watermarks from schema ${version}`, async (t) => {
+    const { directory, server } = await fixture(t);
+    await server.wardx.stop();
+    const path = join(directory, 'live.sqlite');
+    const db = new Database(path);
+    const projects = db.prepare('SELECT * FROM project_state').all();
+    const numeric = [
+      { kind: 'gauge', name: 'cpu', lastValue: 25, min: 10, max: 30, sampleCount: 5, lastTimestamp: 1000 },
+      { kind: 'counter', name: 'requests', value: 123 },
+      { kind: 'histogram', name: 'latency', count: 2, sum: 12, min: 5, max: 7, buckets: [[10, 2]] }
+    ];
+    const distinct = { kind: 'distinct', name: 'users', precision: 9, registers: Buffer.alloc(512).toString('base64') };
+    for (const table of ['minute_aggregates', 'hour_aggregates', 'day_aggregates']) {
+      const insert = db.prepare(`INSERT INTO ${table} VALUES (?, ?, ?, ?, ?, ?)`);
+      insert.run('demo', 0, 60000, 1, 3, JSON.stringify([...numeric, distinct]));
+      insert.run('demo', 60000, 120000, 0, 0, JSON.stringify([distinct]));
+      insert.run('other', 0, 60000, 0, 0, JSON.stringify(numeric));
+    }
+    db.exec("INSERT INTO compaction_watermarks VALUES ('demo', 'minute', 'hour', 60000, 1000)");
+    const watermarks = db.prepare('SELECT * FROM compaction_watermarks').all();
+    db.exec("INSERT INTO experiment_totals VALUES ('demo', 'exp', 'control', 'client', 'trusted', '{}')");
+    db.exec("INSERT INTO experiment_terminal_decisions VALUES ('demo', 'exp', 0, '{}')");
+    if (version === 1) db.exec('DROP TABLE retention_users; DROP TABLE retention_projects');
+    else {
+      db.exec("INSERT INTO retention_projects VALUES ('demo', 'old-salt', 1)");
+      db.prepare('INSERT INTO retention_users VALUES (?, ?, ?, ?)').run('demo', Buffer.alloc(8), 0, 1);
+    }
+    db.exec(`UPDATE schema_metadata SET version = ${version}; PRAGMA user_version = ${version}`);
+    db.close();
+    const output = JSON.parse(execFileSync(process.execPath, [
+      resolve('packages/server/src/ops/recovery-cli.js'), 'reset-data', path, '--hash-data-only'
+    ], { encoding: 'utf8' }));
+    assert.equal(output.removedDistincts, 6);
+    assert.equal(output.removedRows, version === 1 ? 2 : 4);
+    const fresh = new Database(path);
+    try {
+      assert.deepEqual(fresh.prepare('SELECT * FROM project_state').all(), projects);
+      assert.deepEqual(fresh.prepare('SELECT * FROM compaction_watermarks').all(), watermarks);
+      for (const table of ['minute_aggregates', 'hour_aggregates', 'day_aggregates']) {
+        const buckets = fresh.prepare(`SELECT * FROM ${table} ORDER BY project, bucket_from`).all();
+        assert.equal(buckets.length, 3);
+        assert.deepEqual(JSON.parse(buckets[0].rows_json), numeric);
+        assert.equal(buckets[0].finalized, 1);
+        assert.equal(buckets[0].drop_count, 3);
+        assert.equal(buckets[0].bucket_to, 60000);
+        assert.deepEqual(JSON.parse(buckets[1].rows_json), []);
+        assert.deepEqual(JSON.parse(buckets[2].rows_json), numeric);
+      }
+      for (const table of ['retention_users', 'retention_projects', 'experiment_assignment_ledger', 'experiment_totals', 'experiment_terminal_decisions']) {
+        assert.equal(fresh.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0);
+      }
+      assert.equal(fresh.pragma('user_version', { simple: true }), 3);
+    } finally { fresh.close(); }
+    assert.deepEqual(await resetData(path, { hashDataOnly: true }), { ok: true, removedRows: 0, removedDistincts: 0, schemaVersion: 3 });
+  });
+}
+
+test('hash-data-only rolls back filtered history on failure and rejects unknown CLI flags', async (t) => {
+  const { directory, server } = await fixture(t);
+  await server.wardx.stop();
+  const path = join(directory, 'live.sqlite');
+  const db = new Database(path);
+  db.prepare('INSERT INTO minute_aggregates VALUES (?, ?, ?, ?, ?, ?)')
+    .run('demo', 0, 60000, 0, 0, JSON.stringify([{ kind: 'distinct' }]));
+  db.exec("INSERT INTO hour_aggregates VALUES ('demo', 0, 3600000, 0, 0, 'invalid-json')");
+  const before = db.prepare('SELECT * FROM minute_aggregates').all();
+  db.close();
+  assert.throws(() => execFileSync(process.execPath, [
+    resolve('packages/server/src/ops/recovery-cli.js'), 'reset-data', path, '--hash-only-typo'
+  ], { stdio: 'pipe' }), /Command failed/);
+  await assert.rejects(resetData(path, { hashDataOnly: true }), SyntaxError);
+  const after = new Database(path);
+  try { assert.deepEqual(after.prepare('SELECT * FROM minute_aggregates').all(), before); }
+  finally { after.close(); }
+});
