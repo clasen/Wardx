@@ -108,3 +108,9 @@ void [
   missingPrivacySalt,
   missingGoalMetric
 ];
+
+
+const disabledClient = createWardx({ enabled: false });
+disabledClient.counter('disabled.requests').inc();
+void disabledClient.flush();
+void disabledClient.shutdown();

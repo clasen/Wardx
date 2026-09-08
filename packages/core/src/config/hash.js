@@ -1,6 +1,6 @@
 import xxhash from 'xxhash-wasm';
 
-const { h64ToString } = await xxhash();
+const { h64 } = await xxhash();
 
 const encoder = new TextEncoder();
 
@@ -26,6 +26,10 @@ export function assignmentHash(experimentId, subjectId, salt) {
   return fnv1a32(`${experimentId}:${subjectId}:${salt}`);
 }
 
+export function subjectHash64(projectSalt, subjectId) {
+  return h64(`${projectSalt}\0${subjectId}`);
+}
+
 export function subjectHash(projectSalt, subjectId) {
-  return h64ToString(`${projectSalt}\0${subjectId}`);
+  return subjectHash64(projectSalt, subjectId).toString(16).padStart(16, '0');
 }

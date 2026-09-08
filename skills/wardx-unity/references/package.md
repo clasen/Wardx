@@ -45,6 +45,25 @@ Exports: `WardxClient`, `WardxOptions`, `WardxBehaviour` (Unity), `Dims`, `Conso
   transport. `Stop()` cancels/closes without a final flush. Unity quit/destroy
   callbacks use `Stop()` and must not block the main thread on HTTP.
 
+## Reusing handles
+
+Create metric handles once per client and stable name/dimension combination,
+then reuse them in handlers, callbacks, and loops. This avoids repeated dimension
+validation, series-key construction, and registry lookup. Normal aggregation
+windows and flushes reset values, not handles. Rebind when replacing the client;
+do not mutate a dimension dictionary to retarget an existing handle.
+
+For varying dimensions, bind one recorder per application-owned, bounded value
+set (mode, region, source). Never build an unbounded handle cache keyed by user
+IDs or arbitrary input. Keep histogram buckets fixed. Timer tokens measure one
+operation: create a fresh token for each operation, not one token for the client.
+For a hot duration path, reuse a histogram and observe an application-measured
+elapsed duration instead. Events, logs, retention, and experiment goals remain
+per-occurrence calls.
+
+Prefer typed fields initialized with strings; enums are an optional naming layer
+and do not replace handle reuse.
+
 ## Optional enum usage
 
 Check the consumer's SDK version for enum overloads before generating code.
@@ -62,8 +81,10 @@ enum GameMode { [WardxName("ranked")] Ranked, Casual }
 With `using Wardx;`, these calls inside an application method share one series:
 
 ```csharp
-wardx.Counter(Signal.MatchCompleted, Dims.Of(Dimension.Mode, GameMode.Ranked)).Inc();
-wardx.Counter("match.completed", Dims.Of("mode", "ranked")).Inc();
+var completed = wardx.Counter(Signal.MatchCompleted, Dims.Of(Dimension.Mode, GameMode.Ranked));
+var sameSeries = wardx.Counter("match.completed", Dims.Of("mode", "ranked"));
+completed.Inc();
+sameSeries.Inc();
 ```
 
 `Dims.Of` accepts mixed string/enum keys. Enum values work in dimensions,

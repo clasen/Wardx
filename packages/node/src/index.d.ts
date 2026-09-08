@@ -70,12 +70,14 @@ export interface ExperimentApi {
   goal(name: string, context?: ExperimentGoalContext): void;
 }
 
+export type DisabledWardxOptions = Partial<CreateWardxOptions> & { enabled: false };
+
 export class WardxNode {
-  settings: ResolvedSettings;
+  settings: ResolvedSettings | DisabledWardxOptions;
   log: LogApi;
   config: ConfigApi;
   experiment: ExperimentApi;
-  constructor(settings: ResolvedSettings);
+  constructor(settings: ResolvedSettings | DisabledWardxOptions);
   retentionActivity(userId: string): void;
   identify(subjectId: string | null | undefined): void;
   counter(name: string, dims?: Dimensions | null): CounterHandle;
@@ -88,5 +90,5 @@ export class WardxNode {
   shutdown(): Promise<void>;
 }
 
-export function createWardx(options: CreateWardxOptions): WardxNode;
+export function createWardx(options: CreateWardxOptions | DisabledWardxOptions): WardxNode;
 export function createConsoleTracer(options?: ConsoleTracerOptions): Tracer;

@@ -10,6 +10,8 @@ namespace Wardx
     public sealed class WardxClient : IDisposable
     {
         readonly Settings _settings;
+        readonly bool _enabled;
+        static readonly TimerToken DisabledTimer = new TimerToken(_ => { });
         readonly WardxCore _core;
         readonly ISyncTransport _transport;
         readonly Func<long> _readRssBytes;
@@ -30,15 +32,17 @@ namespace Wardx
         internal WardxClient(Settings settings, ISyncTransport transport, Func<long> readRssBytes, SdkIdentity sdk)
         {
             _settings = settings;
+            _enabled = settings.Enabled;
+            Log = new LogApi(this);
+            Config = new ConfigApi(this);
+            Experiment = new ExperimentApi(this);
+            if (!_enabled) return;
             _core = new WardxCore(settings);
             _transport = transport;
             _readRssBytes = readRssBytes ?? (() => 0);
             _sdk = sdk;
             _instanceId = Ids.Ulid();
             _sessionId = Ids.Ulid();
-            Log = new LogApi(this);
-            Config = new ConfigApi(this);
-            Experiment = new ExperimentApi(this);
         }
 
         internal void AttachScheduler(Action stopScheduler)
@@ -47,13 +51,16 @@ namespace Wardx
         }
 
         internal WardxCore Core => _core;
+        internal bool Enabled => _enabled;
 
         public static WardxClient Create(WardxOptions options)
         {
+            var settings = Settings.Resolve(options);
+            if (!settings.Enabled) return new WardxClient(settings, null, null, null);
 #if UNITY_5_3_OR_NEWER
-            return UnityBootstrap.Start(Settings.Resolve(options));
+            return UnityBootstrap.Start(settings);
 #else
-            return DotnetBootstrap.Start(Settings.Resolve(options));
+            return DotnetBootstrap.Start(settings);
 #endif
         }
 
@@ -73,51 +80,61 @@ namespace Wardx
 
         public ICounter Counter<TName>(TName name, IReadOnlyDictionary<string, object> dims = null) where TName : struct, Enum
         {
+            if (!_enabled) return NoopCounter.Instance;
             return Counter(EnumNames.Resolve(name), dims);
         }
 
         public ICounter Counter(string name, IReadOnlyDictionary<string, object> dims = null)
         {
+            if (!_enabled) return NoopCounter.Instance;
             lock (_gate) return new LockedCounter(_gate, _core.Counter(name, dims));
         }
 
         public IGauge Gauge<TName>(TName name, IReadOnlyDictionary<string, object> dims = null) where TName : struct, Enum
         {
+            if (!_enabled) return NoopGauge.Instance;
             return Gauge(EnumNames.Resolve(name), dims);
         }
 
         public IGauge Gauge(string name, IReadOnlyDictionary<string, object> dims = null)
         {
+            if (!_enabled) return NoopGauge.Instance;
             lock (_gate) return new LockedGauge(_gate, _core.Gauge(name, dims));
         }
 
         public IHistogram Histogram<TName>(TName name, IReadOnlyDictionary<string, object> dims = null, double[] buckets = null) where TName : struct, Enum
         {
+            if (!_enabled) return NoopHistogram.Instance;
             return Histogram(EnumNames.Resolve(name), dims, buckets);
         }
 
         public IHistogram Histogram(string name, IReadOnlyDictionary<string, object> dims = null, double[] buckets = null)
         {
+            if (!_enabled) return NoopHistogram.Instance;
             lock (_gate) return new LockedHistogram(_gate, _core.Histogram(name, dims, buckets));
         }
 
         public IDistinct Distinct<TName>(TName name, IReadOnlyDictionary<string, object> dims = null) where TName : struct, Enum
         {
+            if (!_enabled) return NoopDistinct.Instance;
             return Distinct(EnumNames.Resolve(name), dims);
         }
 
         public IDistinct Distinct(string name, IReadOnlyDictionary<string, object> dims = null)
         {
+            if (!_enabled) return NoopDistinct.Instance;
             lock (_gate) return new LockedDistinct(_gate, _core.Distinct(name, dims));
         }
 
         public TimerToken Timer<TName>(TName name, IReadOnlyDictionary<string, object> dims = null) where TName : struct, Enum
         {
+            if (!_enabled) return DisabledTimer;
             return Timer(EnumNames.Resolve(name), dims);
         }
 
         public TimerToken Timer(string name, IReadOnlyDictionary<string, object> dims = null)
         {
+            if (!_enabled) return DisabledTimer;
             var start = Stopwatch.GetTimestamp();
             return new TimerToken(endDims =>
             {
@@ -131,21 +148,25 @@ namespace Wardx
 
         public void Event<TName>(TName name, IReadOnlyDictionary<string, object> attrs = null) where TName : struct, Enum
         {
+            if (!_enabled) return;
             Event(EnumNames.Resolve(name), attrs);
         }
 
         public void Event(string name, IReadOnlyDictionary<string, object> attrs = null)
         {
+            if (!_enabled) return;
             lock (_gate) _core.Event(name, attrs);
         }
 
         public void RetentionActivity(string userId)
         {
+            if (!_enabled) return;
             lock (_gate) _core.RetentionActivity(userId);
         }
 
         public void Identify(string subjectId)
         {
+            if (!_enabled) return;
             lock (_gate) _core.Identify(subjectId);
         }
 
@@ -156,6 +177,7 @@ namespace Wardx
 
         public Task ShutdownAsync()
         {
+            if (!_enabled) return Task.CompletedTask;
             lock (_lifecycleGate)
             {
                 if (_shutdownTask == null) _shutdownTask = ShutdownCoreAsync();
@@ -189,6 +211,7 @@ namespace Wardx
 
         public void Stop()
         {
+            if (!_enabled) return;
             lock (_lifecycleGate)
             {
                 if (_stopped) return;
@@ -209,6 +232,7 @@ namespace Wardx
 
         internal void AggregateTick()
         {
+            if (!_enabled) return;
             if (_stopped) return;
             lock (_gate)
             {
@@ -219,6 +243,7 @@ namespace Wardx
 
         internal Task EnqueueSync(SyncFlags flags)
         {
+            if (!_enabled) return Task.CompletedTask;
             return RunBoundedSync(flags);
         }
 
@@ -459,21 +484,25 @@ namespace Wardx
 
         internal object ConfigGet(string key, object fallback, string subjectId)
         {
+            if (!_enabled) return fallback;
             lock (_gate) return _core.ConfigGet(key, fallback, subjectId);
         }
 
         internal T ConfigGet<T>(string key, T fallback, string subjectId)
         {
+            if (!_enabled) return fallback;
             lock (_gate) return _core.ConfigGet(key, fallback, subjectId);
         }
 
         internal void Goal(string name, string subjectId, object value)
         {
+            if (!_enabled) return;
             lock (_gate) _core.ExperimentGoal(name, subjectId, value);
         }
 
         internal void WriteLog(string level, string message, IReadOnlyDictionary<string, object> attrs)
         {
+            if (!_enabled) return;
             lock (_gate) _core.WriteLog(level, message, attrs);
         }
     }
@@ -573,6 +602,7 @@ namespace Wardx
 
         public T Get<TKey, T>(TKey key, T fallback, string subjectId = null) where TKey : struct, Enum
         {
+            if (!_client.Enabled) return fallback;
             return Get(EnumNames.Resolve(key), fallback, subjectId);
         }
 
@@ -593,6 +623,7 @@ namespace Wardx
 
         public void Goal<TName>(TName name, string subjectId = null, object value = null) where TName : struct, Enum
         {
+            if (!_client.Enabled) return;
             Goal(EnumNames.Resolve(name), subjectId, value);
         }
 
@@ -613,6 +644,7 @@ namespace Wardx
 
         public void Debug<TName>(TName message, IReadOnlyDictionary<string, object> attrs = null) where TName : struct, Enum
         {
+            if (!_client.Enabled) return;
             Debug(EnumNames.Resolve(message), attrs);
         }
 
@@ -623,6 +655,7 @@ namespace Wardx
 
         public void Info<TName>(TName message, IReadOnlyDictionary<string, object> attrs = null) where TName : struct, Enum
         {
+            if (!_client.Enabled) return;
             Info(EnumNames.Resolve(message), attrs);
         }
 
@@ -633,6 +666,7 @@ namespace Wardx
 
         public void Warn<TName>(TName message, IReadOnlyDictionary<string, object> attrs = null) where TName : struct, Enum
         {
+            if (!_client.Enabled) return;
             Warn(EnumNames.Resolve(message), attrs);
         }
 
@@ -643,6 +677,7 @@ namespace Wardx
 
         public void Error<TName>(TName message, IReadOnlyDictionary<string, object> attrs = null) where TName : struct, Enum
         {
+            if (!_client.Enabled) return;
             Error(EnumNames.Resolve(message), attrs);
         }
 

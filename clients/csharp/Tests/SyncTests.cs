@@ -81,8 +81,70 @@ namespace Wardx.Tests
 
     static class SyncTests
     {
+        enum DisabledName { Value }
+
+        static void DisabledClient()
+        {
+            var options = new WardxOptions { Enabled = false };
+            var transport = new MemoryTransport();
+            var client = WardxClient.Create(options, transport);
+            AssertX.True(client.Core == null, "disabled client has no telemetry engine");
+            var counter = client.Counter("requests");
+            var gauge = client.Gauge("load");
+            var histogram = client.Histogram("latency");
+            var distinct = client.Distinct("users");
+            var timer = client.Timer("duration");
+            options.Enabled = true;
+            var fallback = new object();
+            for (var i = 0; i < 2; i++)
+            {
+                counter.Inc();
+                counter.Add(3);
+                gauge.Set(5);
+                histogram.Observe(12);
+                distinct.Add(null);
+                timer.Stop();
+                client.Event("event");
+                client.Identify(null);
+                client.RetentionActivity(null);
+                client.Log.Debug("debug");
+                client.Log.Info("info");
+                client.Log.Warn("warn");
+                client.Log.Error("error");
+                client.Experiment.Goal("goal");
+                AssertX.True(ReferenceEquals(fallback, client.Config.Get("key", fallback)), "returns caller fallback");
+                var name = (DisabledName)123;
+                client.Counter(name).Inc();
+                client.Gauge(name).Set(1);
+                client.Histogram(name).Observe(1);
+                client.Distinct(name).Add(null);
+                client.Timer(name).Stop();
+                client.Event(name);
+                client.Log.Debug(name);
+                client.Log.Info(name);
+                client.Log.Warn(name);
+                client.Log.Error(name);
+                client.Experiment.Goal(name);
+                AssertX.Equal(7, client.Config.Get(name, 7), "enum config fallback");
+                client.AggregateTick();
+                AssertX.True(client.FlushAsync().IsCompletedSuccessfully, "disabled flush completes immediately");
+                AssertX.True(client.ShutdownAsync().IsCompletedSuccessfully, "disabled shutdown completes immediately");
+                client.Stop();
+                client.Dispose();
+            }
+            AssertX.Equal(0, transport.PostCount, "disabled custom transport unused");
+            AssertX.Equal(0, transport.CloseCount, "disabled custom transport not owned");
+            using (var automatic = WardxClient.Create(new WardxOptions { Enabled = false }))
+            {
+                AssertX.True(automatic.Core == null, "disabled default factory skips bootstrap");
+                AssertX.True(automatic.FlushAsync().IsCompletedSuccessfully, "default disabled flush");
+            }
+            AssertX.Throws(() => WardxClient.Create(new WardxOptions()), "missing required keys");
+        }
+
         public static void Run()
         {
+            DisabledClient();
             var transport = new MemoryTransport();
             var client = WardxClient.Create(new WardxOptions
             {

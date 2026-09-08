@@ -10,11 +10,15 @@ const wardx = createWardx({
   privacySalt: 'demo-subject-hash-v1'
 });
 
+const completed = wardx.counter('match.completed', { mode: 'ranked' });
+const playersOnline = wardx.gauge('players.online');
+const requestDuration = wardx.histogram('request.duration', { buckets: [10, 25, 50, 100, 250] });
+
 wardx.log.info('match_started', { mode: 'ranked', players: 4 });
 wardx.event('match.started', { mode: 'ranked', country: 'AR' });
-wardx.counter('match.completed', { mode: 'ranked' }).inc();
-wardx.gauge('players.online').set(12);
-wardx.histogram('request.duration', { buckets: [10, 25, 50, 100, 250] }).observe(42);
+completed.inc();
+playersOnline.set(12);
+requestDuration.observe(42);
 const end = wardx.timer('matchmaking.duration');
 end({ result: 'success' });
 

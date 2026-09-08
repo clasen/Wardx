@@ -13,7 +13,7 @@ onboarding, experiment definitions, MCP queries, and server operations.
 ## Integrate
 
 Create one instance per intended client lifecycle with `createWardx(options)`.
-Required options are `endpoint`, `projectKey`, `project`, `role`, `appVersion`,
+When enabled, required options are `endpoint`, `projectKey`, `project`, `role`, `appVersion`,
 `environment`, and `privacySalt`. Read them from the application's configuration;
 do not invent deployment values or derive the privacy salt from the key.
 
@@ -27,13 +27,37 @@ import { createWardx } from 'wardx';
 
 const wardx = createWardx(telemetryConfig);
 const requests = wardx.counter('http.requests', { route: 'matchmaking' });
-requests.inc();
+
+function onRequest() {
+  requests.inc();
+}
 ```
 
 Measurement calls are synchronous and update memory only. Bootstrap sync starts
 immediately; later syncs use the configured interval and jitter. Delivery is
 at-most-once: failed batches are discarded, with no disk queue or frame retries.
 Use a different mechanism when loss is unacceptable.
+
+## Reuse metric handles
+
+Create metric handles once per client and stable name/dimension combination,
+then reuse them in handlers, callbacks, and loops. This avoids repeated dimension
+validation, series-key construction, and registry lookup. Normal aggregation
+windows and flushes reset values, not handles. Rebind when replacing the client;
+do not mutate a dimension dictionary to retarget an existing handle.
+
+For varying dimensions, bind one recorder per application-owned, bounded value
+set (mode, region, source). Never build an unbounded handle cache keyed by user
+IDs or arbitrary input. Keep histogram buckets fixed. Timer tokens measure one
+operation: create a fresh token for each operation, not one token for the client.
+For a hot duration path, reuse a histogram and observe an application-measured
+elapsed duration instead. Events, logs, retention, and experiment goals remain
+per-occurrence calls.
+
+`createWardx({ enabled: false })` returns an inert client with usable handles,
+no engine/transport/timers, and immediate flush and shutdown. It needs no
+connection options; config reads return the caller's fallback. This mode is fixed
+at creation.
 
 ## Choose a signal
 

@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { createIngestServer, executeTool, listen } from '@wardx/server';
 import { createWardx } from 'wardx';
@@ -122,6 +125,9 @@ function printQueryWindow(window) {
   }
 }
 
+const temporaryDirectory = mkdtempSync(join(tmpdir(), 'wardx-pipeline-'));
+process.once('exit', () => rmSync(temporaryDirectory, { recursive: true, force: true }));
+
 const server = createIngestServer({
   host: '127.0.0.1',
   port: 0,
@@ -154,7 +160,7 @@ const server = createIngestServer({
   recentEventsMax: 100,
   recentLogsMax: 100,
   sqlite: {
-    path: ':memory:',
+    path: join(temporaryDirectory, 'state.sqlite'),
     journalMode: 'WAL',
     synchronous: 'NORMAL',
     busyTimeoutMs: 5000,
@@ -176,6 +182,7 @@ const server = createIngestServer({
     compactionIntervalMs: 60000
   },
   control: { journalCapacity: 1000, maxConcurrentMcpReads: 8, maxPendingMcpReads: 32 },
+  mcpHttp: { enabled: false },
   capacity: { maxConcurrentSyncHandlers: 256 },
   retention: { maxUsersPerProject: 1000000, maxQueryDays: 366 },
   experiments: { ledgerMaxRows: 1000000 },
@@ -240,30 +247,34 @@ line('');
 for (let i = 0; i < sink.envelopes.length; i++) printEnvelope(sink.envelopes[i], i);
 line(`Remote Config after bootstrap: message.delayMs=${wardx.config.get('message.delayMs', -1)}`);
 
+const ranked = wardx.counter('match.completed', { mode: 'ranked' });
+const casual = wardx.counter('match.completed', { mode: 'casual' });
+const coinsAwarded = wardx.counter('coins.awarded');
+const playersOnline = wardx.gauge('players.online');
+const latency = wardx.histogram('request.duration', { buckets: [10, 25, 50, 100, 250] });
+
 banner('1. REGISTER  (hot path — memory only, no I/O)');
 line('Each call updates a series in the SDK. Nothing is sent yet.');
 line('Same name + same dimensions = one series. Different dimensions = another series.');
 line('');
 
 line('  counter  match.completed {mode:ranked}  inc() × 3');
-const ranked = wardx.counter('match.completed', { mode: 'ranked' });
 ranked.inc();
 ranked.inc();
 ranked.inc();
 
 line('  counter  match.completed {mode:casual}  inc() × 2');
-wardx.counter('match.completed', { mode: 'casual' }).inc();
-wardx.counter('match.completed', { mode: 'casual' }).inc();
+casual.inc();
+casual.inc();
 
 line('  counter  coins.awarded  add(25)');
-wardx.counter('coins.awarded').add(25);
+coinsAwarded.add(25);
 
 line('  gauge    players.online  set(8) then set(12)  → frame keeps the last value');
-wardx.gauge('players.online').set(8);
-wardx.gauge('players.online').set(12);
+playersOnline.set(8);
+playersOnline.set(12);
 
 line('  histogram request.duration  observe(5, 12, 42, 80)');
-const latency = wardx.histogram('request.duration', { buckets: [10, 25, 50, 100, 250] });
 for (const sample of [5, 12, 42, 80]) latency.observe(sample);
 
 line('  timer     matchmaking.duration  start → 18ms → stop');
@@ -292,7 +303,7 @@ for (let i = beforeFirst; i < sink.envelopes.length; i++) {
 }
 
 banner('3. SECOND WINDOW  (another flush in the same minute)');
-line('Counters reset after each snapshot. This flush sends a new delta.');
+line('Counter values reset after each snapshot; the same handles record the new delta.');
 line('The server will sum both deltas inside the same 1-minute window: ranked 3 + 2 = 5.');
 line('');
 line('  counter  match.completed {mode:ranked}  inc() × 2');

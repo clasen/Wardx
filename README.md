@@ -50,6 +50,11 @@ listener reached through an SSH tunnel. There is no admin REST API. The project
 key authenticates a project; client-selected roles only route and separate data
 inside it and are not an authorization boundary.
 
+Bind metric handles once per client and stable dimension set, then reuse them in
+callbacks. In Unity and C#, keep `ICounter`, `IGauge`, `IHistogram`, and `IDistinct`
+as fields; enums are optional. See the [Node pattern](packages/node/README.md#recommended-bind-once-measure-through-handles)
+and [C# / Unity pattern](clients/csharp/README.md#recommended-keep-handles-as-fields).
+
 ## Packages
 
 | Package | Role |

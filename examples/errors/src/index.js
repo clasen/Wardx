@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { createIngestServer, executeTool, listen } from '@wardx/server';
 import { createWardx } from 'wardx';
@@ -41,8 +44,8 @@ function clipStack(err, max = STACK_MAX) {
   return stack.length <= max ? stack : stack.slice(0, max);
 }
 
-function recordFailure(wardx, err) {
-  wardx.counter('payment.error', { code: err.code || 'unknown' }).inc();
+function recordFailure(wardx, errors, err) {
+  errors.inc();
   wardx.log.error('payment_failed', {
     name: err.name,
     code: err.code || 'unknown',
@@ -90,6 +93,9 @@ function printLogRow(row, { stack } = {}) {
   }
 }
 
+const temporaryDirectory = mkdtempSync(join(tmpdir(), 'wardx-errors-'));
+process.once('exit', () => rmSync(temporaryDirectory, { recursive: true, force: true }));
+
 const server = createIngestServer({
   host: '127.0.0.1',
   port: 0,
@@ -122,7 +128,7 @@ const server = createIngestServer({
   recentEventsMax: 100,
   recentLogsMax: 100,
   sqlite: {
-    path: ':memory:',
+    path: join(temporaryDirectory, 'state.sqlite'),
     journalMode: 'WAL',
     synchronous: 'NORMAL',
     busyTimeoutMs: 5000,
@@ -144,6 +150,7 @@ const server = createIngestServer({
     compactionIntervalMs: 60000
   },
   control: { journalCapacity: 1000, maxConcurrentMcpReads: 8, maxPendingMcpReads: 32 },
+  mcpHttp: { enabled: false },
   capacity: { maxConcurrentSyncHandlers: 256 },
   retention: { maxUsersPerProject: 1000000, maxQueryDays: 366 },
   experiments: { ledgerMaxRows: 1000000 },
@@ -199,13 +206,18 @@ banner('1. REGISTER  (hot path — throw, catch, memory only)');
 line(`Simulated charges that throw PaymentError. ${expected} failures.`);
 line('counter(name, dims) is the aggregatable series. log.error carries the stack.');
 line('');
-for (const row of FAILURES) {
+const failures = FAILURES.map((row) => ({
+  ...row,
+  errors: wardx.counter('payment.error', { code: row.code })
+}));
+
+for (const row of failures) {
   line(`  ${String(row.count).padStart(3)} × PaymentError ${row.code}  — ${row.message}`);
   for (let i = 0; i < row.count; i++) {
     try {
       charge(row.code, row.message);
     } catch (err) {
-      recordFailure(wardx, err);
+      recordFailure(wardx, row.errors, err);
     }
   }
 }

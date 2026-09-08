@@ -8,6 +8,26 @@ The SDK records logs, events, and metrics. The SDK also gets Remote Config and a
 
 A measure call changes local memory only. The SDK sends frames on a timer. The SDK uses HTTP `POST /v1/sync` with JSON and gzip.
 
+## Disable the SDK
+
+`enabled` defaults to `true`. Set it when creating the client:
+
+```js
+const wardx = createWardx({ enabled: false });
+const requests = wardx.counter('requests');
+requests.inc();
+await wardx.shutdown();
+```
+
+When disabled, credentials and other connection options are unnecessary. Metric
+handles, timers, events, logs, identity, retention, and experiment goals do nothing.
+The client does not initialize the telemetry engine, transport, or background
+timers, and does not hash identifiers or call the tracer. `flush()` and `shutdown()`
+resolve immediately. `config.get(key, fallback)` returns the supplied fallback.
+
+The mode is fixed at creation; changing the options or `settings` afterward does
+not toggle it. Cached metric handles remain safe to call, including after shutdown.
+
 ## Install
 
 ```bash
@@ -43,7 +63,7 @@ To receive frames, run an ingest server. Install `@wardx/server` and start it wi
 
 ## Start the SDK
 
-`createWardx` requires these keys:
+When enabled, `createWardx` requires these keys:
 
 | Key | Description |
 | --- | --- |
@@ -58,6 +78,48 @@ To receive frames, run an ingest server. Install `@wardx/server` and start it wi
 Optional keys include `tracer` and overrides for centralized values in `@wardx/core` `defaults.json`. `maxFrameBytes` is at least `1024`; `experimentStateMaxSubjects` defaults to `100000` and bounds assignment/exposure state in this SDK instance. Missing or empty `privacySalt` is rejected; it is never derived from the project credential. `tracer` is a local diagnostic hook. It does not go over the wire.
 
 The SDK starts a bootstrap sync immediately. The SDK then syncs on `syncIntervalMs` with jitter.
+
+## Recommended: bind once, measure through handles
+
+Create metric handles once per client and stable name/dimension combination,
+then reuse them in handlers, callbacks, and loops. This avoids repeated dimension
+validation, series-key construction, and registry lookup. Normal aggregation
+windows and flushes reset values, not handles. Rebind when replacing the client;
+do not mutate a dimension dictionary to retarget an existing handle.
+
+For varying dimensions, bind one recorder per application-owned, bounded value
+set (mode, region, source). Never build an unbounded handle cache keyed by user
+IDs or arbitrary input. Keep histogram buckets fixed. Timer tokens measure one
+operation: create a fresh token for each operation, not one token for the client.
+For a hot duration path, reuse a histogram and observe an application-measured
+elapsed duration instead. Events, logs, retention, and experiment goals remain
+per-occurrence calls.
+
+```js
+function createMatchTelemetry(wardx, mode) {
+  const completed = wardx.counter('match.completed', { mode });
+  const duration = wardx.histogram('match.duration_ms', {
+    mode, buckets: [30_000, 60_000, 180_000, 600_000, 1_800_000]
+  });
+  const players = wardx.distinct('match.players', { mode });
+  return {
+    onCompleted(durationMs, userId) {
+      completed.inc();
+      duration.observe(durationMs);
+      players.add(userId);
+    }
+  };
+}
+
+const rankedTelemetry = createMatchTelemetry(wardx, 'ranked');
+// In each ranked-match callback:
+rankedTelemetry.onCompleted(durationMs, userId);
+```
+
+The same setup works with `enabled: false`: cached handles are inert. An inline
+lookup is valid for occasional instrumentation; prefer stored handles for
+recurring work. API reference tables show lookup and measurement together only
+to identify the methods.
 
 ## Use case 1: Instrument a Node.js service
 
@@ -80,10 +142,14 @@ const wardx = createWardx({
 
 wardx.log.info('match_started', { mode: 'ranked', players: 4 });
 wardx.event('match.started', { mode: 'ranked', country: 'AR' });
-wardx.counter('match.completed', { mode: 'ranked' }).inc();
-wardx.gauge('players.online').set(12);
-wardx.histogram('request.duration', { buckets: [10, 25, 50, 100, 250] }).observe(42);
-wardx.distinct('shot.traffic.hids', { result: 'violating' }).add(hid);
+const matchCompleted = wardx.counter('match.completed', { mode: 'ranked' });
+matchCompleted.inc();
+const playersOnline = wardx.gauge('players.online');
+playersOnline.set(12);
+const requestDuration = wardx.histogram('request.duration', { buckets: [10, 25, 50, 100, 250] });
+requestDuration.observe(42);
+const shotTrafficHids = wardx.distinct('shot.traffic.hids', { result: 'violating' });
+shotTrafficHids.add(hid);
 
 const end = wardx.timer('matchmaking.duration');
 end({ result: 'success' });
@@ -108,21 +174,26 @@ Pass the ingest URL, project key, and project name in `createWardx`.
 **Objective:** Use `inc()` for one occurrence. Use `add(n)` for a finite sum.
 
 ```js
-function handleRequest(req, res, wardx) {
-  const requests = wardx.counter('http.requests', { route: 'matchmaking' });
+const requests = wardx.counter('http.requests', { route: 'matchmaking' });
+const errors = wardx.counter('http.errors', { route: 'matchmaking', code: 500 });
+const coinsAwarded = wardx.counter('coins.awarded', { source: 'match' });
+const completedByMode = new Map(['ranked', 'casual'].map((mode) =>
+  [mode, wardx.counter('match.completed', { mode })]
+));
+
+function handleRequest(req, res) {
   requests.inc();
-
-  if (res.statusCode >= 500) {
-    wardx.counter('http.errors', { route: 'matchmaking', code: 500 }).inc();
-  }
+  if (res.statusCode >= 500) errors.inc();
 }
 
-function grantCoins(wardx, amount) {
-  wardx.counter('coins.awarded', { source: 'match' }).add(amount);
+function grantCoins(amount) {
+  coinsAwarded.add(amount);
 }
 
-function completeMatch(wardx, mode) {
-  wardx.counter('match.completed', { mode }).inc();
+function completeMatch(mode) {
+  const completed = completedByMode.get(mode);
+  if (!completed) throw new Error(`Unsupported match mode: ${mode}`);
+  completed.inc();
 }
 ```
 
@@ -131,7 +202,7 @@ To detect abnormal grants, pair this counter with a histogram and a rare anomaly
 ### Procedure
 
 1. Call `counter(name, dims)` to get a series.
-2. Keep that object if you increment in a loop.
+2. Keep that handle in its owning module or component and reuse it across calls and windows.
 3. Call `inc()` to add `1`.
 4. Call `add(n)` to add a finite number.
 
@@ -146,10 +217,16 @@ A counter in a frame is a window delta. The counter is not a lifetime total.
 **Objective:** Call `set(value)` with a finite number. The frame stores the last value and a timestamp.
 
 ```js
-function reportLobby(wardx, lobby) {
-  wardx.gauge('players.online', { region: lobby.region }).set(lobby.playerCount);
-  wardx.gauge('matchmaking.queue_depth').set(lobby.queue.length);
+function createLobbyReporter(wardx, region) {
+  const playersOnline = wardx.gauge('players.online', { region });
+  const queueDepth = wardx.gauge('matchmaking.queue_depth');
+  return (lobby) => {
+    playersOnline.set(lobby.playerCount);
+    queueDepth.set(lobby.queue.length);
+  };
 }
+
+const reportLobby = createLobbyReporter(wardx, 'south-america');
 
 function startQueueProbe(wardx, getQueueDepth) {
   const queue = wardx.gauge('jobs.queue_depth');
@@ -176,15 +253,19 @@ If you do not call `set` in a window, that series is not in the frame.
 **Objective:** Call `observe(value)` so the SDK stores count, sum, min, max, and buckets.
 
 ```js
-function recordRequest(wardx, durationMs, bytes) {
-  wardx.histogram('http.duration_ms', { route: 'checkout' }).observe(durationMs);
-  wardx.histogram('http.payload_bytes', {
-    buckets: [256, 1024, 4096, 16384, 65536]
-  }).observe(bytes);
+const requestDuration = wardx.histogram('http.duration_ms', { route: 'checkout' });
+const payloadBytes = wardx.histogram('http.payload_bytes', {
+  buckets: [256, 1024, 4096, 16384, 65536]
+});
+const awardSize = wardx.histogram('coins.award_size');
+
+function recordRequest(durationMs, bytes) {
+  requestDuration.observe(durationMs);
+  payloadBytes.observe(bytes);
 }
 
-function recordAward(wardx, amount, grantId) {
-  wardx.histogram('coins.award_size').observe(amount, { grantId });
+function recordAward(amount, grantId) {
+  awardSize.observe(amount, { grantId });
 }
 ```
 
@@ -205,15 +286,18 @@ If you start and stop a duration in the same process, use `timer` instead of a h
 **Objective:** Start a timer. Stop the timer when the work ends. The SDK records milliseconds in a histogram.
 
 ```js
-export async function handleMatchmaking(req, res, wardx) {
+const matchmakingOk = wardx.counter('matchmaking.ok');
+const matchmakingError = wardx.counter('matchmaking.error');
+
+export async function handleMatchmaking(req, res) {
   const end = wardx.timer('matchmaking.duration', { route: 'matchmaking' });
   try {
     const result = await findMatch(req.body);
-    wardx.counter('matchmaking.ok').inc();
+    matchmakingOk.inc();
     end({ result: 'success' });
     res.end(JSON.stringify(result));
   } catch (err) {
-    wardx.counter('matchmaking.error').inc();
+    matchmakingError.inc();
     wardx.log.error('matchmaking_failed', { code: err.code || 'unknown' });
     end({ result: 'error' });
     res.statusCode = 500;
@@ -238,26 +322,28 @@ The stop function records milliseconds. Dimensions that you pass to the stop fun
 **Objective:** Call `event(name, attrs)`. Do not use an event when a counter is enough.
 
 ```js
-function onMatchStarted(wardx, match) {
-  wardx.event('match.started', {
-    mode: match.mode,
-    country: match.country,
-    players: match.players.length
-  });
-  wardx.counter('match.started', { mode: match.mode }).inc();
+function createMatchStartedRecorder(wardx, mode) {
+  const started = wardx.counter('match.started', { mode });
+  return (match) => {
+    wardx.event('match.started', { mode, country: match.country, players: match.players.length });
+    started.inc();
+  };
 }
 
-function onPurchase(wardx, order) {
-  wardx.event('purchase', {
-    product: order.product,
-    currency: order.currency,
-    amount: order.amount
-  });
-  wardx.counter('purchase.count', { product: order.product }).inc();
-  wardx.counter('purchase.amount', { currency: order.currency }).add(order.amount);
+function createPurchaseRecorder(wardx, product, currency) {
+  const purchases = wardx.counter('purchase.count', { product });
+  const amount = wardx.counter('purchase.amount', { currency });
+  return (order) => {
+    wardx.event('purchase', { product, currency, amount: order.amount });
+    purchases.inc();
+    amount.add(order.amount);
+  };
 }
 
-function onSignup(wardx, user) {
+const onMatchStarted = createMatchStartedRecorder(wardx, 'ranked');
+const onPurchase = createPurchaseRecorder(wardx, 'coins-small', 'USD');
+
+function onSignup(user) {
   wardx.event('signup.completed', { method: user.method });
 }
 ```
@@ -283,21 +369,28 @@ Wardx does not store a user journey. Delivery is at-most-once. Production discar
 Give each step its own name. Do not reuse `screen.view` with a `surface` attr as the funnel. Use `surface` only as a counter dimension when you also need a breakdown of one step.
 
 ```js
-function onOnboardingStart(wardx, channel) {
-  wardx.event('onboarding.start', { channel });
-  wardx.counter('onboarding.start', { channel }).inc();
+function createOnboardingTelemetry(wardx, channel) {
+  const started = wardx.counter('onboarding.start', { channel });
+  const profile = wardx.counter('onboarding.profile');
+  const done = wardx.counter('onboarding.done');
+  return {
+    onStart() {
+      wardx.event('onboarding.start', { channel });
+      started.inc();
+    },
+    onProfile() {
+      wardx.event('onboarding.profile');
+      profile.inc();
+    },
+    onDone(userId) {
+      wardx.event('onboarding.done');
+      done.inc();
+      wardx.experiment.goal('onboarding.done', { subjectId: userId });
+    }
+  };
 }
 
-function onOnboardingProfile(wardx) {
-  wardx.event('onboarding.profile');
-  wardx.counter('onboarding.profile').inc();
-}
-
-function onOnboardingDone(wardx, userId) {
-  wardx.event('onboarding.done');
-  wardx.counter('onboarding.done').inc();
-  wardx.experiment.goal('onboarding.done', { subjectId: userId });
-}
+const onboarding = createOnboardingTelemetry(wardx, 'organic');
 ```
 
 ### Procedure
@@ -361,22 +454,28 @@ Retention requires a server with this feature; older servers cannot compute it.
 Wardx is not a ledger. Delivery is at-most-once. Production discards envelopes after ingest (`sink: "null"`). A player's wallet, and the row that explains one grant, live in the game database. Wardx answers whether the fleet is granting too much, or too large, in a 1-minute window.
 
 ```js
-function grantCoins(wardx, grant) {
-  const { source, amount, reason, id } = grant;
+function createGrantRecorder(wardx, source) {
+  const awarded = wardx.counter('coins.awarded', { source });
+  const grants = wardx.counter('coins.grants', { source });
+  const size = wardx.histogram('coins.award_size', {
+    source, buckets: [10, 50, 100, 250, 500, 1000, 5000]
+  });
+  return ({ amount, reason, id }) => {
+    awarded.add(amount);
+    grants.inc();
+    size.observe(amount, { grantId: id, reason });
 
-  wardx.counter('coins.awarded', { source }).add(amount);
-  wardx.counter('coins.grants', { source }).inc();
-  wardx.histogram('coins.award_size', {
-    source,
-    buckets: [10, 50, 100, 250, 500, 1000, 5000]
-  }).observe(amount, { grantId: id, reason });
-
-  const maxAward = wardx.config.get('economy.maxAward', 500);
-  if (amount > maxAward) {
-    wardx.event('coins.anomaly', { source, amount, reason, grantId: id });
-    wardx.log.warn('coins_anomaly', { source, amount, reason, grantId: id });
-  }
+    const maxAward = wardx.config.get('economy.maxAward', 500);
+    if (amount > maxAward) {
+      wardx.event('coins.anomaly', { source, amount, reason, grantId: id });
+      wardx.log.warn('coins_anomaly', { source, amount, reason, grantId: id });
+    }
+  };
 }
+
+const recordMatchGrant = createGrantRecorder(wardx, 'match');
+// After committing each match reward:
+recordMatchGrant({ amount: 50, reason: 'win', id: 'grant-42' });
 ```
 
 `source` is a small set, for example `match`, `daily`, `purchase`, or `admin`.
@@ -436,19 +535,20 @@ The ingest server config can define experiment `message-delay-v1` on key `messag
 On a client with one user, call `identify` once after login. Later `config.get` and `experiment.goal` use that subject. On a server that handles many users, pass `{ subjectId }` on every call. Do not use one SDK instance's default there; it would mix users.
 
 ```js
+const messagesSent = wardx.counter('message.sent');
 wardx.identify(userId);
 const delayMs = wardx.config.get('message.delayMs', 1000);
 setTimeout(() => {
   deliver(text);
-  wardx.counter('message.sent').inc();
+  messagesSent.inc();
   wardx.experiment.goal('message.sent', { value: 1 });
 }, delayMs);
 
-function sendMessage(wardx, userId, text) {
+function sendMessage(userId, text) {
   const delayMs = wardx.config.get('message.delayMs', 1000, { subjectId: userId });
   setTimeout(() => {
     deliver(text);
-    wardx.counter('message.sent').inc();
+    messagesSent.inc();
     wardx.experiment.goal('message.sent', { subjectId: userId, value: 1 });
   }, delayMs);
 }
@@ -483,7 +583,8 @@ const wardx = createWardx({
   privacySalt: 'demo-subject-hash-v1'
 });
 
-wardx.counter('jobs.completed').inc();
+const jobsCompleted = wardx.counter('jobs.completed');
+jobsCompleted.inc();
 await wardx.shutdown();
 ```
 
@@ -561,22 +662,28 @@ Two signals:
 
 ```js
 const SESSION_BUCKETS = [30_000, 60_000, 180_000, 300_000, 600_000, 1_200_000, 1_800_000, 3_600_000];
+const sessionDuration = wardx.histogram('session.duration', { buckets: SESSION_BUCKETS });
+const sessionTime = wardx.counter('session.time_ms');
+const sessionsEnded = wardx.counter('session.ended');
 
-function onPlaySessionStart(wardx, userId) {
+function onPlaySessionStart(userId) {
   wardx.identify(userId);
-  return { startedAt: Date.now() };
+  return { startedAt: performance.now(), reportedMs: 0 };
 }
 
-function onPlaySessionEnd(wardx, session) {
-  const durationMs = Date.now() - session.startedAt;
-  wardx.histogram('session.duration', { buckets: SESSION_BUCKETS }).observe(durationMs);
-  wardx.counter('session.time_ms').add(durationMs);
-  wardx.counter('session.ended').inc();
+function onPlayHeartbeat(session) {
+  const elapsedMs = performance.now() - session.startedAt;
+  sessionTime.add(elapsedMs - session.reportedMs);
+  session.reportedMs = elapsedMs;
+}
+
+function onPlaySessionEnd(session) {
+  const durationMs = performance.now() - session.startedAt;
+  sessionDuration.observe(durationMs);
+  sessionTime.add(durationMs - session.reportedMs);
+  session.reportedMs = durationMs;
+  sessionsEnded.inc();
   wardx.experiment.goal('session.duration', { value: durationMs });
-}
-
-function onPlayHeartbeat(wardx, elapsedMs) {
-  wardx.counter('session.time_ms').add(elapsedMs);
 }
 ```
 
@@ -603,22 +710,29 @@ If you only increment `session.time_ms` and never emit the goal, MCP can still s
 The keys must already exist in Remote Config. The game reads them with `config.get`. Variants may only change those keys.
 
 ```js
-function onLevelStart(wardx, userId, levelId) {
-  const enemyHp = wardx.config.get(`level.${levelId}.enemyHp`, 100, { subjectId: userId });
-  wardx.event('level.start', { level: levelId });
-  wardx.counter('level.start', { level: levelId }).inc();
-  return enemyHp;
+function createLevelTelemetry(wardx, levelId) {
+  const started = wardx.counter('level.start', { level: levelId });
+  const failed = wardx.counter('level.fail', { level: levelId });
+  const completed = wardx.counter('level.complete', { level: levelId });
+  return {
+    onStart(userId) {
+      const enemyHp = wardx.config.get(`level.${levelId}.enemyHp`, 100, { subjectId: userId });
+      wardx.event('level.start', { level: levelId });
+      started.inc();
+      return enemyHp;
+    },
+    onFail() {
+      wardx.event('level.fail', { level: levelId });
+      failed.inc();
+    },
+    onComplete() {
+      wardx.event('level.complete', { level: levelId });
+      completed.inc();
+    }
+  };
 }
 
-function onLevelFail(wardx, levelId) {
-  wardx.event('level.fail', { level: levelId });
-  wardx.counter('level.fail', { level: levelId }).inc();
-}
-
-function onLevelComplete(wardx, levelId) {
-  wardx.event('level.complete', { level: levelId });
-  wardx.counter('level.complete', { level: levelId }).inc();
-}
+const levelThree = createLevelTelemetry(wardx, 3);
 ```
 
 `level` is a small set of ids. Do not put a unique run id on the counter.
@@ -636,12 +750,18 @@ From MCP, after onboarding: `upsert_experiment` on the existing keys (`level.3.e
 **Objective:** Count the failure. Log the error with a stack or a provider code. Wardx does not edit source. MCP returns the row. The agent uses `path` or `git` on that role, plus its own file permissions, to change the code.
 
 ```js
-function handleCheckout(req, res, wardx) {
+const paymentOk = wardx.counter('payment.ok');
+const paymentErrors = new Map(['timeout', 'card_declined', 'unknown'].map((code) =>
+  [code, wardx.counter('payment.error', { code })]
+));
+
+function handleCheckout(req, res) {
   try {
     charge(req.body);
-    wardx.counter('payment.ok').inc();
+    paymentOk.inc();
   } catch (err) {
-    wardx.counter('payment.error', { code: err.code || 'unknown' }).inc();
+    const errors = paymentErrors.get(err.code) ?? paymentErrors.get('unknown');
+    errors.inc();
     wardx.log.error('payment_failed', {
       name: err.name,
       code: err.code || 'unknown',
@@ -658,6 +778,10 @@ function clipStack(err, max = 4096) {
   return stack.length <= max ? stack : stack.slice(0, max);
 }
 ```
+
+Use the provider's finite error-code vocabulary in `paymentErrors`; map other
+codes to `unknown` without growing the handle cache. The original code remains
+in the log attrs.
 
 `stack` is an attr string. Do not send the Error object.
 

@@ -6,6 +6,7 @@ import {
   nextSyncDelayMs,
   ulid
 } from '@wardx/core';
+import { disabledCore } from './disabled.js';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,13 +21,8 @@ const pkg = JSON.parse(
 export class WardxNode {
   constructor(settings) {
     this.settings = settings;
-    this._core = new WardxCore(settings);
-    this._transport = createHttpTransport(settings);
-    this._stopped = false;
-    this._shutdownPromise = null;
-    this._syncChain = Promise.resolve();
-    this._instanceId = ulid();
-    this._sessionId = ulid();
+    this._disabled = settings.enabled === false;
+    this._core = this._disabled ? disabledCore : new WardxCore(settings);
     this.log = this._core.log;
     this.config = {
       get: (key, fallback, context) => this._core.configGet(key, fallback, context)
@@ -34,6 +30,13 @@ export class WardxNode {
     this.experiment = {
       goal: (name, context) => this._core.experimentGoal(name, context)
     };
+    if (this._disabled) return;
+    this._transport = createHttpTransport(settings);
+    this._stopped = false;
+    this._shutdownPromise = null;
+    this._syncChain = Promise.resolve();
+    this._instanceId = ulid();
+    this._sessionId = ulid();
     this._aggregateTimer = setInterval(() => {
       this._core.internal.processRssBytes = readProcessRssBytes();
       this._core.snapshotIfDirty();
@@ -76,10 +79,12 @@ export class WardxNode {
   }
 
   flush() {
+    if (this._disabled) return Promise.resolve();
     return this._enqueueSync({ flush: true });
   }
 
   shutdown() {
+    if (this._disabled) return Promise.resolve();
     if (this._shutdownPromise === null) this._shutdownPromise = this._shutdown();
     return this._shutdownPromise;
   }

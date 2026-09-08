@@ -1,8 +1,9 @@
-import { subjectHash } from '../config/hash.js';
+import { subjectHash64 } from '../config/hash.js';
 
 export const HLL_PRECISION = 9;
 export const HLL_REGISTER_COUNT = 1 << HLL_PRECISION;
 export const HLL_MAX_RANK = 64 - HLL_PRECISION + 1;
+const INDEX_SHIFT = BigInt(64 - HLL_PRECISION);
 
 function assertRegisters(registers) {
   if (!(registers instanceof Uint8Array) || registers.length !== HLL_REGISTER_COUNT) {
@@ -13,13 +14,10 @@ function assertRegisters(registers) {
   }
 }
 
-function rankAfterIndex(digest) {
-  let rank = 1;
-  for (let bit = HLL_PRECISION; bit < 64; bit++) {
-    if ((digest[bit >> 3] & (1 << (7 - (bit & 7)))) !== 0) return rank;
-    rank += 1;
-  }
-  return rank;
+export function rankAfterIndex(digest) {
+  const remainingHigh = Number(digest >> 32n) << HLL_PRECISION;
+  if (remainingHigh !== 0) return Math.clz32(remainingHigh) + 1;
+  return 32 - HLL_PRECISION + Math.clz32(Number(digest & 0xffffffffn)) + 1;
 }
 
 export function encodeHllRegisters(registers) {
@@ -82,8 +80,8 @@ export class HyperLogLog {
     if (typeof identifier !== 'string' || identifier.length === 0) {
       throw new Error('distinct.add requires a non-empty string');
     }
-    const digest = Buffer.from(subjectHash(this.privacySalt, identifier), 'hex');
-    const index = (digest[0] << 1) | (digest[1] >> 7);
+    const digest = subjectHash64(this.privacySalt, identifier);
+    const index = Number(digest >> INDEX_SHIFT);
     const rank = rankAfterIndex(digest);
     if (rank > this.registers[index]) this.registers[index] = rank;
     this.dirty = true;

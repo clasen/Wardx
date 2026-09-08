@@ -5,6 +5,7 @@ namespace Wardx
 {
     public sealed class WardxOptions
     {
+        public bool Enabled = true;
         public string Endpoint;
         public string ProjectKey;
         public string Project;
@@ -30,6 +31,7 @@ namespace Wardx
 
     public sealed class Settings
     {
+        public bool Enabled = true;
         public string Endpoint;
         public string ProjectKey;
         public string Project;
@@ -55,6 +57,7 @@ namespace Wardx
         public static Settings Resolve(WardxOptions options)
         {
             if (options == null) throw new ArgumentException("createWardx requires an options object");
+            if (!options.Enabled) return new Settings { Enabled = false };
             var missing = new List<string>();
             Require(options.Endpoint, "endpoint", missing);
             Require(options.ProjectKey, "projectKey", missing);

@@ -79,11 +79,16 @@ const settings = {
 
 const core = new WardxCore(settings);
 
-core.counter('match.completed', { mode: 'ranked' }).inc();
-core.counter('coins.awarded').add(25);
-core.gauge('players.online').set(12921);
-core.histogram('request.duration').observe(42);
-core.distinct('shot.traffic.hids', { result: 'violating' }).add(hid);
+const completed = core.counter('match.completed', { mode: 'ranked' });
+completed.inc();
+const coinsAwarded = core.counter('coins.awarded');
+coinsAwarded.add(25);
+const playersOnline = core.gauge('players.online');
+playersOnline.set(12921);
+const requestDuration = core.histogram('request.duration');
+requestDuration.observe(42);
+const shotTrafficHids = core.distinct('shot.traffic.hids', { result: 'violating' });
+shotTrafficHids.add(hid);
 
 const endTimer = core.timer('matchmaking.duration');
 endTimer({ result: 'success' });
@@ -108,8 +113,10 @@ const frames = core.takePendingFrames();
 `histogram(name).observe(value)` records a finite value into buckets. You can set buckets:
 
 ```js
-core.histogram('request.duration', { buckets: [10, 25, 50, 100] }).observe(42);
-core.histogram('coins.award_size').observe(80, { grantId: 'g-80' });
+const requestDuration = core.histogram('request.duration', { buckets: [10, 25, 50, 100] });
+requestDuration.observe(42);
+const coinsAwardSize = core.histogram('coins.award_size');
+coinsAwardSize.observe(80, { grantId: 'g-80' });
 ```
 
 `observe(value, attrs)` keeps `attrs` only when `value` is the window max. The frame stores that pair as `exemplar`. Attrs use the same key and value limits as dimensions. Do not change the buckets of an existing series. The engine throws an error.
@@ -250,7 +257,8 @@ If `bucket >= allocation`, `assignVariant` returns `null`.
 ```js
 import { FrameBuilder, PROTOCOL_VERSION, SDK_NAME, PLATFORM } from '@wardx/core';
 
-core.counter('match.completed').inc();
+const matchCompleted = core.counter('match.completed');
+matchCompleted.inc();
 const batch = core.snapshotIfDirty();
 if (batch) {
   const frames = core.takePendingFrames();
@@ -311,3 +319,13 @@ server persists UTC cohorts and exact received-user D1/D7/D30 returns; the core
 does not infer activity or keep a durable client identity/outbox. Use the same
 user ID and privacy salt across sessions and clients. See the
 [Node retention contract](../node/README.md#user-retention-d1--d7--d30).
+
+## Reuse metric handles
+
+Bind counters, gauges, histograms, and distinct handles once per stable name and
+dimension set. Keep them in the owning module or component and measure through
+the handles in callbacks. This avoids repeated dimension validation and registry
+lookup. Normal snapshots reset values while preserving handles; recreate bindings
+when replacing the core. Timer stop functions belong to individual operations.
+See the [Node pattern](../node/README.md#recommended-bind-once-measure-through-handles)
+and [C# field pattern](../../clients/csharp/README.md#recommended-keep-handles-as-fields).

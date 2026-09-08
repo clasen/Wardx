@@ -288,3 +288,52 @@ test('real connection failure is at-most-once and reports frames_failed after re
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
 });
+
+
+test('disabled SDK leaves telemetry inert without connections or scheduling', async (t) => {
+  const unexpected = () => { throw new Error('disabled client performed work'); };
+  t.mock.method(globalThis, 'setInterval', unexpected);
+  t.mock.method(globalThis, 'setTimeout', unexpected);
+  const unreadable = new Proxy({}, { get: unexpected, ownKeys: unexpected });
+  const options = { enabled: false, tracer: unreadable };
+  const wardx = createWardx(options);
+  const counter = wardx.counter('requests', unreadable);
+  const gauge = wardx.gauge('load', unreadable);
+  const histogram = wardx.histogram('latency', unreadable);
+  const distinct = wardx.distinct('users', unreadable);
+  const stop = wardx.timer('duration', unreadable);
+  const fallback = { value: 7 };
+  options.enabled = true;
+  wardx.settings.enabled = true;
+  for (let i = 0; i < 2; i++) {
+    counter.inc();
+    counter.add(3);
+    gauge.set(5);
+    histogram.observe(12, unreadable);
+    distinct.add(unreadable);
+    stop(unreadable);
+    wardx.event('event', unreadable);
+    wardx.identify(unreadable);
+    wardx.retentionActivity(unreadable);
+    for (const level of ['debug', 'info', 'warn', 'error']) wardx.log[level]('message', unreadable);
+    wardx.experiment.goal('goal', unreadable);
+    assert.equal(wardx.config.get('key', fallback, unreadable), fallback);
+    await wardx.flush();
+    await wardx.shutdown();
+  }
+  assert.equal(wardx._transport, undefined);
+  assert.equal(wardx._aggregateTimer, undefined);
+  assert.equal(wardx._syncTimer, undefined);
+  assert.equal(wardx._core.metrics, undefined);
+  assert.equal(wardx._core.events, undefined);
+  assert.equal(wardx._core.logs, undefined);
+});
+
+test('only boolean false disables SDK validation', () => {
+  for (const enabled of [true, undefined]) {
+    assert.throws(() => createWardx({ enabled }), /missing required keys/);
+  }
+  for (const enabled of [null, 0, 'false']) {
+    assert.throws(() => createWardx({ enabled }), /enabled must be a boolean/);
+  }
+});

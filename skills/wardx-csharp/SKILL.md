@@ -16,7 +16,7 @@ Reference `clients/csharp/Runtime/Wardx.csproj` and use `using Wardx;`.
 Create the client with `WardxClient.Create(options)`. The .NET runtime is selected
 when `UNITY_5_3_OR_NEWER` is not defined.
 
-Required `WardxOptions` fields: `Endpoint`, `ProjectKey`, `Project`, `Role`,
+When enabled, required `WardxOptions` fields: `Endpoint`, `ProjectKey`, `Project`, `Role`,
 `AppVersion`, `Environment`, and `PrivacySalt`. Use the application's configuration;
 do not invent deployment values or derive the privacy salt from the key.
 `Project` must match the credential's server mapping. `Role` is an open name other
@@ -27,15 +27,54 @@ live in `SdkDefaults`, aligned with `packages/core/defaults.json`.
 ```csharp
 using Wardx;
 
-var wardx = WardxClient.Create(telemetryOptions);
-var completed = wardx.Counter("match.completed", Dims.Of("mode", "ranked"));
-completed.Inc();
+public sealed class MatchTelemetry
+{
+    readonly ICounter completed;
+    readonly IHistogram duration;
+
+    public MatchTelemetry(WardxClient wardx, string mode)
+    {
+        completed = wardx.Counter("match.completed", Dims.Of("mode", mode));
+        duration = wardx.Histogram("match.duration_ms", Dims.Of("mode", mode),
+            new double[] { 30000, 60000, 180000, 600000, 1800000 });
+    }
+
+    public void OnCompleted(double durationMs)
+    {
+        completed.Inc();
+        duration.Observe(durationMs);
+    }
+}
 ```
+
+Create this recorder once after creating the client and keep it as a service
+field, one per supported mode. The recorder does not own client shutdown.
 
 Measurements are synchronous memory updates, not Tasks or network calls.
 Bootstrap sync starts immediately; later syncs use the configured interval and
 jitter. Delivery is at-most-once: failed batches are discarded, without disk
 queues or retries of the same frames. Use a different mechanism for lossless data.
+
+## Reuse metric handles
+
+Create metric handles once per client and stable name/dimension combination,
+then reuse them in handlers, callbacks, and loops. This avoids repeated dimension
+validation, series-key construction, and registry lookup. Normal aggregation
+windows and flushes reset values, not handles. Rebind when replacing the client;
+do not mutate a dimension dictionary to retarget an existing handle.
+
+For varying dimensions, bind one recorder per application-owned, bounded value
+set (mode, region, source). Never build an unbounded handle cache keyed by user
+IDs or arbitrary input. Keep histogram buckets fixed. Timer tokens measure one
+operation: create a fresh token for each operation, not one token for the client.
+For a hot duration path, reuse a histogram and observe an application-measured
+elapsed duration instead. Events, logs, retention, and experiment goals remain
+per-occurrence calls.
+
+`WardxClient.Create(new WardxOptions { Enabled = false })` returns an inert
+client with usable handles, no engine/transport/scheduler, and immediate flush
+and shutdown. It needs no connection options; config reads return the caller's
+fallback. This mode is fixed at creation.
 
 ## Choose a signal
 
@@ -59,7 +98,11 @@ Use low-cardinality string, number, boolean, or enum dimension values via
 Count/length/series limits yield no-op series and increment cardinality drops;
 invalid value types or enum values throw. Histogram bounds are fixed per series;
 attrs retain only the window-max exemplar. Redact diagnostic attrs as needed.
-Enums are optional; preserve existing string calls and wire names. Read the enum
+Prefer `ICounter`, `IGauge`, `IHistogram`, and `IDistinct` fields initialized
+in the owning component or service setup. Wire-name strings belong there;
+measurement sites call the fields directly. Do not introduce enums solely to
+avoid repeated metric strings. Enums remain optional for shared application
+names; preserve existing enum integrations and wire names. Read the enum
 reference before using mappings or overloads in a version-pinned consumer.
 
 Distinct counts send salted HLL sketches, not identifiers. Volume funnels compare
