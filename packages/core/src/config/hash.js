@@ -1,4 +1,6 @@
-import { createHash } from 'node:crypto';
+import xxhash from 'xxhash-wasm';
+
+const { h64ToString } = await xxhash();
 
 const encoder = new TextEncoder();
 
@@ -25,9 +27,5 @@ export function assignmentHash(experimentId, subjectId, salt) {
 }
 
 export function subjectHash(projectSalt, subjectId) {
-  return createHash('sha256')
-    .update(projectSalt, 'utf8')
-    .update('\0', 'utf8')
-    .update(subjectId, 'utf8')
-    .digest('hex');
+  return h64ToString(`${projectSalt}\0${subjectId}`);
 }

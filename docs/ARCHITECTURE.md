@@ -101,9 +101,9 @@ complete fixed-horizon plan: outcome kind, control, target sample size per
 variant, earliest analysis time, family-wise alpha, minimum effect, direction,
 and every evidence-health threshold.
 
-The SDK emits a SHA-256 assignment hash, never the raw unit. The SQLite ledger
+The SDK emits a XXHash64 assignment hash, never the raw unit. The SQLite ledger
 accepts the first exposure and first matching goal for each project,
-experiment, and 256-bit hash. Duplicate exposures/goals, conflicting goals,
+experiment, and 64-bit hash. Duplicate exposures/goals, conflicting goals,
 variant conflicts, missing exposures, untrusted rows, and late rows are counted
 without changing accepted totals. Exposure and goal provenance must match.
 

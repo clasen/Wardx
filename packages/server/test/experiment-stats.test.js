@@ -51,13 +51,13 @@ function experimentEnvelope(now = Date.now()) {
         to: now + 1,
         metrics: { counters: [], gauges: [], histograms: [] },
         events: [
-          [now, 'experiment.exposure', { experiment: 'delay', variant: 'fast', subject: 'ab'.repeat(32) }],
+          [now, 'experiment.exposure', { experiment: 'delay', variant: 'fast', subject: 'ab'.repeat(8) }],
           [
             now,
             'experiment.goal',
             {
               metric: 'message.sent',
-              subject: 'ab'.repeat(32),
+              subject: 'ab'.repeat(8),
               experiments: [{ experiment: 'delay', variant: 'fast' }],
               value: 4
             }

@@ -1,6 +1,6 @@
 const DAY_MS = 86_400_000;
 const RETURN_DAYS = [1, 7, 30];
-const HASH = /^[0-9a-f]{64}$/;
+const HASH = /^[0-9a-f]{16}$/;
 
 export class RetentionInputError extends Error {}
 export class RetentionCapacityError extends Error {}

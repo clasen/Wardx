@@ -1,7 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Security.Cryptography;
-using System.Text;
 
 namespace Wardx
 {
@@ -51,12 +49,8 @@ namespace Wardx
             {
                 throw new ArgumentException("distinct.add requires a non-empty string");
             }
-            byte[] digest;
-            using (var sha = SHA256.Create())
-            {
-                digest = sha.ComputeHash(Encoding.UTF8.GetBytes(_privacySalt + "\0" + identifier));
-            }
-            var index = (digest[0] << 1) | (digest[1] >> 7);
+            var digest = Hash.SubjectHash64(_privacySalt, identifier);
+            var index = (int)(digest >> (64 - Precision));
             var rank = RankAfterIndex(digest);
             if (rank > _registers[index]) _registers[index] = rank;
             Dirty = true;
@@ -73,12 +67,12 @@ namespace Wardx
             Dirty = false;
         }
 
-        static byte RankAfterIndex(byte[] digest)
+        static byte RankAfterIndex(ulong digest)
         {
             byte rank = 1;
             for (var bit = Precision; bit < 64; bit++)
             {
-                if ((digest[bit >> 3] & (1 << (7 - (bit & 7)))) != 0) return rank;
+                if ((digest & (1UL << (63 - bit))) != 0) return rank;
                 rank++;
             }
             return rank;

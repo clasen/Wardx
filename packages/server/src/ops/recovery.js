@@ -5,7 +5,7 @@ import { constants } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import Database from 'better-sqlite3';
 import { loadServerConfig, validateServerConfig } from '../loadConfig.js';
-import { validateSqliteSchema } from '../storage/SqliteStateStore.js';
+import { SqliteStateStore, validateSqliteSchema } from '../storage/SqliteStateStore.js';
 import { normalizeHistoryBucket } from '../aggregation/history/HistoryBucket.js';
 
 const FILES = ['config.json', 'state.sqlite'];
@@ -173,5 +173,46 @@ export async function restore(directory, destination) {
     return { ...result, configPath: resolve(destination, 'config.json') };
   } catch {
     throw new Error('Restore failed: verify the backup and use a new destination directory; incomplete output is retained.');
+  }
+}
+
+export async function resetData(sqlitePath) {
+  const source = resolve(sqlitePath);
+  await requireFile(source);
+  const template = new Database(':memory:');
+  let database;
+  try {
+    SqliteStateStore.initializeSchema(template);
+    const preserved = new Set(['schema_metadata', 'project_state', 'mutation_journal']);
+    const schema = template.prepare(
+      "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END"
+    ).all().filter((row) => !preserved.has(row.tbl_name));
+    database = new Database(source, { fileMustExist: true, timeout: 0 });
+    return database.transaction(() => {
+      const version = database.pragma('user_version', { simple: true });
+      if (![1, 2, SqliteStateStore.SCHEMA_VERSION].includes(version)) {
+        throw new Error(`unsupported SQLite schema version ${version}`);
+      }
+      validateSqliteSchema(database, version);
+      const integrity = database.pragma('integrity_check');
+      if (integrity.length !== 1 || integrity[0].integrity_check !== 'ok') {
+        throw new Error('SQLite integrity check failed');
+      }
+      const tables = schema.filter((row) => row.type === 'table');
+      let removedRows = 0;
+      for (const { name } of tables) {
+        if (version === 1 && name.startsWith('retention_')) continue;
+        removedRows += database.prepare(`SELECT COUNT(*) AS count FROM "${name}"`).get().count;
+        database.exec(`DROP TABLE "${name}"`);
+      }
+      for (const { sql } of schema) database.exec(sql);
+      database.prepare('UPDATE schema_metadata SET version = ? WHERE singleton = 1').run(SqliteStateStore.SCHEMA_VERSION);
+      database.pragma(`user_version = ${SqliteStateStore.SCHEMA_VERSION}`);
+      validateSqliteSchema(database);
+      return { ok: true, removedRows, schemaVersion: SqliteStateStore.SCHEMA_VERSION };
+    }).immediate();
+  } finally {
+    if (database) database.close();
+    template.close();
   }
 }

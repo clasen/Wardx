@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { subjectHash } from '../config/hash.js';
 
 export const HLL_PRECISION = 9;
 export const HLL_REGISTER_COUNT = 1 << HLL_PRECISION;
@@ -82,11 +82,7 @@ export class HyperLogLog {
     if (typeof identifier !== 'string' || identifier.length === 0) {
       throw new Error('distinct.add requires a non-empty string');
     }
-    const digest = createHash('sha256')
-      .update(this.privacySalt, 'utf8')
-      .update('\0', 'utf8')
-      .update(identifier, 'utf8')
-      .digest();
+    const digest = Buffer.from(subjectHash(this.privacySalt, identifier), 'hex');
     const index = (digest[0] << 1) | (digest[1] >> 7);
     const rank = rankAfterIndex(digest);
     if (rank > this.registers[index]) this.registers[index] = rank;

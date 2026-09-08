@@ -40,8 +40,7 @@ This roadmap does not add:
 - an HTTP admin API, dashboard, or approval UI;
 - horizontal ingest replicas, leader election, multi-host replication, or
   automatic failover;
-- generic migration/import paths for pre-existing Wardx deployments (the
-  retention feature provides a transactional SQLite schema v1-to-v2 upgrade);
+- generic migration/import paths for pre-existing Wardx deployments;
 - automatic scheduling of a later agent run.
 
 Cluster mode is not a prerequisite for a production Wardx deployment. It is an
@@ -429,7 +428,7 @@ Verification:
 
 ### EXP-1: active assignment-unit ledger
 
-Persist a non-queryable ledger keyed by project, experiment, and 256-bit hashed
+Persist a non-queryable ledger keyed by project, experiment, and 64-bit hashed
 assignment unit. Store variant, first accepted exposure, optional first accepted
 goal value, source role, trust class, and terminal-expiry metadata.
 
@@ -451,7 +450,7 @@ Verification:
 - Repeated goals cannot produce a conversion rate above one.
 - SDK restart, duplicate frames, and bounded client-state eviction do not duplicate
   one assignment unit on the server.
-- Known assignment-hash collisions do not collide in the 256-bit ledger key.
+- Known assignment-hash collisions do not collide in the 64-bit ledger key.
 - Ledger state survives restart and disappears only at the declared expiry.
 
 ### EXP-2: immutable experiment plan

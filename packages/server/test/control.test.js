@@ -204,13 +204,13 @@ test('aggregator rolls up experiment exposure and goals', async () => {
             histograms: []
           },
           events: [
-            [now - 900, 'experiment.exposure', { experiment: 'message-delay-v1', variant: 'fast', subject: 'ab'.repeat(32) }],
+            [now - 900, 'experiment.exposure', { experiment: 'message-delay-v1', variant: 'fast', subject: 'ab'.repeat(8) }],
             [
               now - 800,
               'experiment.goal',
               {
                 metric: 'message.sent',
-                subject: 'ab'.repeat(32),
+                subject: 'ab'.repeat(8),
                 experiments: [{ experiment: 'message-delay-v1', variant: 'fast' }],
                 value: 1
               }
@@ -1183,7 +1183,7 @@ const SHIPPABLE = {
 
 function assignmentHash(variant, index) {
   const prefix = variant === 'control' ? '1' : '2';
-  return `${prefix}${index.toString(16).padStart(63, '0')}`;
+  return `${prefix}${index.toString(16).padStart(15, '0')}`;
 }
 
 function ingestVariant(ledger, variant, exposures, goals, now = Date.now()) {

@@ -18,11 +18,11 @@ Unity 2021.3 or later, or .NET Standard 2.1.
 https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime
 ```
 
-Pin release `#v0.6.0` to use the optional enum API shown below. In
+Pin release `#v0.7.0` to use the optional enum API shown below. In
 `Packages/manifest.json`:
 
 ```json
-"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.6.0"
+"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.7.0"
 ```
 
 **Unity (this checkout).** Package Manager → Add package from disk → `clients/csharp/Runtime/package.json`.

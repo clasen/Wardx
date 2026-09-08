@@ -19,8 +19,8 @@ function emptyTotals() {
 }
 
 function assertHash(value) {
-  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) {
-    throw new Error('assignment hash must be 64 lowercase hexadecimal characters');
+  if (typeof value !== 'string' || !/^[0-9a-f]{16}$/.test(value)) {
+    throw new Error('assignment hash must be 16 lowercase hexadecimal characters');
   }
   return Buffer.from(value, 'hex');
 }

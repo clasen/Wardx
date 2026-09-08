@@ -48,7 +48,7 @@ test('SqliteStateStore requires every operational setting', () => {
 
 test('SqliteStateStore initializes the versioned WAL schema and all authoritative tables', () => {
   withStore((store) => {
-    assert.equal(store.schemaVersion(), 2);
+    assert.equal(store.schemaVersion(), 3);
     assert.equal(store.database.pragma('journal_mode', { simple: true }), 'wal');
     assert.deepEqual(store.tableNames(), [
       'compaction_watermarks',
@@ -80,31 +80,27 @@ test('SqliteStateStore rejects an incompatible schema version', () => {
   }
 });
 
-test('schema v1 upgrades add retention tables atomically and preserve existing project state', () => {
-  const directory = mkdtempSync(join(tmpdir(), 'wardx-sqlite-upgrade-'));
-  const path = join(directory, 'state.sqlite');
-  let store = new SqliteStateStore({ path, settings: settings() });
-  try {
+test('SHA-256 schema versions are rejected without modifying stored state', () => {
+  for (const version of [1, 2]) {
+    const directory = mkdtempSync(join(tmpdir(), 'wardx-sqlite-old-hash-'));
+    const path = join(directory, 'state.sqlite');
+    const store = new SqliteStateStore({ path, settings: settings() });
     store.saveProjectState({ project: 'demo', version: 3, state: { values: { enabled: true } }, catalog: {} });
-    store.database.exec(`
-      DROP TABLE retention_users;
-      DROP TABLE retention_projects;
-      UPDATE schema_metadata SET version = 1;
-      PRAGMA user_version = 1;
-    `);
-    const before = store.readProjectState('demo');
+    store.database.exec(`UPDATE schema_metadata SET version = ${version}; PRAGMA user_version = ${version};`);
+    const before = store.database.prepare('SELECT * FROM project_state').all();
     store.close();
-    store = new SqliteStateStore({ path, settings: settings() });
-    assert.deepEqual(store.readProjectState('demo'), before);
-    assert.equal(store.schemaVersion(), 2);
-    store.database.prepare('INSERT INTO retention_projects VALUES (?, ?, ?)').run('demo', 'a'.repeat(64), 0);
-    store.close();
-    store = new SqliteStateStore({ path, settings: settings() });
-    assert.deepEqual(store.readProjectState('demo'), before);
-    assert.equal(store.database.prepare('SELECT COUNT(*) AS count FROM retention_projects').get().count, 1);
-  } finally {
-    store.close();
-    rmSync(directory, { recursive: true, force: true });
+    try {
+      assert.throws(() => new SqliteStateStore({ path, settings: settings() }), /XXHash64 requires a fresh database/);
+      const database = new Database(path);
+      try {
+        assert.equal(database.pragma('user_version', { simple: true }), version);
+        assert.deepEqual(database.prepare('SELECT * FROM project_state').all(), before);
+      } finally {
+        database.close();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   }
 });
 
@@ -113,8 +109,8 @@ test('SqliteStateStore rejects an incomplete schema that claims the current vers
   const path = join(directory, 'state.sqlite');
   const database = new Database(path);
   database.exec('CREATE TABLE schema_metadata(singleton INTEGER PRIMARY KEY, version INTEGER NOT NULL)');
-  database.exec('INSERT INTO schema_metadata VALUES (1, 1)');
-  database.pragma('user_version = 1');
+  database.exec('INSERT INTO schema_metadata VALUES (1, 3)');
+  database.pragma('user_version = 3');
   database.close();
   try {
     assert.throws(() => new SqliteStateStore({ path, settings: settings() }), /incompatible SQLite schema tables/);

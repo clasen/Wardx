@@ -338,14 +338,14 @@ test('validateExperimentEvents accepts one matching assignment and rejects ambig
   const exposure = [
     now,
     'experiment.exposure',
-    { experiment: 'delay', variant: 'fast', subject: 'ab'.repeat(32) }
+    { experiment: 'delay', variant: 'fast', subject: 'ab'.repeat(8) }
   ];
   const goal = [
     now,
     'experiment.goal',
     {
       metric: 'message.sent',
-      subject: 'ab'.repeat(32),
+      subject: 'ab'.repeat(8),
       experiments: [{ experiment: 'delay', variant: 'fast' }]
     }
   ];

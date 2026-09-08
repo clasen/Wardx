@@ -195,7 +195,7 @@ namespace Wardx.Tests
             AssertX.Equal(2, bounded.ExperimentResolver.StateCount, "state is bounded");
             foreach (var identity in bounded.ExperimentResolver.StateIdentities)
             {
-                AssertX.Equal(64, identity.Length, "state identity is sha-256");
+                AssertX.Equal(16, identity.Length, "state identity is xxhash64");
                 AssertX.True(identity.IndexOf("user-", System.StringComparison.Ordinal) < 0, "state has no raw subject");
             }
             bounded.ConfigGet("message.delayMs", 7, "user-1");

@@ -117,7 +117,7 @@ core.histogram('coins.award_size').observe(80, { grantId: 'g-80' });
 `timer(name, dims)` starts a timer. The returned function records the duration in milliseconds into a histogram. You can add dimensions when you stop the timer.
 
 `distinct(name, dims).add(identifier)` updates a fixed HyperLogLog sketch. The
-engine hashes the identifier as `SHA-256(privacySalt || 0x00 || identifier)` and
+engine hashes the identifier as `XXHash64(privacySalt || 0x00 || identifier)` and
 discards it immediately; the frame contains only 512 HLL registers (`p=9`,
 about 4.6% standard error). Keep `privacySalt` stable across workers and time
 windows so equal identifiers map to equal registers.
@@ -239,7 +239,7 @@ bucket = hash / 2^32
 
 If `bucket >= allocation`, `assignVariant` returns `null`.
 
-`subjectHash` returns 64 lowercase hex digits of `SHA-256(UTF8(privacySalt) || 0x00 || UTF8(subjectId))`.
+`subjectHash` returns 16 lowercase hex digits of `XXHash64(UTF8(privacySalt) || 0x00 || UTF8(subjectId))`.
 
 ## Use case 5: Build a frame for a custom transport
 

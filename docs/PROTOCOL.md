@@ -89,7 +89,7 @@ Counters are **window deltas**, not lifetime totals. Histogram observations abov
 
 `distincts` is optional when empty. Each row is a fixed HyperLogLog sketch with
 `precision = 9` and exactly 512 one-byte registers encoded as canonical Base64.
-Clients compute SHA-256 over `privacySalt`, one zero byte, and the UTF-8
+Clients compute XXHash64 over `privacySalt`, one zero byte, and the UTF-8
 identifier, update one register, and discard the identifier and digest. Servers
 merge sketches by the register-wise maximum. The standard error is about 4.6%.
 Deploy server support before enabling `distinct` in an SDK: version 1 frames
@@ -158,11 +158,13 @@ Otherwise variants are chosen from cumulative `weight / totalWeight * allocation
 
 Every experiment snapshot has one non-empty `goalMetric`. A goal is emitted only for an assignment already exposed in this SDK instance and only when the goal call's name equals that assignment's `goalMetric`. One call cannot attach unrelated concurrent experiments, and there is no match-all behavior. Assignment/exposure state is bounded by the SDK's required `experimentStateMaxSubjects` setting (default `100000`); eviction may emit a duplicate exposure, which the server ledger counts without changing accepted totals.
 
-`subjectHash = SHA-256(UTF8(projectSalt) || 0x00 || UTF8(subjectId))` as 64 lowercase hex digits. The separator prevents ambiguous concatenation. Node and C# require an explicit non-empty `privacySalt`; they never reuse the project credential. Both implementations use the same bytes and output.
+`subjectHash = XXHash64(UTF8(projectSalt) || 0x00 || UTF8(subjectId))` as 16 lowercase hex digits. The separator prevents ambiguous concatenation. Node and C# require an explicit non-empty `privacySalt`; they never reuse the project credential. Both implementations use XXHash64 with seed zero, the same bytes, and 16 lowercase hexadecimal digits (most significant byte first). XXHash64 is non-cryptographic; this does not protect identifiers against deliberate recovery or collisions.
 
-Distinct sketches use the same salted SHA-256 byte construction but never put
-the 256-bit digest on the wire. `privacySalt` must remain stable and identical
-across workers so repeated identifiers update the same HLL register.
+Distinct sketches use the same salted XXHash64 byte construction but never put
+the 64-bit digest on the wire. `privacySalt` must remain stable and identical
+across workers and SDKs so repeated identifiers update the same HLL register. The first 9 most significant digest bits select the register; the remaining 55 bits determine the leading-zero rank.
+
+This replaces the previous SHA-256 identity and HLL construction. Upgrade server and all clients together and start with fresh telemetry history; old identities and sketches cannot be mixed with XXHash64 data.
 
 ## Config resolution
 

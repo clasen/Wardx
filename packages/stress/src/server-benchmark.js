@@ -235,7 +235,7 @@ async function benchmarkConfig(profile, directory) {
 function evidenceBody(step) {
   const envelope = sampleEnvelope({ configVersion: 12 });
   const timestamp = Date.now();
-  const subject = step.toString(16).padStart(64, '0');
+  const subject = step.toString(16).padStart(16, '0');
   const frame = envelope.frames[0];
   frame.from = timestamp - 1;
   frame.to = timestamp;

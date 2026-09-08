@@ -88,8 +88,8 @@ namespace Wardx.Tests
             var distinctSnapshot = distincts.SnapshotAndReset();
             AssertX.Equal(1, distinctSnapshot.Distincts.Count, "one distinct sketch");
             var registers = System.Convert.FromBase64String(distinctSnapshot.Distincts[0].Body.Registers);
-            AssertX.Equal((byte)3, registers[168], "shared Node/C# register 168");
-            AssertX.Equal((byte)2, registers[499], "shared Node/C# register 499");
+            AssertX.Equal((byte)3, registers[386], "shared Node/C# register 386");
+            AssertX.Equal((byte)2, registers[418], "shared Node/C# register 418");
             AssertX.Equal(0, distincts.SnapshotAndReset().Distincts.Count, "distinct reset");
         }
 

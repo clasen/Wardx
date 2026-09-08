@@ -242,8 +242,8 @@ async function verifyPackagedBinary(projectDirectory) {
     const now = Date.now();
     const events = [];
     for (let index = 0; index < 10; index++) {
-      const control = `1${index.toString(16).padStart(63, '0')}`;
-      const winner = `2${index.toString(16).padStart(63, '0')}`;
+      const control = `1${index.toString(16).padStart(15, '0')}`;
+      const winner = `2${index.toString(16).padStart(15, '0')}`;
       events.push([now, 'experiment.exposure', { experiment: experiment.id, variant: 'control', subject: control }]);
       events.push([now, 'experiment.exposure', { experiment: experiment.id, variant: 'winner', subject: winner }]);
       events.push([now, 'experiment.goal', {

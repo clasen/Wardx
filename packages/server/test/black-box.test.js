@@ -501,8 +501,8 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
 
     const evidenceEvents = [];
     for (let i = 0; i < 10; i++) {
-      const controlHash = `1${i.toString(16).padStart(63, '0')}`;
-      const winnerHash = `2${i.toString(16).padStart(63, '0')}`;
+      const controlHash = `1${i.toString(16).padStart(15, '0')}`;
+      const winnerHash = `2${i.toString(16).padStart(15, '0')}`;
       evidenceEvents.push([Date.now(), 'experiment.exposure', {
         experiment: 'banner-v1', variant: 'control', subject: controlHash
       }]);

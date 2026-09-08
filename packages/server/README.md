@@ -498,7 +498,7 @@ server.wardx.control.upsertExperiment('game', {
 }, { expectedVersion: 12, reason: 'pre-register difficulty test' });
 ```
 
-The SDK sends a 256-bit SHA-256 assignment hash, never a raw subject. The
+The SDK sends a 64-bit XXHash64 assignment hash, never a raw subject. The
 non-queryable SQLite ledger accepts one exposure and one goal per assignment
 unit, requires matching exposure/goal provenance, and counts duplicates,
 conflicts, missing exposures, untrusted rows, and late rows separately.
@@ -667,6 +667,37 @@ Do not edit the verified backup itself.
 Detailed wire and component contracts live in `docs/PROTOCOL.md` and
 `docs/ARCHITECTURE.md`.
 
+## Discard telemetry while keeping definitions
+
+Stop every Wardx process using the database, then run:
+
+```bash
+wardx-recovery reset-data /absolute/path/to/state.sqlite
+```
+
+This permanently clears historical aggregates, compaction watermarks, user
+retention, experiment exposures/goals, totals, and terminal results for **all
+projects** in that SQLite database. It preserves Remote Config values, metric
+descriptions and the rest of the catalog, experiment definitions, project
+versions, and the configuration mutation journal. Enabled experiments keep
+their definitions and analysis dates; review their plans before collecting a
+new sample.
+
+The command accepts SQLite schemas 1, 2, and 3 and recreates the empty telemetry
+tables using the current XXHash64 schema in one transaction. Pass the database path used by the running application (`config.server.sqlite.path`
+for a `createWardxSite` wrapper). It does not load configuration or credentials;
+CJS, ESM, JSON, and programmatic setups use the same command. Relative paths
+resolve against the command working directory. It never creates a missing
+source database and fails immediately if another writer holds the SQLite lock. Failure
+rolls back the database changes. The JSON result reports `removedRows` and
+`schemaVersion`, without printing configuration contents.
+
+Restart Wardx with the updated clients after completion. This is an offline
+operation: an active server can retain old data in memory or write it back.
+NDJSON diagnostics, external logs, and backups are not deleted by this command;
+remove those separately if you also want to discard them. This is a logical
+reset, not secure erasure of storage media.
+
 ## Persistent user retention
 
 Node `retentionActivity(userId)` and C#/Unity `RetentionActivity(userId)` emit
@@ -711,11 +742,12 @@ in the deployment's data-retention policy. This feature adds no user-history
 or per-user query API. Raw diagnostic sinks/allowlisted recent event inspection
 can retain the hashed activity payload under their existing policies.
 
-The SQLite schema is now version 2. On startup, a validated version 1 database
-is upgraded transactionally by adding the retention tables and index, retaining
-existing state. Back up before upgrading; older server binaries cannot open
-version 2. Other schema versions are rejected. Existing external configuration
-files must add the required `retention` object before startup.
+The SQLite schema is now version 3 and stores XXHash64 identities as 8-byte
+values. Versions 1 and 2 are rejected: this change requires fresh telemetry
+history and a coordinated server and SDK upgrade. Use the offline `reset-data` command above to preserve configuration and
+catalog definitions while discarding old telemetry, or create a fresh database.
+No automatic migration or deletion is performed at server startup. External configuration files must include the
+required `retention` object before startup.
 
 Accepted retention and experiment evidence commit in one SQLite transaction
 before sync success. General telemetry persistence retains its existing

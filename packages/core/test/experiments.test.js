@@ -246,7 +246,7 @@ test('experiment state is FIFO bounded, hashed, and permits exposure after evict
   assert.equal(core.experiments.stateBySubject.size, 2);
   assert.equal(core.experiments.stateBySubject.has(core.experiments.hashSubject('user-1')), false);
   for (const key of core.experiments.stateBySubject.keys()) {
-    assert.equal(key.length, 64);
+    assert.equal(key.length, 16);
     assert.equal(key.startsWith('user-'), false);
   }
   core.configGet('message.delayMs', 7, { subjectId: 'user-1' });

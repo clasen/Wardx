@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import Database from 'better-sqlite3';
-import { backup, restore, verify } from '../src/ops/recovery.js';
+import { backup, resetData, restore, verify } from '../src/ops/recovery.js';
 import { loadServerConfig } from '../src/loadConfig.js';
 import { createIngestServer, listen } from '../src/server.js';
 import { testServerConfig } from './helpers.js';
@@ -49,7 +49,7 @@ test('backup and restore recover authoritative config, history, experiments and 
     rows: [{ kind: 'counter', name: 'requests', role: 'client', environment: 'test', appVersion: '1', dimensions: null, value: 42 }]
   };
   server.wardx.stateStore.saveBuckets('hour', [bucket]);
-  const event = { experiment: 'delay', variant: 'fast', assignmentHash: 'ab'.repeat(32), timestamp: Date.now() };
+  const event = { experiment: 'delay', variant: 'fast', assignmentHash: 'ab'.repeat(8), timestamp: Date.now() };
   server.wardx.experimentLedger.ingestBatch('demo', [
     { ...event, kind: 'exposure' }, { ...event, kind: 'goal', value: 1 }
   ], { role: 'client', trustedForDecisions: true });
@@ -172,4 +172,123 @@ test('restore redirects NDJSON output into the new directory and CLI reports no 
     assert.equal(error.status, 1);
     assert.doesNotMatch(error.stderr, /credential-should-never-appear/);
   }
+});
+
+for (const version of [1, 2, 3]) {
+  test(`reset-data clears telemetry from schema ${version} and preserves descriptions and configuration`, async (t) => {
+    const { directory, configPath, server } = await fixture(t);
+    server.wardx.control.setSignal('demo', 'message.sent', { description: 'Messages sent by players' }, {
+      expectedVersion: 12, reason: 'keep descriptions'
+    });
+    server.wardx.control.setValue('demo', 'message.delayMs', 250, ['client'], {
+      expectedVersion: 13, reason: 'keep Remote Config'
+    });
+    const database = server.wardx.stateStore.database;
+    const projects = database.prepare('SELECT * FROM project_state ORDER BY project').all();
+    const journal = database.prepare('SELECT * FROM mutation_journal ORDER BY id').all();
+    await server.wardx.stop();
+    const source = new Database(join(directory, 'live.sqlite'));
+    for (const table of ['minute_aggregates', 'hour_aggregates', 'day_aggregates']) {
+      source.prepare(`INSERT INTO ${table} VALUES (?, ?, ?, ?, ?, ?)`)
+        .run('demo', 0, 60000, 0, 0, '[]');
+    }
+    source.exec("INSERT INTO compaction_watermarks VALUES ('demo', 'minute', 'hour', 0, 0)");
+    source.exec("INSERT INTO experiment_totals VALUES ('demo', 'exp', 'control', 'client', 'trusted', '{}')");
+    source.exec("INSERT INTO experiment_terminal_decisions VALUES ('demo', 'exp', 0, '{}')");
+    for (const [table, column] of [['experiment_assignment_ledger', 'assignment_hash'], ['retention_users', 'subject_hash']]) {
+      if (version < 3) {
+        const sql = source.prepare("SELECT sql FROM sqlite_master WHERE name = ?").get(table).sql;
+        source.exec(`DROP TABLE ${table}`);
+        source.exec(sql.replace(`length(${column}) = 8`, `length(${column}) = 32`));
+      }
+    }
+    source.prepare('INSERT INTO experiment_assignment_ledger VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run('demo', 'exp', Buffer.alloc(version < 3 ? 32 : 8, 1), 'control', '{}', null, 'client', 'trusted', 1000);
+    if (version === 1) {
+      source.exec('DROP TABLE retention_users; DROP TABLE retention_projects');
+    } else {
+      source.prepare('INSERT INTO retention_projects VALUES (?, ?, ?)').run('demo', 'old-salt', 1);
+      source.prepare('INSERT INTO retention_users VALUES (?, ?, ?, ?)')
+        .run('demo', Buffer.alloc(version < 3 ? 32 : 8, 2), 0, 1);
+    }
+    source.exec(`UPDATE schema_metadata SET version = ${version}; PRAGMA user_version = ${version}`);
+    source.close();
+    const originalConfig = readFileSync(configPath);
+    const result = JSON.parse(execFileSync(process.execPath, [
+      resolve('packages/server/src/ops/recovery-cli.js'), 'reset-data', join(directory, 'live.sqlite')
+    ], { encoding: 'utf8' }));
+    assert.equal(result.ok, true);
+    assert.equal(result.schemaVersion, 3);
+    assert.equal(result.removedRows, version === 1 ? 7 : 9);
+    assert.deepEqual(readFileSync(configPath), originalConfig);
+    const restarted = createIngestServer(loadServerConfig(configPath));
+    try {
+      const fresh = restarted.wardx.stateStore.database;
+      assert.deepEqual(fresh.prepare('SELECT * FROM project_state ORDER BY project').all(), projects);
+      assert.deepEqual(fresh.prepare('SELECT * FROM mutation_journal ORDER BY id').all(), journal);
+      for (const { name } of fresh.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all()) {
+        if (['project_state', 'mutation_journal', 'schema_metadata'].includes(name)) continue;
+        assert.equal(fresh.prepare(`SELECT COUNT(*) AS count FROM ${name}`).get().count, 0, name);
+      }
+      restarted.wardx.retentionLedger.ingestBatch('demo', [{ timestamp: 0, subject: 'ab'.repeat(8), salt: 'cd'.repeat(8) }]);
+    } finally {
+      await restarted.wardx.stop();
+    }
+    assert.equal((await resetData(join(directory, 'live.sqlite'))).removedRows, 2);
+    assert.equal((await resetData(join(directory, 'live.sqlite'))).removedRows, 0);
+  });
+}
+
+test('reset-data rejects unknown schemas without clearing data', async (t) => {
+  const { directory, server } = await fixture(t);
+  await server.wardx.stop();
+  const source = new Database(join(directory, 'live.sqlite'));
+  source.pragma('user_version = 99');
+  const before = source.prepare('SELECT * FROM project_state').all();
+  source.close();
+  await assert.rejects(resetData(join(directory, 'live.sqlite')), /unsupported SQLite schema/);
+  const after = new Database(join(directory, 'live.sqlite'));
+  try {
+    assert.equal(after.pragma('user_version', { simple: true }), 99);
+    assert.deepEqual(after.prepare('SELECT * FROM project_state').all(), before);
+  } finally {
+    after.close();
+  }
+});
+
+test('reset-data rolls back all deletions when schema recreation fails', async (t) => {
+  const { directory, server } = await fixture(t);
+  await server.wardx.stop();
+  const source = new Database(join(directory, 'live.sqlite'));
+  source.exec("INSERT INTO minute_aggregates VALUES ('demo', 0, 60000, 0, 0, '[]')");
+  source.exec('DROP INDEX retention_cohorts; CREATE INDEX retention_cohorts ON project_state(project)');
+  const before = source.prepare('SELECT * FROM minute_aggregates').all();
+  source.close();
+  await assert.rejects(resetData(join(directory, 'live.sqlite')), /already exists/);
+  const after = new Database(join(directory, 'live.sqlite'));
+  try {
+    assert.deepEqual(after.prepare('SELECT * FROM minute_aggregates').all(), before);
+    assert.equal(after.pragma('user_version', { simple: true }), 3);
+    assert.equal(after.prepare("SELECT tbl_name FROM sqlite_master WHERE name = 'retention_cohorts'").get().tbl_name, 'project_state');
+  } finally {
+    after.close();
+  }
+});
+
+test('reset-data refuses a missing database and a database with an active writer', async (t) => {
+  const { directory, configPath, server } = await fixture(t);
+  await server.wardx.stop();
+  const missing = join(directory, 'missing.sqlite');
+  await assert.rejects(resetData(missing), /ENOENT/);
+  assert.equal(readdirSync(directory).includes('missing.sqlite'), false);
+  const path = join(directory, 'live.sqlite');
+  const source = new Database(path);
+  source.exec('BEGIN IMMEDIATE');
+  try {
+    await assert.rejects(resetData(path), /locked/);
+  } finally {
+    source.exec('ROLLBACK');
+    source.close();
+  }
+  assert.equal(loadServerConfig(configPath).sqlite.path, './live.sqlite');
 });

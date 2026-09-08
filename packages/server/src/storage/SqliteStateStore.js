@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { assertHistoryBoundary } from '../aggregation/history/HistoryBucket.js';
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const RETENTION_SCHEMA = `
   CREATE TABLE retention_projects (
     project TEXT PRIMARY KEY,
@@ -10,7 +10,7 @@ const RETENTION_SCHEMA = `
   ) STRICT;
   CREATE TABLE retention_users (
     project TEXT NOT NULL,
-    subject_hash BLOB NOT NULL CHECK (length(subject_hash) = 32),
+    subject_hash BLOB NOT NULL CHECK (length(subject_hash) = 8),
     cohort_day INTEGER NOT NULL CHECK (cohort_day >= 0),
     activity_days INTEGER NOT NULL CHECK (activity_days BETWEEN 1 AND 2147483647),
     PRIMARY KEY(project, subject_hash)
@@ -183,7 +183,7 @@ export class SqliteStateStore {
       if (journalMode !== 'wal') throw new Error(`SQLite WAL mode unavailable: ${journalMode}`);
       this.database.pragma(`synchronous = ${this.settings.synchronous}`);
       this.database.pragma(`wal_autocheckpoint = ${this.settings.walAutoCheckpointPages}`);
-      this._initializeSchema();
+      SqliteStateStore.initializeSchema(this.database);
       this._validateSchema();
       this._prepareStatements();
       this.optimize(true);
@@ -193,28 +193,19 @@ export class SqliteStateStore {
     }
   }
 
-  _initializeSchema() {
-    const version = this.database.pragma('user_version', { simple: true });
-    if (version === 1) {
-      validateSqliteSchema(this.database, 1);
-      this.database.transaction(() => {
-        this.database.exec(RETENTION_SCHEMA);
-        this.database.exec(`UPDATE schema_metadata SET version = ${SCHEMA_VERSION} WHERE singleton = 1`);
-        this.database.pragma(`user_version = ${SCHEMA_VERSION}`);
-      }).immediate();
-      return;
-    }
+  static initializeSchema(database) {
+    const version = database.pragma('user_version', { simple: true });
     if (version !== 0 && version !== SCHEMA_VERSION) {
-      throw new Error(`incompatible SQLite schema version ${version}; expected ${SCHEMA_VERSION}`);
+      throw new Error(`incompatible SQLite schema version ${version}; expected ${SCHEMA_VERSION}; XXHash64 requires a fresh database`);
     }
     if (version === SCHEMA_VERSION) return;
-    const existing = this.database
+    const existing = database
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
       .all();
     if (existing.length > 0) throw new Error('incompatible unversioned SQLite schema');
-    this.database.exec('BEGIN IMMEDIATE');
+    database.exec('BEGIN IMMEDIATE');
     try {
-      this.database.exec(`
+      database.exec(`
         CREATE TABLE schema_metadata (
           singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
           version INTEGER NOT NULL
@@ -279,7 +270,7 @@ export class SqliteStateStore {
         CREATE TABLE experiment_assignment_ledger (
           project TEXT NOT NULL,
           experiment TEXT NOT NULL,
-          assignment_hash BLOB NOT NULL CHECK (length(assignment_hash) = 32),
+          assignment_hash BLOB NOT NULL CHECK (length(assignment_hash) = 8),
           variant TEXT NOT NULL,
           exposure_json TEXT NOT NULL,
           goal_json TEXT,
@@ -310,9 +301,9 @@ export class SqliteStateStore {
         ${RETENTION_SCHEMA}
         PRAGMA user_version = ${SCHEMA_VERSION};
       `);
-      this.database.exec('COMMIT');
+      database.exec('COMMIT');
     } catch (error) {
-      this.database.exec('ROLLBACK');
+      database.exec('ROLLBACK');
       throw error;
     }
   }

@@ -1,6 +1,6 @@
 using System;
 using System.Text;
-using System.Security.Cryptography;
+using System.Buffers.Binary;
 
 namespace Wardx
 {
@@ -40,13 +40,86 @@ namespace Wardx
 
         public static string SubjectHash(string projectSalt, string subjectId)
         {
-            var bytes = Encoding.UTF8.GetBytes(projectSalt + "\0" + subjectId);
-            using (var sha = SHA256.Create())
+            return SubjectHash64(projectSalt, subjectId).ToString("x16");
+        }
+
+        internal static ulong SubjectHash64(string projectSalt, string subjectId)
+        {
+            return XxHash64(Encoding.UTF8.GetBytes(projectSalt + "\0" + subjectId));
+        }
+
+        const ulong Prime1 = 11400714785074694791UL;
+        const ulong Prime2 = 14029467366897019727UL;
+        const ulong Prime3 = 1609587929392839161UL;
+        const ulong Prime4 = 9650029242287828579UL;
+        const ulong Prime5 = 2870177450012600261UL;
+
+        static ulong RotateLeft(ulong value, int count)
+        {
+            return (value << count) | (value >> (64 - count));
+        }
+
+        static ulong Round(ulong accumulator, ulong lane)
+        {
+            return unchecked(RotateLeft(accumulator + lane * Prime2, 31) * Prime1);
+        }
+
+        static ulong MergeRound(ulong accumulator, ulong lane)
+        {
+            return unchecked((accumulator ^ Round(0, lane)) * Prime1 + Prime4);
+        }
+
+        internal static ulong XxHash64(byte[] bytes)
+        {
+            if (bytes == null) throw new ArgumentNullException(nameof(bytes));
+            unchecked
             {
-                var digest = sha.ComputeHash(bytes);
-                var hex = new StringBuilder(digest.Length * 2);
-                for (int i = 0; i < digest.Length; i++) hex.Append(digest[i].ToString("x2"));
-                return hex.ToString();
+                int offset = 0;
+                ulong hash;
+                if (bytes.Length >= 32)
+                {
+                    ulong v1 = Prime1 + Prime2;
+                    ulong v2 = Prime2;
+                    ulong v3 = 0;
+                    ulong v4 = 0UL - Prime1;
+                    do
+                    {
+                        v1 = Round(v1, BinaryPrimitives.ReadUInt64LittleEndian(bytes.AsSpan(offset)));
+                        v2 = Round(v2, BinaryPrimitives.ReadUInt64LittleEndian(bytes.AsSpan(offset + 8)));
+                        v3 = Round(v3, BinaryPrimitives.ReadUInt64LittleEndian(bytes.AsSpan(offset + 16)));
+                        v4 = Round(v4, BinaryPrimitives.ReadUInt64LittleEndian(bytes.AsSpan(offset + 24)));
+                        offset += 32;
+                    } while (offset <= bytes.Length - 32);
+                    hash = RotateLeft(v1, 1) + RotateLeft(v2, 7) + RotateLeft(v3, 12) + RotateLeft(v4, 18);
+                    hash = MergeRound(hash, v1);
+                    hash = MergeRound(hash, v2);
+                    hash = MergeRound(hash, v3);
+                    hash = MergeRound(hash, v4);
+                }
+                else hash = Prime5;
+                hash += (ulong)bytes.Length;
+                while (offset <= bytes.Length - 8)
+                {
+                    hash ^= Round(0, BinaryPrimitives.ReadUInt64LittleEndian(bytes.AsSpan(offset)));
+                    hash = RotateLeft(hash, 27) * Prime1 + Prime4;
+                    offset += 8;
+                }
+                if (offset <= bytes.Length - 4)
+                {
+                    hash ^= BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(offset)) * Prime1;
+                    hash = RotateLeft(hash, 23) * Prime2 + Prime3;
+                    offset += 4;
+                }
+                while (offset < bytes.Length)
+                {
+                    hash ^= bytes[offset++] * Prime5;
+                    hash = RotateLeft(hash, 11) * Prime1;
+                }
+                hash ^= hash >> 33;
+                hash *= Prime2;
+                hash ^= hash >> 29;
+                hash *= Prime3;
+                return hash ^ (hash >> 32);
             }
         }
     }

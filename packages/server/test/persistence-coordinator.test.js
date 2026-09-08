@@ -129,13 +129,13 @@ test('PersistenceCoordinator flush persists the final aggregate, log, and experi
         to: now,
         metrics: { counters: [['requests', null, 1]], gauges: [], histograms: [] },
         events: [
-          [now, 'experiment.exposure', { experiment: 'delay', variant: 'fast', subject: 'ab'.repeat(32) }],
+          [now, 'experiment.exposure', { experiment: 'delay', variant: 'fast', subject: 'ab'.repeat(8) }],
           [
             now,
             'experiment.goal',
             {
               metric: 'message.sent',
-              subject: 'ab'.repeat(32),
+              subject: 'ab'.repeat(8),
               experiments: [{ experiment: 'delay', variant: 'fast' }]
             }
           ]

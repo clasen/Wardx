@@ -185,8 +185,8 @@ function validateEvent(row, label, limits, earliestTimestamp, latestTimestamp) {
     const invalidKey = unknownKey(attrs, new Set(['subject', 'salt']), label);
     if (invalidKey) return invalidKey;
     for (const key of ['subject', 'salt']) {
-      if (typeof attrs[key] !== 'string' || !/^[0-9a-f]{64}$/.test(attrs[key])) {
-        return `${label}.${key} must be a 256-bit lowercase hex hash`;
+      if (typeof attrs[key] !== 'string' || !/^[0-9a-f]{16}$/.test(attrs[key])) {
+        return `${label}.${key} must be a 64-bit lowercase hex hash`;
       }
     }
   }
@@ -344,7 +344,7 @@ export function validateExperimentEvents(body, experiments) {
           const invalid = validateNonEmptyString(attrs[key], `${label}.${key}`);
           if (invalid) return invalid;
         }
-        if (!/^[0-9a-f]{64}$/.test(attrs.subject)) return `${label}.subject must be a 256-bit lowercase hex hash`;
+        if (!/^[0-9a-f]{16}$/.test(attrs.subject)) return `${label}.subject must be a 64-bit lowercase hex hash`;
       const definition = byId.get(attrs.experiment);
       if (!definition) return `${label}.experiment is unknown`;
       if (!definition.enabled) return `${label}.experiment is disabled`;
@@ -360,7 +360,7 @@ export function validateExperimentEvents(body, experiments) {
         const invalid = validateNonEmptyString(attrs[key], `${label}.${key}`);
         if (invalid) return invalid;
       }
-      if (!/^[0-9a-f]{64}$/.test(attrs.subject)) return `${label}.subject must be a 256-bit lowercase hex hash`;
+      if (!/^[0-9a-f]{16}$/.test(attrs.subject)) return `${label}.subject must be a 64-bit lowercase hex hash`;
       if (!Array.isArray(attrs.experiments) || attrs.experiments.length !== 1) {
         return `${label}.experiments must contain exactly one assignment`;
       }

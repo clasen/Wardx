@@ -8,6 +8,7 @@
     <AssemblyName>Wardx.Tests</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
+    <None Include="../../../packages/core/test/fixtures/xxhash64.json" Link="xxhash64.json" CopyToOutputDirectory="PreserveNewest" />
     <ProjectReference Include="../Runtime/Wardx.csproj" />
     <ProjectReference Include="../Runtime/Core/Wardx.Core.csproj" />
   </ItemGroup>

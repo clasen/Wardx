@@ -16,9 +16,9 @@ const SETTINGS = {
   maxHistoryBuckets: 100,
   maxHistoryRows: 1000
 };
-const HASH = 'ab'.repeat(32);
-const SECOND_HASH = 'cd'.repeat(32);
-const THIRD_HASH = 'ef'.repeat(32);
+const HASH = 'ab'.repeat(8);
+const SECOND_HASH = 'cd'.repeat(8);
+const THIRD_HASH = 'ef'.repeat(8);
 const SOURCE = { role: 'backend', trustedForDecisions: true };
 const UNTRUSTED_SOURCE = { role: 'client', trustedForDecisions: false };
 
@@ -131,7 +131,7 @@ test('ExperimentLedger preflights an entire batch before any evidence mutation',
   withLedger((ledger) => {
     assert.throws(
       () => ledger.ingestBatch('demo', [exposure(HASH), exposure('deadbeef')], SOURCE),
-      /64 lowercase hexadecimal/
+      /16 lowercase hexadecimal/
     );
     assert.equal(ledger.ingestBatch('demo', [exposure(HASH)], SOURCE)[0].status, 'accepted_exposure');
 
@@ -174,11 +174,12 @@ test('ExperimentLedger keeps trusted and untrusted evidence and health separate'
   });
 });
 
-test('ExperimentLedger stores distinct 256-bit identifiers and rejects shorter IDs', () => {
+test('ExperimentLedger stores distinct 64-bit identifiers and rejects shorter IDs', () => {
   withLedger((ledger) => {
     ledger.ingestBatch('demo', [exposure(HASH), exposure(SECOND_HASH)], SOURCE);
     assert.equal(ledger.totals('demo', 'exp')[0].exposures, 2);
-    assert.throws(() => ledger.ingestBatch('demo', [exposure('01234567')], SOURCE), /64 lowercase hexadecimal/);
+    assert.throws(() => ledger.ingestBatch('demo', [exposure('01234567')], SOURCE), /16 lowercase hexadecimal/);
+    assert.throws(() => ledger.ingestBatch('demo', [exposure('ab'.repeat(32))], SOURCE), /16 lowercase hexadecimal/);
     assert.equal(ledger.totals('demo', 'exp')[0].exposures, 2);
   });
 });
