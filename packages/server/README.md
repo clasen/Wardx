@@ -51,6 +51,43 @@ If your application owns signal handling, use `createIngestServer(config)` and
 returns the server directly; it does not listen, install signal handlers, or
 start MCP HTTP.
 
+### Handler for an application-owned HTTP or HTTPS server
+
+Use `createWardxHandler` when your framework owns the transport and process
+lifecycle. It initializes Wardx and starts the configured MCP HTTP listener,
+but does not create or listen on an ingest server, install signal handlers, or
+exit the process. The MCP bearer token uses the same environment variable as
+`startServer`.
+
+```js
+import { createWardxHandler } from '@wardx/server';
+
+export async function createWardxSite({ credentials, server }) {
+  const { handler, stop, mcpAddress } = await createWardxHandler({
+    ...server,
+    credentials
+  });
+  return { siteApp: () => handler, stop, mcpAddress };
+}
+```
+
+The result is `{ handler, stop, mcpAddress, config }`. `handler(req, res)` is a
+Node request listener; pass it directly to `https.createServer(tls, handler)`
+or mount it through your framework. The factory `siteApp: () => handler` above
+is only needed when the framework expects a handler factory. The complete
+server configuration is still required, although ingest `host` and `port` do
+not open a listener in this mode. `mcpAddress` is null when MCP HTTP is disabled.
+
+Retain `stop` in your application's shutdown integration. Calling `stop()` marks
+readiness as unavailable, rejects new application requests with 503, closes MCP,
+waits for accepted ingest work, flushes persistence, and closes SQLite. Repeated
+calls return the same promise. `/health` and `/ready` remain diagnostic endpoints.
+Wardx does not close your external transport: the application must also stop
+accepting connections and drain/close its HTTP or HTTPS server before exiting.
+Configure request timeouts on that transport so incomplete requests cannot hold
+shutdown indefinitely. If MCP startup fails, Wardx releases its initialized
+resources before rejecting.
+
 ### HTTPS and custom transport
 
 Both startup functions accept a dedicated Node HTTP-compatible server:
@@ -617,6 +654,7 @@ Do not edit the verified backup itself.
 
 | Export | Purpose |
 | --- | --- |
+| `createWardxHandler(config)` | Create a request handler and explicit lifecycle for an application-owned transport. |
 | `createIngestServer(config, { server? })` | Create Wardx on its HTTP server or a supplied Node server. |
 | `listen(server, port, host)` | Listen and return the bound address. |
 | `startServer(config, { server? })` | Create, listen, optionally start MCP HTTP, and install signal shutdown. |

@@ -1,6 +1,6 @@
 ---
 name: wardx-server
-description: Operate or change the Wardx single-process ingest, historical aggregate, Remote Config, experiment, trust, and MCP control plane. Use for wardx-server, @wardx/server, get_retention, D1/D7/D30 retention cohorts, get_aggregate_history, safe config mutations, fixed-horizon experiments, or packages/server work. Use an SDK-specific skill for application instrumentation.
+description: Integrate, operate, or modify @wardx/server, including HTTP/HTTPS handlers, lifecycle, MCP investigations, historical telemetry, retention, Remote Config, and experiments. Use for Wardx server work; use an SDK-specific skill for application instrumentation.
 ---
 
 # Wardx server
@@ -9,16 +9,25 @@ Wardx has two application surfaces in one bounded process: clients use
 `POST /v1/sync`; agents use MCP over stdio or optional loopback-only Streamable
 HTTP. There is no admin REST API or supported multi-replica mode.
 
-Read [references/tools.md](references/tools.md) for exact MCP arguments. When
-editing the server, also read [references/package.md](references/package.md).
+Read only the reference relevant to the task:
+
+- [references/package.md](references/package.md): programmatic integration,
+  handler/server lifecycle, configuration, internals, and verification.
+- [references/tools.md](references/tools.md): MCP arguments, retention semantics,
+  config constraints, and experiment policy fields.
+
+For a framework-owned HTTP/HTTPS transport, use `createWardxHandler(config)`
+and retain its `stop` function. Use `startServer` when Wardx should own listeners
+and process signals. Check the installed package exports before using a new API;
+repository documentation can precede an npm release.
 
 ## Start an MCP investigation
 
 1. `list_projects`, then `get_project_overview` or
    `wardx://project/{name}`.
 2. If `overview.onboarding.complete` is false, ask only for its listed missing
-   project, role, knob, and outcome descriptions. Persist them with the matching
-   catalog mutation using the overview's current version and a reason.
+   project, role, knob, and outcome descriptions. Persist supplied descriptions
+   only when catalog changes are authorized, using the current version and a reason.
 3. Use `get_aggregates` for current windows and `get_aggregate_history` for
    bounded hour/day baselines. Filter by role when comparing product surfaces,
    and by catalog category when comparing signal purposes.
@@ -41,7 +50,8 @@ Never expose the listener directly or store its token in JSON.
 
 ## Mutations
 
-Every catalog/config/experiment mutation requires current `expectedVersion` and
+A read-only investigation does not authorize catalog/config/experiment changes.
+Every authorized mutation requires current `expectedVersion` and
 a non-empty `reason`. On conflict, re-read state and reconsider the change; do
 not blindly retry. Catalog mutations also advance the project version.
 
@@ -53,13 +63,8 @@ never decrements a version or rewrites the journal.
 
 Propose only over existing knobs visible to every `experiment.roles` entry.
 Every experiment requires `assignmentUnitKind`, `goalMetric`, and
-`terminalRetentionMs`. A descriptive experiment omits every terminal-policy
-field. A closable experiment declares all of:
-
-- `outcomeKind`: `conversion` or `mean`;
-- `control`, `targetSampleSizePerVariant`, `earliestAnalysisAt`;
-- `familyWiseAlpha`, `minimumEffect`, `direction`;
-- all `healthThresholds` fields listed in the tool schema.
+`terminalRetentionMs`. Descriptive and closable plans have different policy
+requirements; use the all-or-none schema in the tools reference.
 
 Assignment remains client-side. The server's non-queryable SHA-256 ledger
 deduplicates assignment units and preserves source role/trust. A trusted goal
@@ -101,16 +106,15 @@ Credentials declare project, allowed roles, enabled state, and
 credential allowlist is rejected before mutation. Never expose raw keys in
 diagnostics or MCP.
 
-Run one process against one local SQLite WAL database. Do not share the file or
-put it on NFS. `createIngestServer(config, { server })` and
-`startServer(config, { server })` accept a dedicated Node HTTP-compatible server
-created by the application, including `https.createServer({ key, cert })`. It
-must not already have a `request` listener; Wardx owns request handling and
-closes it during `server.wardx.stop()`.
+Run one process against one local SQLite WAL database; do not share the file or
+put it on NFS. Starting, restarting, deploying, or exercising production requires
+explicit authorization. Follow existing authorization rather than requesting it
+again. Use the package reference to assign transport and shutdown ownership.
 
 Keep HTTP behind a proxy with TLS and measured body/rate/connection limits when
 those controls are not supplied by the deployment; never retry
-`POST /v1/sync`. `GET /health` is liveness only. Back up the operational
+`POST /v1/sync`. `GET /health` is liveness only; use `/ready` for operational
+readiness. Back up the operational
 configuration source plus SQLite after graceful drain/stop.
 
 Capacity bounds reject excess sync handlers, pending historical batches/bytes,
@@ -134,17 +138,9 @@ hardware, settings, duration, commit, and local-SSD details.
 
 ## Persistent retention
 
-Use `get_retention({ project, from, to })` for explicit activity cohorts and
-exact received-user D1/D7/D30 counts/rates. Dates are UTC `YYYY-MM-DD`, from
-inclusive and to exclusive, selecting cohort dates independently of return
-dates. Returns mean activity **on** each day. Days are pending with null values
-until their UTC end; maturity does not guarantee complete delivery. No subject
-hashes are returned. Ordinary events and HLL metrics cannot backfill cohorts.
-
-The required `retention` configuration contains `maxUsersPerProject` and
-`maxQueryDays`. User state does not expire; capacity rejects new users instead
-of reenrolling old ones. Salt fingerprints are pinned per project and changes
-are rejected. Counts span all project roles/environments. Delayed earlier
-activity can correct cohorts and returns. SQLite schema v1 is transactionally
-upgraded to v2 on startup; older binaries cannot open v2. Follow the production
-boundary above before starting an existing deployment with the new binary.
+Use `get_retention` for explicit activity cohorts and exact received-user
+D1/D7/D30 counts; events and HLL metrics cannot backfill cohorts. Read its UTC
+range, pending-day, and late-arrival semantics in the tools reference before
+interpreting results. Retention is project-wide, not filtered by role or
+environment. Check storage/configuration constraints in the package reference
+when integrating activity collection or changing a deployment.

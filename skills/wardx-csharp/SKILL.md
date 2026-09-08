@@ -1,259 +1,119 @@
 ---
 name: wardx-csharp
-description: Instruments C# / .NET with the Wardx SDK (WardxClient.Create) — counters, gauges, histograms, distinct HLL estimates, timers, events, logs, Remote Config, experiment assignment, and volume funnels. Use when the user mentions Wardx, WardxClient, WardxOptions, Config.Get, Experiment.Goal, Identify, clients/csharp, Wardx.csproj, or asks to add telemetry, metrics, events, logs, unique counts, or A/B assignment in a C# process that is not Unity. Also use when changing non-Unity code in clients/csharp. Do not use for MCP tools, catalog onboarding, or ingest control — that belongs to wardx-server. Do not use for Node.js (wardx) or a Unity player (wardx-unity). Supports explicit user retention through retentionActivity/RetentionActivity with persistent UTC D1/D7/D30 cohorts.
+description: Integrate or modify the Wardx C# SDK in non-Unity .NET applications using WardxClient. Use for telemetry, Remote Config, experiment assignment, and explicit user retention; use wardx-server for MCP or server operations.
 ---
 
-# Wardx C# SDK
+# Wardx C# / .NET SDK
 
-`clients/csharp` is the C# runtime. A plain C# process sends `sdk.name = wardx-csharp` and `client.platform = csharp`. Assignment and `Config.Get` run here. HTTP `POST /v1/sync` lives here. MCP does not.
+Use this skill for non-Unity C# integration and shared C# engine changes.
+Read [references/package.md](references/package.md) for enum usage, package
+internals, and verification. Use wardx-unity for Unity lifecycle and transport
+and wardx-server for catalog, experiment definitions, and MCP operations.
 
-- A measure call changes local memory only. It does not send. It does not return a Task.
-- Delivery is at-most-once. A failed sync discards that batch. There is no disk queue and no retry of the same frames.
-- Remote Config is always a local read of the last snapshot.
-- Remote Config must not contain secrets. The project key authenticates the project; client-selected `Role` is routing metadata, not authorization.
-- The SDK sends names. Descriptions live in the server catalog.
+## Integrate
 
-Control plane (MCP, catalog, experiments as definitions, aggregates) is the **wardx-server** skill. This skill writes C# / .NET instrumentation. A Unity player is the **wardx-unity** skill.
+Reference `clients/csharp/Runtime/Wardx.csproj` and use `using Wardx;`.
+Create the client with `WardxClient.Create(options)`. The .NET runtime is selected
+when `UNITY_5_3_OR_NEWER` is not defined.
 
-Package internals when editing `clients/csharp`: [references/package.md](references/package.md).
-
-## First actions
-
-1. Reference `clients/csharp/Runtime/Wardx.csproj`. `using Wardx;`.
-2. Call `WardxClient.Create` with every required key. Do not invent fallbacks for missing keys.
-3. Pick the cheapest signal that answers the question (table below).
-4. Call `ShutdownAsync` when the process stops. `FlushAsync` sends now and leaves timers running.
-
-Required `WardxOptions` keys: `Endpoint`, `ProjectKey`, `Project`, `Role`, `AppVersion`, `Environment`. `Role` is an open routing name (`game-server`, `desktop`, `csharp`), not an authorization boundary. It cannot be `*`. `Project` must match the server mapping. `ProjectKey` is header `X-Wardx-Key`.
-
-`PrivacySalt` is required, non-empty, stable, and project-specific; it is never derived from `ProjectKey`. Optional overrides are `Tracer` and keys in `SdkDefaults` / `packages/core/defaults.json`. `MaxFrameBytes` is at least 1024; `ExperimentStateMaxSubjects` defaults to 100000 and bounds assignment/exposure state. A bootstrap sync starts immediately; later syncs use `SyncIntervalMs` with jitter.
-
-## Choose a signal
-
-Use the cheapest signal that still answers the question.
-
-| Need | Call |
-| --- | --- |
-| How many / how much in this window | `Counter(name, dims).Inc()` or `.Add(n)` |
-| Last known size of a set | `Gauge(name, dims).Set(value)` |
-| Distribution of a sample you already have | `Histogram(name, dims, buckets).Observe(value)` |
-| Approximate unique identifiers without storing them | `Distinct(name, dims).Add(identifier)` |
-| Elapsed time you start and stop here | `Timer(name, dims)` then `Stop()` |
-| One discrete product fact | `Event(name, attrs)` plus a counter when you also need a rate |
-| Drop-off between named steps (volume funnel) | one `Event` + one `Counter` per step name. Not a unique-user path. |
-| Play-session length / fleet play time | App clock on start; on end `Histogram("session.duration")` + `Counter("session.time_ms").Add(ms)` + `Experiment.Goal("session.duration", value: ms)`. Optional heartbeat adds only to `session.time_ms`. Not the SDK `sessionId`. |
-| Failure on a request path | `Log.Error(message, attrs)` plus a counter. A stack is an attr. MCP returns the row; the agent edits source via the role `path`/`git`. |
-| Rare anomaly or purchase | `Event` (not once per user action on a busy backend) |
-| Default experiment subject | `Identify(subjectId)` on a single-user process. `Identify(null)` clears. |
-| Remote value / variant | `Config.Get(key, fallback)` after `Identify`, or `Config.Get(key, fallback, subjectId)` |
-| Experiment conversion | `Experiment.Goal(name)` after `Identify`, or `Experiment.Goal(name, subjectId)` |
-
-A counter in a frame is a window delta, not a lifetime total. A gauge that is never `Set` in a window is absent. Keep the series object when you increment in a loop. Build dims with `Dims.Of(...)`.
-
-**Dimensions.** Small sets: `mode`, `route`, `code`, `source`, `result`. Values are string, enum (converted to its wire name), number, or boolean. Never `userId`, email, or a unique id on a metric dimension. The SDK caps series per name (`MaxSeriesPerMetric`); extra series become no-ops and increment `wardx.internal.cardinality_dropped`. Histogram `Observe(value, attrs)` keeps attrs only for the window max (`exemplar`). A lookup key (`grantId`, `matchId`) belongs there, not on the series.
-
-**Distinct.** `Distinct(name, dims).Add(identifier)` hashes locally with the
-required stable `PrivacySalt` and sends only a fixed mergeable HLL sketch. Use
-it for approximate unique counts, never for an identity list or ordered path.
-
-**Backend vs client.** If one process serves many users, increment counters in process. Do not `Event()` once per user action. Give that process its own `role` (`game-server`) so MCP does not mix it with a Unity player. Pass `subjectId` on each `Config.Get` / `Experiment.Goal`. Do not share one SDK instance's default there; it would mix users.
-
-**Funnels.** Wardx compares how often each named step fired. It does not store a user journey. Give each step its own name. Emit the event and increment a counter of the same name. Event attrs do not split the server count. `Experiment.Goal` is one conversion or one quantitative value, not an N-step funnel. Read the drop with `get_aggregates` (wardx-server).
-
-**Economy.** Wardx is not a ledger. Wallet rows live in the application database. On the grant path: `coins.awarded` (`.Add(amount)`), `coins.grants` (`.Inc()`), `coins.award_size` histogram with exemplar. Emit `coins.anomaly` and `Log.Warn("coins_anomaly", …)` only when amount exceeds a Remote Config cap.
-
-Do not ship catalog descriptions from the SDK. Name the metric; meaning is onboarded on the server.
-
-## Optional enum names
-
-Strings remain fully supported. Use application-owned enums when requested or
-when the application already uses them; do not migrate existing string calls
-just to adopt enums. Confirm the referenced SDK contains the enum overloads
-before using them in a consumer pinned to an older release.
-
-Metric names, event names, log messages, Remote Config keys, and experiment goal
-names accept enums. The wire name is the member name with its original case;
-`[WardxName("match.completed")]` supplies an explicit stable mapping. There is
-no automatic casing or underscore-to-dot conversion. Preserve existing wire
-names so catalog entries, config keys, and metric history continue to match.
-
-Declare these types in application code with `using Wardx;`:
-
-```csharp
-enum Signal { [WardxName("match.completed")] MatchCompleted }
-enum Dimension { [WardxName("mode")] Mode }
-enum GameMode { [WardxName("ranked")] Ranked, Casual }
-```
-
-Inside an application method, these calls contribute to the same series:
-
-```csharp
-wardx.Counter(Signal.MatchCompleted, Dims.Of(Dimension.Mode, GameMode.Ranked)).Inc();
-wardx.Counter("match.completed", Dims.Of("mode", "ranked")).Inc();
-```
-
-`Dims.Of` accepts mixed string/enum keys. Enum values also work in ordinary
-string-keyed dictionaries for dimensions, event/log attrs, histogram exemplars,
-and timer end dimensions. Conversion does not mutate the caller's dictionary;
-limits apply to the mapped strings. Subject IDs, distinct identifiers, and
-connection options remain strings. `Config.Get` supports enum keys, not enum
-return values; its fallback determines the result type.
-
-Undefined enum values, ambiguous numeric aliases, and blank mappings throw.
-Flags combinations need exactly one declared member. Enum goals retain the
-usual subject and exposure requirements. See [references/package.md](references/package.md)
-when changing this implementation.
-
-## Remote Config and experiments
-
-`Identify(userId)` sets the default subject for this instance. Later `Config.Get` and `Experiment.Goal` use it. A per-call `subjectId` overrides it. `Identify(null)` clears it. Use a stable account id, not `sessionId`.
-
-On a single-user process (desktop), `Identify` once after login. On a process that serves many users (`game-server`), pass `subjectId` on every call. Do not `Identify()` there.
-
-```csharp
-var timeoutMs = wardx.Config.Get("matchmaking.timeoutMs", 5000, userId);
-var delayMs = wardx.Config.Get("message.delayMs", 1000, userId);
-wardx.Experiment.Goal("message.sent", userId, 1);
-```
-
-Until a sync applies a newer `configVersion`, `Get` returns the fallback or the last snapshot. The first `Get` with a subject in a session can emit `experiment.exposure` (`experiment`, `variant`, hashed `subject`). The raw `subjectId` never goes on the wire. Assignment is local and deterministic. Do not persist the variant. Changing `salt` redistributes; keep it when replacing the same experiment `id`.
-
-`Experiment.Goal` needs a subject from `Identify()` or the `subjectId` argument. It emits only for an assignment exposed in this SDK instance whose experiment `goalMetric` matches the call name. Without a subject, the call throws. There is no legacy match-all fallback.
-
-Do not wait for the network on the hot path. Do not invent experiment definitions in application code; the server stores them. Do not put `subjectId` on metric dimensions.
-
-## Lifecycle
-
-```csharp
-AppDomain.CurrentDomain.ProcessExit += (_, __) => wardx.ShutdownAsync().GetAwaiter().GetResult();
-```
-
-`ShutdownAsync` is safe to call more than once. `FlushAsync` sends pending frames and leaves timers running. The SDK records in memory if ingest is down; failed syncs increment `wardx.internal.frames_failed`. The next cycle sends new data only. Do not use this SDK when loss is unacceptable.
-
-Pass `new ConsoleTracer()` as `WardxOptions.Tracer` while instrumenting. It does not go over the wire. Omit it in production.
-
-## Changing the SDK
-
-When the task is code in `clients/csharp`: keep measure calls synchronous and non-blocking. HTTP, gzip, and process RSS stay in `Runtime/Client` and `Runtime/Dotnet` (`#if !UNITY`). Engine, settings, frames, and assignment stay in `Runtime/Core`. Do not add retries of the same frames or a disk queue. See [references/package.md](references/package.md).
-
-## Examples
-
-**User says:** "Add Wardx to this C# service."
+Required `WardxOptions` fields: `Endpoint`, `ProjectKey`, `Project`, `Role`,
+`AppVersion`, `Environment`, and `PrivacySalt`. Use the application's configuration;
+do not invent deployment values or derive the privacy salt from the key.
+`Project` must match the credential's server mapping. `Role` is an open name other
+than `*`; the server authorizes it against the credential's allowed roles.
+Keep `PrivacySalt` stable across clients in the same project. Operational defaults
+live in `SdkDefaults`, aligned with `packages/core/defaults.json`.
 
 ```csharp
 using Wardx;
 
-var wardx = WardxClient.Create(new WardxOptions
-{
-    Endpoint = "http://127.0.0.1:8787",
-    ProjectKey = "dev_project_key",
-    Project = "demo",
-    Role = "game-server",
-    AppVersion = "2.4.1",
-    Environment = "production",
-    PrivacySalt = "demo-subject-hash-v1"
-});
-
-void HandleMatchmaking()
-{
-    var end = wardx.Timer("matchmaking.duration", Dims.Of("route", "matchmaking"));
-    wardx.Counter("http.requests", Dims.Of("route", "matchmaking")).Inc();
-    try
-    {
-        FindMatch();
-        wardx.Counter("matchmaking.ok").Inc();
-        end.Stop(Dims.Of("result", "success"));
-    }
-    catch (Exception err)
-    {
-        wardx.Counter("matchmaking.error").Inc();
-        wardx.Log.Error("matchmaking_failed", Dims.Of("code", err.GetType().Name));
-        end.Stop(Dims.Of("result", "error"));
-        throw;
-    }
-}
+var wardx = WardxClient.Create(telemetryOptions);
+var completed = wardx.Counter("match.completed", Dims.Of("mode", "ranked"));
+completed.Inc();
 ```
 
-**User says:** "Instrument the onboarding funnel."
+Measurements are synchronous memory updates, not Tasks or network calls.
+Bootstrap sync starts immediately; later syncs use the configured interval and
+jitter. Delivery is at-most-once: failed batches are discarded, without disk
+queues or retries of the same frames. Use a different mechanism for lossless data.
 
-```csharp
-wardx.Event("onboarding.start", Dims.Of("channel", channel));
-wardx.Counter("onboarding.start", Dims.Of("channel", channel)).Inc();
-wardx.Event("onboarding.done");
-wardx.Counter("onboarding.done").Inc();
-wardx.Experiment.Goal("onboarding.done", userId);
-```
+## Choose a signal
 
-One name per step. Do not put `userId` on the counter.
+| Question | API |
+| --- | --- |
+| Count or amount | `Counter(name, dims).Inc()` / `.Add(n)` |
+| Latest value | `Gauge(name, dims).Set(value)` |
+| Distribution | `Histogram(name, dims, buckets).Observe(value, attrs)` |
+| Approximate unique count | `Distinct(name, dims).Add(identifier)` |
+| Elapsed time | `var timer = Timer(name, dims)`; then `timer.Stop(endDims)` |
+| Discrete fact | `Event(name, attrs)` |
+| Diagnostic detail | `Log.Error(message, attrs)` or another log level |
+| Explicit user activity for retention | `RetentionActivity(userId)` |
 
-**User says:** "A/B the message delay for a user." / "How do I Identify()?"
+Counters are window deltas; gauges are absent in windows without a `Set`.
+Reuse handles in loops. Prefer counters for high-volume totals; add events/logs
+when bounded detail is useful, not automatically for every count.
 
-On a `game-server`, skip `Identify()` and pass `subjectId` on each call:
+Use low-cardinality string, number, boolean, or enum dimension values via
+`Dims.Of(...)`. Never use user IDs, emails, or unique transaction IDs as dimensions.
+Count/length/series limits yield no-op series and increment cardinality drops;
+invalid value types or enum values throw. Histogram bounds are fixed per series;
+attrs retain only the window-max exemplar. Redact diagnostic attrs as needed.
+Enums are optional; preserve existing string calls and wire names. Read the enum
+reference before using mappings or overloads in a version-pinned consumer.
+
+Distinct counts send salted HLL sketches, not identifiers. Volume funnels compare
+separately named steps, not unique-user journeys; event attrs do not split
+historical counts. SDK `sessionId` is envelope identity, not a session clock.
+For duration use an application-owned monotonic clock. If heartbeats add elapsed
+deltas to a time counter, add only the remaining delta at the end; observe the
+full duration once in a histogram. Choose an experiment goal from the product
+question rather than always using session duration.
+
+## Remote Config and experiments
+
+`Config.Get(key, fallback, subjectId)` reads the last local snapshot without
+network I/O. Missing keys use the caller's fallback. Remote Config contains no
+secrets; signal descriptions belong in the server catalog.
+
+On a single-user instance, `Identify(userId)` sets the default experiment subject;
+`Identify(null)` clears it. For multiple users, pass `subjectId` per call instead
+of changing shared identity. Neither ordinary metrics nor base Remote Config
+requires identification. Avoid a shared default subject on a multi-user backend.
 
 ```csharp
 var delayMs = wardx.Config.Get("message.delayMs", 1000, userId);
+// At the actual matching outcome, after exposure:
 wardx.Experiment.Goal("message.sent", userId, 1);
 ```
 
-On a single-user desktop process:
+Assignment is local and deterministic for the subject and experiment plan.
+A matching config read can emit exposure. Without a subject, the read returns
+base Remote Config without exposure. `Experiment.Goal` throws without a subject
+and emits only for a matching `goalMetric` exposed in this instance. The SDK
+hashes the subject; do not add the raw ID to dimensions or attrs. Do not define
+experiments or persist chosen variants in application code. After a shipped
+experiment's disabled state reaches the snapshot, no new exposure is expected.
 
-```csharp
-wardx.Identify(userId);
-var delayMs = wardx.Config.Get("message.delayMs", 1000);
-wardx.Experiment.Goal("message.sent", value: 1);
-```
+## Retention
 
-1. Identify once on a single-user process, or pass `subjectId` per call on a multi-user process.
-2. Do not define variants in the app. Point the user at MCP / wardx-server to `upsert_experiment` on an existing knob.
+Call `RetentionActivity(userId)` on the activity that defines a return. It requires
+an explicit nonblank stable ID; `Identify` does not supply it. Use a consistent
+activity definition and stable project salt across devices. The server stores
+UTC cohorts and received-user returns on D1/D7/D30. Lost batches can bias counts;
+delayed activity can revise cohorts. Query semantics belong to the server skill.
 
-**User says:** "Count coin grants without exploding cardinality."
+## Lifecycle and diagnosis
 
-```csharp
-wardx.Counter("coins.awarded", Dims.Of("source", source)).Add(amount);
-wardx.Counter("coins.grants", Dims.Of("source", source)).Inc();
-wardx.Histogram("coins.award_size", Dims.Of("source", source), new double[] { 10, 50, 100, 250, 500, 1000, 5000 })
-    .Observe(amount, Dims.Of("grantId", id));
-if (amount > wardx.Config.Get("economy.maxAward", 500, userId))
-{
-    wardx.Event("coins.anomaly", Dims.Of("source", source, "amount", amount, "grantId", id));
-}
-```
+Integrate `await ShutdownAsync()` with the application's existing asynchronous
+shutdown lifecycle. It stops scheduling, waits for the current sync, attempts a
+final flush, and closes transport; repeated calls are safe. `FlushAsync()` sends
+now without stopping scheduling. `Stop()` closes without a final flush.
+Do not replace the host's shutdown policy with a blocking process-exit callback.
 
-**User says:** "Log this error so an agent can fix the file."
-
-```csharp
-wardx.Counter("payment.error", Dims.Of("code", code)).Inc();
-wardx.Log.Error("payment_failed", Dims.Of("name", err.GetType().Name, "code", code, "stack", clippedStack));
-```
-
-Point the user at wardx-server: `get_recent_logs`, then the role `path` / `git`.
-
-## Troubleshooting
-
-**`createWardx missing required keys`.** Pass every required key. The loader does not default them.
-
-**`role cannot be *`.** `*` is a server visibility token, not an instance role.
-
-**No Remote Config / always fallback.** Bootstrap or a later sync has not applied a snapshot yet, or `Project` / `ProjectKey` / `Role` do not match the server. The app must still run.
-
-**Silent no-op metrics.** Series cap or invalid dimensions. Check `wardx.internal.cardinality_dropped`. Remove unique ids from dims.
-
-**`histogram … buckets cannot change`.** Bounds are fixed per series. Default is `[10, 25, 50, 100, 250, 500, 1000]`.
-
-**Frames never arrive.** Ingest down, or the SDK discarded a failed batch. This is expected. Do not add a retry of those frames.
-
-**No exposures after an experiment ships.** The app is reading the knob with no subject. On a single-user process, call `Identify(userId)` after login. On a `game-server`, pass `subjectId` on each `Config.Get`. Do not `Identify()` on a process that serves many users.
-
-**Agent asking to call `/v1/sync` or MCP from app code.** SDK speaks HTTP sync only. Agents speak MCP on the server process.
-
-## User retention
-
-Use `wardx.RetentionActivity(userId)` on the activity that defines a return. Require an
-explicit nonblank stable user ID and the same stable privacy salt across
-project clients; `Identify`/`identify` does not supply an implicit ID. Keep the
-activity definition consistent. The server persists UTC first-activity cohorts
-and exact received-user returns **on** D1/D7/D30, deduplicating sessions/devices.
-Query MCP `get_retention` by cohort date range (`from` inclusive, `to` exclusive,
-`YYYY-MM-DD`); pending target days have null counts/rates. Lost batches can bias
-results, and earlier delayed activity can correct the cohort. This does not
-change at-most-once delivery. Use separate projects for separate populations.
+Use `ConsoleTracer` for local diagnosis, or implement `ITracer` / subclass
+`TracerBase`; hooks are `Measure`, `Event`, `Log`, `Frame`, and `Sync`. Tracing is
+not sent to the server; do not expose secrets through it.
+For missing data, inspect failed/dropped frame counters, endpoint, credentials,
+role, and capacity. For config fallbacks, check snapshot delivery and visibility.
+Preserve synchronous measurement and at-most-once delivery when modifying the SDK.

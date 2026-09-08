@@ -56,16 +56,15 @@ The core does not send HTTP. A runtime (this Node package, or a future SDK) must
 
 `resolveSettings` merges `defaults.json` under caller options, then validates.
 
-Required from caller: `endpoint`, `projectKey`, `project`, `role`, `appVersion`, `environment`.
-
-Required from defaults (override allowed): `aggregateIntervalMs` (1000), `syncIntervalMs` (15000), `syncJitterMin` (0.85), `syncJitterMax` (1.15), `maxBufferedEvents` (5000), `maxBufferedLogs` (2000), `maxFrameBytes` (524288; minimum 1024), `maxSeriesPerMetric` (1000), `maxDimensionKeys` (8), `maxDimensionValueLength` (64), `experimentStateMaxSubjects` (100000), `httpTimeoutMs` (10000), `histogramBuckets` (`[10, 25, 50, 100, 250, 500, 1000]`).
-
-`tracer` is not a default key. `privacySalt` is required and has no fallback.
+Required caller options, including `privacySalt`, are validated by `resolveSettings`
+in `src/settings.js`. Read supported operational overrides and their values from
+`defaults.json`; do not copy numeric defaults into integration code. `tracer` is
+optional and not a default key. The privacy salt has no fallback.
 
 ## Verify
 
-```bash
-npm test
-```
+For documentation-only work, validate links and API claims without running tests.
+For behavior changes, start with the relevant core or Node test file, then use
+`npm run test:js` when the change crosses their shared contracts.
 
 Node SDK tests: `packages/node/test/sdk.test.js` (ingest via `createIngestServer` + `listen`). Core tests: `packages/core/test/*.test.js`. Prefer a real ingest server for sync assertions. Do not mock `WardxCore` inside node tests unless the change is transport-only.

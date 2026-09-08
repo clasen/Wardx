@@ -115,8 +115,7 @@ function hydrateHistoricalState(config, stateStore, registry) {
   }
 }
 
-export function createIngestServer(configInput, options = {}) {
-  const server = resolveNodeServer(options);
+function createIngestRuntime(configInput) {
   const config = validateServerConfig(configInput);
   const stateStore = createStateStore(config);
   let registry;
@@ -152,13 +151,15 @@ export function createIngestServer(configInput, options = {}) {
     stateStore,
     persistence,
     syncGate,
-    mcpReady: () => !config.mcpHttp.enabled || Boolean(server.wardx?.mcpHttp?.isReady())
+    mcpReady: () => !config.mcpHttp.enabled || Boolean(wardx.mcpHttp?.isReady())
   });
 
-  server.on('request', (req, res) => {
+  const activeRequests = new Set();
+  function handler(req, res) {
     const host = req.headers.host || `${config.host}:${config.port}`;
-    const url = new URL(req.url || '/', `http://${host}`);
+    let url;
     const work = (async () => {
+      url = new URL(req.url || '/', `http://${host}`);
       if (req.method === 'GET' && url.pathname === '/health') {
         json(res, 200, { ok: true });
         return;
@@ -167,6 +168,10 @@ export function createIngestServer(configInput, options = {}) {
         const readiness = health.snapshot();
         res.setHeader('cache-control', 'no-store');
         json(res, readiness.ok ? 200 : 503, readiness);
+        return;
+      }
+      if (health.stopping) {
+        json(res, 503, { ok: false, error: 'server shutting down' });
         return;
       }
       if (url.pathname === '/v1/sync' && req.method === 'POST') {
@@ -185,27 +190,26 @@ export function createIngestServer(configInput, options = {}) {
       }
       json(res, 404, { ok: false, error: 'not found' });
     })();
-    work.catch((error) => {
-      diagnostics.report('http.unexpected', error, { method: req.method, path: url.pathname });
+    const tracked = work.catch((error) => {
+      diagnostics.report('http.unexpected', error, { method: req.method, path: url?.pathname });
       if (!res.headersSent) json(res, 500, { ok: false, error: 'internal' });
-    });
-  });
+    }).finally(() => activeRequests.delete(tracked));
+    activeRequests.add(tracked);
+  }
 
   let stopPromise = null;
-  async function stop() {
+  function stop() {
     if (stopPromise) return stopPromise;
     health.stop();
     stopPromise = (async () => {
-      if (server.listening) {
-        await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
-      }
+      await Promise.all(activeRequests);
       await persistence.close();
       if (typeof sink.close === 'function') await sink.close();
       stateStore.close();
     })();
     return stopPromise;
   }
-  server.wardx = {
+  const wardx = {
     config,
     registry,
     credentials,
@@ -220,7 +224,35 @@ export function createIngestServer(configInput, options = {}) {
     health,
     stop
   };
+  return { handler, wardx };
+}
+
+export function createIngestServer(configInput, options = {}) {
+  const server = resolveNodeServer(options);
+  const { handler, wardx } = createIngestRuntime(configInput);
+  server.on('request', handler);
+  server.wardx = wardx;
+  const stopRuntime = wardx.stop;
+  let stopPromise = null;
+  wardx.stop = () => {
+    if (!stopPromise) {
+      wardx.health.stop();
+      stopPromise = (async () => {
+        if (server.listening) {
+          await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+        }
+        await stopRuntime();
+      })();
+    }
+    return stopPromise;
+  };
   return server;
+}
+
+export async function createWardxHandler(config) {
+  const { handler, wardx } = createIngestRuntime(config);
+  const mcpAddress = await startMcpHttp(wardx);
+  return { handler, stop: wardx.stop, mcpAddress, config: wardx.config };
 }
 
 export function listen(server, port, host) {
@@ -234,34 +266,45 @@ export function listen(server, port, host) {
   });
 }
 
-export async function startServer(config, options = {}) {
-  const server = createIngestServer(config, options);
-  const address = await listen(server, config.port, config.host);
+async function startMcpHttp(wardx) {
   let mcpAddress = null;
-  if (server.wardx.config.mcpHttp.enabled) {
+  if (wardx.config.mcpHttp.enabled) {
     let mcpServer;
     try {
-      mcpServer = createConfiguredMcpHttpServer(server.wardx.control, server.wardx.config.mcpHttp);
+      mcpServer = createConfiguredMcpHttpServer(wardx.control, wardx.config.mcpHttp);
       mcpAddress = await listen(
         mcpServer,
-        server.wardx.config.mcpHttp.port,
-        server.wardx.config.mcpHttp.host
+        wardx.config.mcpHttp.port,
+        wardx.config.mcpHttp.host
       );
     } catch (error) {
-      await server.wardx.stop();
+      await wardx.stop();
       throw error;
     }
-    const stopIngest = server.wardx.stop;
+    const stopIngest = wardx.stop;
     let stopPromise = null;
-    server.wardx.mcpHttp = mcpServer.wardxMcp;
-    server.wardx.stop = () => {
+    wardx.mcpHttp = mcpServer.wardxMcp;
+    wardx.stop = () => {
       if (!stopPromise) {
-        server.wardx.health.stop();
-        stopPromise = mcpServer.wardxMcp.stop().then(stopIngest);
+        wardx.health.stop();
+        stopPromise = mcpServer.wardxMcp.stop().finally(stopIngest);
       }
       return stopPromise;
     };
   }
+  return mcpAddress;
+}
+
+export async function startServer(config, options = {}) {
+  const server = createIngestServer(config, options);
+  let address;
+  try {
+    address = await listen(server, config.port, config.host);
+  } catch (error) {
+    await server.wardx.stop();
+    throw error;
+  }
+  const mcpAddress = await startMcpHttp(server.wardx);
   const stop = async (code) => {
     try {
       await server.wardx.stop();

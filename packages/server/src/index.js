@@ -1,4 +1,4 @@
-export { createIngestServer, listen, startServer, loadServerConfig } from './server.js';
+export { createIngestServer, createWardxHandler, listen, startServer, loadServerConfig } from './server.js';
 export { ControlService } from './control/ControlService.js';
 export { executeTool, TOOL_DEFS } from './mcp/tools.js';
 export { FrameAggregator } from './aggregation/FrameAggregator.js';
