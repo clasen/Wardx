@@ -36,6 +36,43 @@ namespace Wardx.Tests
     {
         public static void Run()
         {
+            var bounded = new WardxCore(Fixtures.TestSettings(o => o.MaxPendingFrames = 3));
+            for (var i = 0; i < 100; i++)
+            {
+                bounded.Event("event." + i);
+                bounded.SnapshotFrame();
+                AssertX.Equal(i >= 3 ? 1.0 : 0.0, bounded.Internal.FramesFailed, "overflow counted each window");
+            }
+            var pending = bounded.TakePendingFrames();
+            AssertX.Equal(3, pending.Count, "pending capacity");
+            for (var i = 0; i < pending.Count; i++)
+            {
+                AssertX.Equal(98 + i, pending[i].Seq, "recent sequence retained");
+                AssertX.Equal("event." + (97 + i), pending[i].Events[0].Name, "recent event retained");
+            }
+            AssertX.Equal(0, bounded.TakePendingFrames().Count, "drains once");
+            bounded.Event("recovered");
+            bounded.SnapshotFrame();
+            var recovered = bounded.TakePendingFrames();
+            AssertX.Equal(101, recovered[0].Seq, "sequence after recovery");
+            AssertX.True(recovered[0].Counters.Exists(row => row.Name == Protocol.Internal.FramesFailed && row.Value == 1), "overflow reported after recovery");
+
+            var splitBounded = new WardxCore(Fixtures.TestSettings(o =>
+            {
+                o.MaxPendingFrames = 2;
+                o.MaxFrameBytes = 1024;
+            }));
+            splitBounded.Event("old");
+            splitBounded.SnapshotFrame();
+            for (var i = 0; i < 100; i++) splitBounded.Event("event." + i, Dims.Of("pad", new string('x', 100)));
+            var oversized = splitBounded.SnapshotFrame();
+            AssertX.True(oversized.Frames.Count > 2, "batch exceeds pending capacity");
+            var retained = splitBounded.TakePendingFrames();
+            AssertX.Equal(2, retained.Count, "split batch capacity");
+            AssertX.True(ReferenceEquals(oversized.Frames[oversized.Frames.Count - 2], retained[0]), "recent split frame retained");
+            AssertX.True(ReferenceEquals(oversized.Frames[oversized.Frames.Count - 1], retained[1]), "final split frame retained");
+            AssertX.Equal((double)(1 + oversized.Frames.Count - 2), splitBounded.Internal.FramesFailed, "all evictions counted");
+
             var core = new WardxCore(Fixtures.TestSettings(o => o.MaxBufferedEvents = 10));
             core.Counter("n").Add(4);
             core.Event("a", Dims.Of("k", 1));
@@ -266,6 +303,12 @@ namespace Wardx.Tests
             baseOpts.MaxFrameBytes = 1023;
             AssertX.Throws(() => Settings.Resolve(baseOpts), "at least 1024");
             baseOpts.MaxFrameBytes = null;
+            foreach (var capacity in new[] { 0, -1 })
+            {
+                baseOpts.MaxPendingFrames = capacity;
+                AssertX.Throws(() => Settings.Resolve(baseOpts), "maxPendingFrames");
+            }
+            baseOpts.MaxPendingFrames = null;
             baseOpts.ExperimentStateMaxSubjects = 0;
             AssertX.Throws(() => Settings.Resolve(baseOpts), "experimentStateMaxSubjects");
         }

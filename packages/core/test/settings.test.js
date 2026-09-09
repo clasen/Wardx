@@ -65,6 +65,9 @@ test('createWardx requires an explicit privacy salt and a 1KB frame minimum', ()
   const { privacySalt: _removed, ...withoutSalt } = base;
   assert.throws(() => resolveSettings(withoutSalt), /privacySalt/);
   assert.throws(() => resolveSettings({ ...base, maxFrameBytes: 1023 }), /at least 1024/);
+  for (const maxPendingFrames of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => resolveSettings({ ...base, maxPendingFrames }), /maxPendingFrames/);
+  }
   assert.throws(
     () => resolveSettings({ ...base, experimentStateMaxSubjects: 1.5 }),
     /experimentStateMaxSubjects must be an integer/

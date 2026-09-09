@@ -41,11 +41,11 @@ to both .NET and Unity.
 https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime
 ```
 
-Release `#v0.9.0` includes conditional Remote Config, disabled mode, and the optional enum API. In
+Release `#v0.9.1` includes bounded pending telemetry, conditional Remote Config, disabled mode, and the optional enum API. In
 `Packages/manifest.json`:
 
 ```json
-"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.9.0"
+"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.9.1"
 ```
 
 **Unity (this checkout).** Package Manager → Add package from disk → `clients/csharp/Runtime/package.json`.
@@ -491,6 +491,11 @@ Measurements continue in local memory. Failed batches are discarded and
 there is no disk queue or replay of the failed frames. Remote Config reads
 continue returning the last snapshot or the supplied fallback. Use a durable
 system for events that must not be lost.
+
+Pending physical frames are capped by `MaxPendingFrames` (default: 32).
+On overflow, the oldest frames are discarded and counted in
+`wardx.internal.frames_failed`. This bounds the pending queue even while
+an HTTP request stalls; it is not a cap on total SDK memory.
 
 ## Lifecycle
 

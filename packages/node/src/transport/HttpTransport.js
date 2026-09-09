@@ -35,6 +35,7 @@ export function createHttpTransport({ endpoint, projectKey, httpTimeoutMs }) {
           },
           (res) => {
             const chunks = [];
+            res.on('error', reject);
             res.on('data', (chunk) => chunks.push(chunk));
             res.on('end', () => {
               const buf = Buffer.concat(chunks);
@@ -55,9 +56,10 @@ export function createHttpTransport({ endpoint, projectKey, httpTimeoutMs }) {
             });
           }
         );
-        req.setTimeout(httpTimeoutMs, () => {
+        const deadline = setTimeout(() => {
           req.destroy(new Error('wardx sync timed out'));
-        });
+        }, httpTimeoutMs);
+        req.once('close', () => clearTimeout(deadline));
         req.on('error', reject);
         req.write(gzippedBody);
         req.end();

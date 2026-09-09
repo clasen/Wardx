@@ -215,7 +215,15 @@ export class WardxCore {
     });
     const batch = FrameBuilder.splitToMaxBytes(frame, this.settings.maxFrameBytes);
     this.seq = batch.frames.at(-1).seq;
-    this.pendingFrames.push(...batch.frames);
+    const capacity = this.settings.maxPendingFrames;
+    const overflow = Math.max(0, this.pendingFrames.length + batch.frames.length - capacity);
+    if (overflow > 0) {
+      this.pendingFrames.splice(0, Math.min(overflow, this.pendingFrames.length));
+      this.internal.framesFailed += overflow;
+    }
+    for (let i = Math.max(0, batch.frames.length - capacity); i < batch.frames.length; i++) {
+      this.pendingFrames.push(batch.frames[i]);
+    }
     for (let i = 0; i < batch.frames.length; i++) {
       const physical = batch.frames[i];
       emit(this._tracer, 'frame', {

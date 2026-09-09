@@ -53,6 +53,7 @@ const coreSettings: CoreSettings = {
   maxBufferedEvents: 5000,
   maxBufferedLogs: 2000,
   maxFrameBytes: 524288,
+  maxPendingFrames: 32,
   maxSeriesPerMetric: 1000,
   maxDimensionKeys: 8,
   maxDimensionValueLength: 64,

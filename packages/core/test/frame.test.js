@@ -4,6 +4,37 @@ import { FrameBuilder } from '../src/frame/FrameBuilder.js';
 import { WardxCore } from '../src/WardxCore.js';
 import { testSettings } from './helpers.js';
 
+test('pending frames stay bounded, keep recent data and drain once after saturation', () => {
+  const core = new WardxCore(testSettings({ maxPendingFrames: 3 }));
+  for (let i = 0; i < 100; i++) {
+    core.event(`event.${i}`);
+    core.snapshotFrame();
+    assert.ok(core.pendingFrames.length <= 3);
+  }
+  const pending = core.takePendingFrames();
+  assert.deepEqual(pending.map((frame) => frame.seq), [98, 99, 100]);
+  assert.deepEqual(pending.flatMap((frame) => frame.events.map((row) => row[1])),
+    ['event.97', 'event.98', 'event.99']);
+  assert.equal(core.internal.framesFailed, 1);
+  assert.deepEqual(core.takePendingFrames(), []);
+  core.event('recovered');
+  core.snapshotFrame();
+  const recovered = core.takePendingFrames();
+  assert.equal(recovered[0].seq, 101);
+  assert.equal(recovered[0].metrics.counters.find((row) => row[0] === 'wardx.internal.frames_failed')[2], 1);
+});
+
+test('a split batch larger than capacity retains only its newest physical frames', () => {
+  const core = new WardxCore(testSettings({ maxPendingFrames: 2, maxFrameBytes: 1024 }));
+  core.event('old');
+  core.snapshotFrame();
+  for (let i = 0; i < 100; i++) core.event(`event.${i}`, { pad: 'x'.repeat(100) });
+  const batch = core.snapshotFrame();
+  assert.ok(batch.frames.length > 2);
+  assert.deepEqual(core.takePendingFrames(), batch.frames.slice(-2));
+  assert.equal(core.internal.framesFailed, 1 + batch.frames.length - 2);
+});
+
 test('snapshot swaps buffers so new writes land on the active buffer', () => {
   const core = new WardxCore(testSettings({ maxBufferedEvents: 10 }));
   core.counter('n').add(4);

@@ -65,6 +65,10 @@ export function resolveSettings(options) {
   assertPositiveNumber(settings, 'maxBufferedEvents');
   assertPositiveNumber(settings, 'maxBufferedLogs');
   assertPositiveNumber(settings, 'maxFrameBytes');
+  assertPositiveNumber(settings, 'maxPendingFrames');
+  if (!Number.isSafeInteger(settings.maxPendingFrames)) {
+    throw new Error('maxPendingFrames must be a safe integer');
+  }
   assertPositiveNumber(settings, 'maxSeriesPerMetric');
   assertPositiveNumber(settings, 'maxDimensionKeys');
   assertPositiveNumber(settings, 'maxDimensionValueLength');

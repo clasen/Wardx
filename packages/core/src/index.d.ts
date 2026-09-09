@@ -58,6 +58,7 @@ export interface SdkDefaults {
   maxBufferedEvents: number;
   maxBufferedLogs: number;
   maxFrameBytes: number;
+  maxPendingFrames: number;
   maxSeriesPerMetric: number;
   maxDimensionKeys: number;
   maxDimensionValueLength: number;

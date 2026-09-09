@@ -233,7 +233,17 @@ namespace Wardx
             var frame = FrameBuilder.Build(_seq + 1, from, to, metrics, events, logs, internalSnap);
             var batch = FrameBuilder.SplitToMaxBytes(frame, _settings.MaxFrameBytes);
             _seq = batch.Frames[batch.Frames.Count - 1].Seq;
-            _pendingFrames.AddRange(batch.Frames);
+            var capacity = _settings.MaxPendingFrames;
+            var overflow = Math.Max(0, _pendingFrames.Count + batch.Frames.Count - capacity);
+            if (overflow > 0)
+            {
+                _pendingFrames.RemoveRange(0, Math.Min(overflow, _pendingFrames.Count));
+                Internal.FramesFailed += overflow;
+            }
+            for (var i = Math.Max(0, batch.Frames.Count - capacity); i < batch.Frames.Count; i++)
+            {
+                _pendingFrames.Add(batch.Frames[i]);
+            }
             for (int i = 0; i < batch.Frames.Count; i++)
             {
                 var physical = batch.Frames[i];

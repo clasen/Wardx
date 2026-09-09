@@ -22,6 +22,7 @@ namespace Wardx
         public int? MaxBufferedEvents;
         public int? MaxBufferedLogs;
         public int? MaxFrameBytes;
+        public int? MaxPendingFrames;
         public int? MaxSeriesPerMetric;
         public int? MaxDimensionKeys;
         public int? MaxDimensionValueLength;
@@ -49,6 +50,7 @@ namespace Wardx
         public int MaxBufferedEvents;
         public int MaxBufferedLogs;
         public int MaxFrameBytes;
+        public int MaxPendingFrames;
         public int MaxSeriesPerMetric;
         public int MaxDimensionKeys;
         public int MaxDimensionValueLength;
@@ -99,6 +101,7 @@ namespace Wardx
                 MaxBufferedEvents = options.MaxBufferedEvents ?? SdkDefaults.MaxBufferedEvents,
                 MaxBufferedLogs = options.MaxBufferedLogs ?? SdkDefaults.MaxBufferedLogs,
                 MaxFrameBytes = options.MaxFrameBytes ?? SdkDefaults.MaxFrameBytes,
+                MaxPendingFrames = options.MaxPendingFrames ?? SdkDefaults.MaxPendingFrames,
                 MaxSeriesPerMetric = options.MaxSeriesPerMetric ?? SdkDefaults.MaxSeriesPerMetric,
                 MaxDimensionKeys = options.MaxDimensionKeys ?? SdkDefaults.MaxDimensionKeys,
                 MaxDimensionValueLength = options.MaxDimensionValueLength ?? SdkDefaults.MaxDimensionValueLength,
@@ -117,6 +120,7 @@ namespace Wardx
             AssertPositive(settings.MaxBufferedEvents, "maxBufferedEvents");
             AssertPositive(settings.MaxBufferedLogs, "maxBufferedLogs");
             AssertPositive(settings.MaxFrameBytes, "maxFrameBytes");
+            AssertPositive(settings.MaxPendingFrames, "maxPendingFrames");
             if (settings.MaxFrameBytes < 1024)
             {
                 throw new ArgumentException("maxFrameBytes must be at least 1024");

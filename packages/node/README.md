@@ -52,6 +52,8 @@ To receive frames, run an ingest server. Install `@wardx/server` and start it wi
 - A measure call does not send network data.
 - A measure call does not wait for a Promise.
 - Delivery is at-most-once. If a sync fails, the SDK discards the batch.
+- Pending physical frames are capped by `maxPendingFrames` (default: 32). On overflow, the oldest frames are discarded and counted in `wardx.internal.frames_failed`. This bounds the pending queue even while an HTTP request stalls; it is not a cap on total SDK memory.
+- `httpTimeoutMs` bounds the entire HTTP request, including connection establishment and response reading.
 - Physical frames are serialized, split to `maxFrameBytes`, and assigned consecutive sequence numbers. An individually oversized row is counted in `wardx.internal.frame_rows_dropped`.
 - The application has priority over telemetry.
 - Remote Config is always read from local memory.

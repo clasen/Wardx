@@ -47,6 +47,7 @@ export const REQUIRED_SDK_DEFAULT_KEYS = [
   'maxBufferedEvents',
   'maxBufferedLogs',
   'maxFrameBytes',
+  'maxPendingFrames',
   'maxSeriesPerMetric',
   'maxDimensionKeys',
   'maxDimensionValueLength',
