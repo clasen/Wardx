@@ -6,6 +6,7 @@ function normalize(stored) {
   return {
     values: stored.state.values,
     keyRoles: stored.state.keyRoles,
+    keyRules: stored.state.keyRules ?? {},
     experimentsById: Object.fromEntries(stored.state.experiments.map((experiment) => [experiment.id, experiment])),
     catalog
   };
@@ -19,6 +20,7 @@ function denormalize(state) {
     state: {
       values: state.values,
       keyRoles: state.keyRoles,
+      keyRules: state.keyRules,
       experiments: Object.values(state.experimentsById)
     },
     catalog

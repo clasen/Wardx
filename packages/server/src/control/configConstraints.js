@@ -79,6 +79,9 @@ export function validateConfigConstraints(snapshot, catalog, label = 'config sna
     if (Object.hasOwn(snapshot.values, key)) {
       validateValue(snapshot.values[key], signal.constraint, `${label}.values.${key}`);
     }
+    for (const rule of snapshot.keyRules && Object.hasOwn(snapshot.keyRules, key) ? snapshot.keyRules[key] : []) {
+      validateValue(rule.value, signal.constraint, `${label}.keyRules.${key}.value`);
+    }
     for (const experiment of snapshot.experiments) {
       for (const variant of experiment.variants) {
         if (Object.hasOwn(variant.values, key)) {

@@ -52,9 +52,10 @@ npm availability from this checkout or silently substitute the forwarding bridge
 | `src/loadConfig.js` | Closed required operational config; no defaults. |
 | `src/auth/CredentialRegistry.js` | Authenticate raw keys and authorize claimed roles. |
 | `src/ingest/` | Bounded HTTP read/validation and pre-mutation capacity checks. |
-| `src/storage/SqliteStateStore.js` | Schema v2, WAL, project state, journal, aggregate tiers, watermarks, and retention tables. |
+| `src/config/ConfigRepository.js`, `src/config/rules.js` | Role-visible snapshots, ordered conditions, and context tokens. |
+| `src/storage/SqliteStateStore.js` | Schema v3, WAL, project state, journal, aggregate tiers, watermarks, and retention tables. |
 | `src/storage/RetentionLedger.js` | Explicit activity cohorts, pinned salt fingerprints, and D1/D7/D30 returns. |
-| `src/storage/ExperimentLedger.js` | Durable SHA-256 assignment dedupe, provenance, totals, terminal output/expiry. |
+| `src/storage/ExperimentLedger.js` | Durable XXHash64 assignment dedupe, provenance, totals, terminal output/expiry. |
 | `src/aggregation/history/` | Canonical historical rows and deterministic compaction. |
 | `src/events/RecentEvents.js` | Per-project allowlisted, bounded volatile event samples and filters. |
 | `src/control/ControlService.js` | MCP reads/mutations, experiment gates, journal publish. |
@@ -103,12 +104,29 @@ Each credential contains `label`, `project`, `allowedRoles`,
 `keyRoles`, `experiments`, and optional `catalog`. Every experiment has
 `goalMetric`, `assignmentUnitKind`, `terminalRetentionMs`, roles, and variants.
 
+Optional `keyRules` maps existing config keys to ordered `{ when, value }`
+rules; omitted rules mean the stored base. Validate rule values against catalog
+constraints in bootstrap, hydration, writes, and rollback. Keep rule metadata
+server-side and preserve it when a base knob is tuned or an experiment shipped.
+
+Sync always returns `configContext`, a 16-character lowercase XXHash64 digest of the resolved wire
+snapshot. Send `config` when the version or context differs, including when the
+request lacks a token. The same flow applies without conditional rules. Cache
+visible values, rules, serialized experiments, and base JSON with its digest by
+role; evaluate only visible conditional keys on sync. Reuse the base snapshot
+when no value changes and invalidate role caches on replacement. Never accumulate
+a cache keyed by arbitrary client attributes. See `docs/PROTOCOL.md` for the wire
+contract and the tools reference for condition syntax.
+
 Retention config requires `maxUsersPerProject` and `maxQueryDays`. User state
 does not expire; capacity rejects new users rather than reenrolling existing
 ones. Salt fingerprints are pinned per project and changes are rejected.
-SQLite schema v1 upgrades transactionally to v2 at startup; older binaries
-cannot open v2. Obtain production startup/migration authorization before using
-that upgrade on a live database.
+SQLite uses schema v3. Startup accepts that schema or initializes an empty
+database; it rejects older schemas because the XXHash64 identity change requires
+fresh telemetry history. There is no automatic legacy-schema migration.
+Conditional Remote Config rules are optional project-state JSON and do not
+require resetting an otherwise compatible database. Never erase a live database
+as part of a config update.
 
 ## Verification
 

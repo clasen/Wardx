@@ -51,7 +51,7 @@ HLL metrics cannot backfill cohorts.
 | `set_signal` / `delete_signal` | `name`, plus `description`, optional exact `category`, and optional `constraint` for set |
 | `set_inspect_event` / `delete_inspect_event` | exact event `name`; delete also purges its retained volatile samples |
 | `set_persist_log` / `delete_persist_log` | exact `name` |
-| `set_config_value` | `key`, JSON `value`, `roles` |
+| `set_config_value` | `key`, JSON base `value`, `roles`, optional ordered `rules` |
 | `delete_config_value` | `key` |
 | `upsert_experiment` | `experiment` |
 | `set_experiment_enabled` | `id`, `enabled` |
@@ -70,6 +70,18 @@ SDK payloads do not. Constraints are opt-in and may be declared before a key
 exists. Bootstrap, persisted state, every value or variant change, and rollback
 must satisfy the resulting catalog. Disabled experiment variants are also
 validated. A rejected mutation changes neither state, version, nor journal.
+
+Remote Config and experiment visibility remain scoped by `roles`. Optional
+`rules` choose a visible key's base value: the first rule whose `when` conditions
+all match wins. Conditions are `{ field, op, value }`, with fields `role`,
+`appVersion`, `environment`, `platform`, or `attributes.<literal name>`.
+`eq` and `in` use strict scalar equality; `gt`, `gte`, `lt`, `lte` compare finite
+numbers only. Missing fields or different types do not match. Rules stay on
+the server as `keyRules` and appear on overview knobs. Omitting `rules` preserves
+them; `[]` clears them. Rule values must satisfy catalog constraints.
+Experiment variants override the resolved base. `ship_experiment` copies the
+winner into the base and preserves rules, so inspect those rules before shipping
+a value intended for all clients. Attributes do not change experiment eligibility.
 
 `roles` is `['*']` or one or more named roles. A fixed-horizon experiment has
 this server-side shape in addition to id/allocation/salt/roles/variants:

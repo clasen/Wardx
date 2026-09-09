@@ -18,6 +18,19 @@ const pkg = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8')
 );
 
+function copyAttributes(attributes) {
+  if (!attributes || typeof attributes !== 'object' || Array.isArray(attributes)) {
+    throw new Error('attributes must be an object');
+  }
+  for (const [key, value] of Object.entries(attributes)) {
+    if (key.length === 0) throw new Error('attributes keys must be non-empty strings');
+    if (typeof value !== 'string' && typeof value !== 'boolean' && !(typeof value === 'number' && Number.isFinite(value))) {
+      throw new Error(`attributes.${key} must be a string, finite number, or boolean`);
+    }
+  }
+  return Object.fromEntries(Object.entries(attributes));
+}
+
 export class WardxNode {
   constructor(settings) {
     this.settings = settings;
@@ -31,6 +44,8 @@ export class WardxNode {
       goal: (name, context) => this._core.experimentGoal(name, context)
     };
     if (this._disabled) return;
+    this._attributes = copyAttributes(settings.attributes === undefined ? {} : settings.attributes);
+    this._configContext = undefined;
     this._transport = createHttpTransport(settings);
     this._stopped = false;
     this._shutdownPromise = null;
@@ -52,6 +67,11 @@ export class WardxNode {
 
   identify(subjectId) {
     this._core.identify(subjectId);
+  }
+
+  setAttributes(attributes) {
+    if (this._disabled) return;
+    this._attributes = copyAttributes(attributes);
   }
 
   counter(name, dims) {
@@ -126,7 +146,7 @@ export class WardxNode {
       this._core.snapshotIfDirty();
     }
     const frames = this._core.takePendingFrames();
-    if (!flags.bootstrap && frames.length === 0) return;
+    if (!flags.bootstrap && !flags.flush && frames.length === 0) return;
     const envelope = {
       protocol: PROTOCOL_VERSION,
       project: this.settings.project,
@@ -140,9 +160,11 @@ export class WardxNode {
         role: this.settings.role,
         appVersion: this.settings.appVersion,
         environment: this.settings.environment,
-        platform: PLATFORM
+        platform: PLATFORM,
+        attributes: this._attributes
       },
       configVersion: this._core.configStore.version,
+      configContext: this._configContext,
       frames
     };
     const json = JSON.stringify(envelope);
@@ -210,6 +232,7 @@ export class WardxNode {
     }
     if (json.config) {
       this._core.applyConfig(json.configVersion, json.config);
+      this._configContext = json.configContext;
     }
   }
 }

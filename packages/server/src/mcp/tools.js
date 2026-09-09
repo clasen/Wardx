@@ -1,4 +1,5 @@
 import { CONFIG_CONSTRAINT_SCHEMA } from '../control/configConstraints.js';
+import { CONFIG_RULES_SCHEMA } from '../config/rules.js';
 
 const PROJECT = {
   type: 'string',
@@ -231,7 +232,7 @@ export const TOOL_DEFS = [
   {
     name: 'set_config_value',
     description:
-      'Set one Remote Config key and the roles that receive it. Bumps configVersion so those clients receive the snapshot on the next sync. roles is ["*"] or a list of role names.',
+      'Set one Remote Config base value, optional conditional rules, and the roles that receive it. Experiments override the resolved base. Bumps configVersion. Omitted rules are preserved; [] clears them. roles is ["*"] or a list of role names.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -239,6 +240,7 @@ export const TOOL_DEFS = [
         key: { type: 'string', minLength: 1 },
         value: {},
         roles: ROLES,
+        rules: CONFIG_RULES_SCHEMA,
         expectedVersion: EXPECTED_VERSION,
         reason: REASON
       },
@@ -402,7 +404,7 @@ export const TOOL_DEFS = [
   {
     name: 'ship_experiment',
     description:
-      'Close a test: copy the winning variant values into Remote Config and disable the experiment. Refuses unless analyze_experiment decision.status is winner (or already shipped that variant). Omit variant to ship decision.leadingVariant. Bumps configVersion.',
+      'Close a test: copy the winning variant values into Remote Config base values and disable the experiment. Preserves conditional rules, which can override that base after disabling. Refuses unless analyze_experiment decision.status is winner (or already shipped that variant). Omit variant to ship decision.leadingVariant. Bumps configVersion.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -598,7 +600,7 @@ export function executeTool(control, name, args = {}) {
     case 'get_config':
       return control.getConfig(args.project);
     case 'set_config_value':
-      return control.setValue(args.project, args.key, args.value, args.roles, mutation);
+      return control.setValue(args.project, args.key, args.value, args.roles, mutation, args.rules);
     case 'delete_config_value':
       return control.deleteValue(args.project, args.key, mutation);
     case 'list_experiments':

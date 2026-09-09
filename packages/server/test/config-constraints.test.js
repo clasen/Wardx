@@ -116,7 +116,7 @@ test('MCP writes enforce constraints atomically and keep their metadata off the 
     rejectedAtomically(server, () => control.setValue('demo', KEY, 600, ['client'], options(control)), /allowed enum value/);
     const knob = executeTool(control, 'get_project_overview', { project: 'demo' }).knobs.find((entry) => entry.key === KEY);
     assert.deepEqual(knob.constraint, { ...CONSTRAINT, enum: [0, 500, 1000] });
-    const wire = JSON.parse(server.wardx.registry.get('demo').configRepo.buildResponse(true, 'client'));
+    const wire = JSON.parse(server.wardx.registry.get('demo').configRepo.buildResponse(0, { role: 'client' }));
     assert.equal(wire.config.values[KEY], 500);
     assert.equal(JSON.stringify(wire).includes('constraint'), false);
     assert.equal(JSON.stringify(control.getConfig('demo')).includes('constraint'), false);

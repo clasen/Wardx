@@ -40,10 +40,31 @@ Exports: `WardxClient`, `WardxOptions`, `WardxBehaviour` (Unity), `Dims`, `Conso
   delivery, or config.
 - Envelope `sdk.name` is `wardx-unity` under `#if UNITY_5_3_OR_NEWER`, else `wardx-csharp`. `client.platform` matches. Every `WardxClient.Create(...)` instance owns one ULID `instanceId` and one ULID `sessionId`; they are not process-wide.
 - Sync delay is `SyncIntervalMs * random(SyncJitterMin, SyncJitterMax)`, recomputed every cycle.
-- `FlushAsync` snapshots if dirty and sends without stopping scheduling.
+- `FlushAsync` snapshots if dirty and syncs even with no frames, without stopping scheduling.
   `ShutdownAsync` settles the active sync, attempts a final flush, and closes
   transport. `Stop()` cancels/closes without a final flush. Unity quit/destroy
   callbacks use `Stop()` and must not block the main thread on HTTP.
+
+## Conditional config context
+
+`WardxOptions.Attributes` and `WardxClient.SetAttributes(map)` accept flat
+`IReadOnlyDictionary<string, object>` maps of strings, finite numeric values,
+and booleans. Attribute enums are not normalized like event/dimension enums.
+The client copies the map; the setter replaces it and an empty map clears it.
+Disabled clients ignore the setter. Attribute state belongs to the instance,
+not the identified subject. It is emitted in `client.attributes`.
+
+Every successful server response includes opaque `configContext`. Return the
+token from the last applied snapshot alongside `configVersion`; equal version
+numbers do not mean a returned snapshot can be skipped. Role visibility is
+resolved before conditional base values. The existing local experiment resolver
+then overrides that base without changing assignment, exposure, or goals.
+
+`await wardx.FlushAsync()` requests a sync after changing attributes, even
+without telemetry. Reads keep the last snapshot until a successful sync. Task
+completion alone does not prove delivery; failures are recorded internally.
+Use `ITracer.Sync` when the sync result is needed. In Unity, await while the
+player loop is active; never block the main thread waiting for HTTP.
 
 ## Reusing handles
 

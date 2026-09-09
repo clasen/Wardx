@@ -41,11 +41,11 @@ to both .NET and Unity.
 https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime
 ```
 
-Release `#v0.8.0` includes disabled mode and the optional enum API. In
+Release `#v0.9.0` includes conditional Remote Config, disabled mode, and the optional enum API. In
 `Packages/manifest.json`:
 
 ```json
-"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.8.0"
+"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.9.0"
 ```
 
 **Unity (this checkout).** Package Manager → Add package from disk → `clients/csharp/Runtime/package.json`.
@@ -412,6 +412,14 @@ Until a sync applies a snapshot, `Get` returns the fallback. Assignment is local
 Sync responses supply snapshots. Reads continue using the last snapshot
 between syncs. `Get<T>` infers its result type from the fallback and converts
 the stored value to that type; incompatible conversions can throw.
+
+SDK 0.9.0 requires `@wardx/server` 0.9.0 or newer. Upgrade the server first: older servers reject the new client fields even when attributes are empty.
+
+The server filters keys and experiments by role, then resolves conditional base values against client metadata and optional `WardxOptions.Attributes`. Attributes are a flat `IReadOnlyDictionary<string, object>` of application-defined names with string, finite numeric, or boolean values. For example, use `Attributes = new Dictionary<string, object> { ["os"] = "android", ["build"] = 119 }`. The existing `platform` field identifies the SDK runtime (`unity` or `csharp`), not the operating system.
+
+`wardx.SetAttributes(new Dictionary<string, object> { ["os"] = "android", ["build"] = 120 })` replaces the complete map with a copy; an empty dictionary clears it. The next successful sync resolves the new context; `await wardx.FlushAsync()` requests a sync now. Attributes belong to the SDK instance, not the identified experiment subject, and must contain only non-secret values.
+
+Every successful server response includes an opaque `configContext` token. The SDK returns the token from the last applied snapshot so the server can refresh values after a context change even at the same `configVersion`. The same contract applies with or without rules. An applicable experiment still overrides the resolved base. Attributes do not alter role eligibility, deterministic assignment, exposures, or goals.
 
 Define experiment variants on the server over existing Remote Config keys.
 The application continues reading those keys:

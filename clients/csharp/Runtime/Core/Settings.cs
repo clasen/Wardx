@@ -12,6 +12,7 @@ namespace Wardx
         public string Role;
         public string AppVersion;
         public string Environment;
+        public IReadOnlyDictionary<string, object> Attributes;
         public string PrivacySalt;
         public ITracer Tracer;
         public int? AggregateIntervalMs;
@@ -38,6 +39,7 @@ namespace Wardx
         public string Role;
         public string AppVersion;
         public string Environment;
+        public IReadOnlyDictionary<string, object> Attributes;
         public string PrivacySalt;
         public ITracer Tracer;
         public int AggregateIntervalMs;
@@ -87,6 +89,7 @@ namespace Wardx
                 Role = options.Role,
                 AppVersion = options.AppVersion,
                 Environment = options.Environment,
+                Attributes = options.Attributes,
                 PrivacySalt = options.PrivacySalt,
                 Tracer = options.Tracer,
                 AggregateIntervalMs = options.AggregateIntervalMs ?? SdkDefaults.AggregateIntervalMs,

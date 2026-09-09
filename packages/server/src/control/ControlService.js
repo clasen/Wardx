@@ -13,6 +13,7 @@ import {
   validateSignalEntry
 } from './catalog.js';
 import { ConfigRepository } from '../config/ConfigRepository.js';
+import { validateConfigRules } from '../config/rules.js';
 import { decideExperiment } from './experimentDecision.js';
 import { assertRole, assertRoles } from '../roles.js';
 import { assertExperimentKeysExist, toClientExperiment, validateExperiment } from './validateExperiment.js';
@@ -29,6 +30,7 @@ function materialize(normalized) {
     snapshot: {
       values: structuredClone(normalized.values),
       keyRoles: structuredClone(normalized.keyRoles),
+      keyRules: structuredClone(normalized.keyRules),
       experiments: Object.values(normalized.experimentsById).map((experiment) => structuredClone(experiment))
     },
     catalog
@@ -113,6 +115,7 @@ export class ControlService {
       applyChange: (state, change) => {
         const next = applyControlStateChange(state, change);
         const candidate = materialize(next);
+        validateConfigRules(candidate.snapshot.values, candidate.snapshot.keyRules);
         validateCatalog(candidate.catalog, 'catalog');
         validateConfigConstraints(candidate.snapshot, candidate.catalog);
         return next;
@@ -253,13 +256,17 @@ export class ControlService {
     return { project, role, ...result };
   }
 
-  setValue(project, key, value, roles, options) {
+  setValue(project, key, value, roles, options, rules) {
     if (typeof key !== 'string' || key.length === 0) throw new Error('key is required');
     assertRoles(roles, 'roles');
     this.requireStore(project);
     return this._mutate(project, options, 'set_config_value', [key], (state) => {
       state.values[key] = structuredClone(value);
       state.keyRoles[key] = [...roles];
+      if (rules !== undefined) {
+        if (Array.isArray(rules) && rules.length === 0) delete state.keyRules[key];
+        else state.keyRules[key] = structuredClone(rules);
+      }
     });
   }
 
@@ -273,6 +280,7 @@ export class ControlService {
     return this._mutate(project, options, 'delete_config_value', [key], (state) => {
       delete state.values[key];
       delete state.keyRoles[key];
+      delete state.keyRules[key];
     });
   }
 
@@ -354,6 +362,7 @@ export class ControlService {
     return this._mutate(project, options, 'replace_snapshot', ['*'], (state) => {
       state.values = structuredClone(snapshot.values);
       state.keyRoles = structuredClone(snapshot.keyRoles);
+      state.keyRules = structuredClone(snapshot.keyRules ?? {});
       state.experimentsById = Object.fromEntries(
         snapshot.experiments.map((experiment) => [experiment.id, toClientExperiment(experiment)])
       );
@@ -531,6 +540,7 @@ export class ControlService {
         key,
         value: snapshot.values[key],
         roles: [...snapshot.keyRoles[key]],
+        rules: structuredClone(Object.hasOwn(snapshot.keyRules, key) ? snapshot.keyRules[key] : []),
         ...annotateSignal(catalog, key)
       }));
     const summary = store.aggregator.overviewRows();

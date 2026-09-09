@@ -29,7 +29,8 @@ commits accepted deduplicated evidence before returning success.
     "role": "client",
     "appVersion": "2.4.1",
     "environment": "production",
-    "platform": "node"
+    "platform": "node",
+    "attributes": { "region": "eu", "tier": 2 }
   },
   "configVersion": 12,
   "frames": []
@@ -45,7 +46,11 @@ roles that key may claim; a valid but out-of-scope role receives `403`. Several
 roles may sync to the same project and similar metric names remain separate.
 Role-filtered Remote Config is still not a secret store.
 
-`frames` may be empty on bootstrap so the client can fetch Remote Config immediately.
+`frames` may be empty on bootstrap or an explicit flush so the client can fetch Remote Config without recording telemetry.
+
+Optional `client.attributes` is a flat object with application-defined non-empty keys and string, finite number, or boolean values. It uses the configured `maxAttributeKeys`, `maxAttributeValueLength`, and `maxNameBytes` bounds. Missing attributes are not matched by conditions. Attributes describe the SDK instance; they do not select experiment subjects or authorize access. Standard `platform` remains the SDK runtime, not the operating system.
+
+Optional request `configContext` is the 16-character lowercase XXHash64 token returned with the last applied snapshot. Omit it until one has been applied. Every successful sync response includes this token, whether or not the project has conditional rules.
 
 The envelope is closed-schema: unknown top-level, `sdk`, `client`, frame, metric, histogram, exemplar, event, and log fields are rejected. The server also enforces `maxFramesPerEnvelope`, the combined `maxItemsPerEnvelope`, `maxNameBytes`, `maxDimensionKeys`, `maxDimensionValueLength`, `maxAttributeKeys`, `maxAttributeValueLength`, and `maxClockSkewMs` from its required configuration. Values and timestamps must be finite; tuples, dimensions, attributes, histogram bounds/counts/totals, and log levels must have the shapes below. Validation completes before the sink, aggregate state, rings, or persistence are mutated.
 
@@ -104,10 +109,15 @@ SDKs measure the serialized UTF-8 JSON and split a logical snapshot into physica
 
 ## Response
 
-Same config version:
+Same config version and unchanged resolved context:
 
 ```json
-{ "ok": true, "serverTime": 1787221135102, "configVersion": 12 }
+{
+  "ok": true,
+  "serverTime": 1787221135102,
+  "configVersion": 12,
+  "configContext": "eb73e4a74e3c94df"
+}
 ```
 
 Newer snapshot:
@@ -117,6 +127,7 @@ Newer snapshot:
   "ok": true,
   "serverTime": 1787221135102,
   "configVersion": 13,
+  "configContext": "eb73e4a74e3c94df",
   "config": {
     "values": { "message.delayMs": 1000 },
     "experiments": []
@@ -126,7 +137,11 @@ Newer snapshot:
 
 The response `config` contains only keys and experiments visible to `client.role`. Each stored key has `keyRoles`: a list of role names, or `["*"]` for every role. Each stored experiment has `roles` with the same shape. Those lists stay on the server. MCP reads them. The wire snapshot does not include them.
 
-The server keeps one `configVersion` per project. It caches one JSON view per role and reuses it. It does not rebuild JSON per instance.
+The server keeps one `configVersion` per project and uses one sync contract for all clients. It resolves visible base values, leaves experiments role-filtered, and always returns `configContext`, an XXHash64 digest (seed 0) of the UTF-8 resolved wire snapshot. The response includes `config` if either the project version or that digest differs from the request. A missing token requests a snapshot, including when there are no rules. An unchanged result does not resend `config`, even if unused attributes changed. The server caches visible values, rules, serialized experiments, and the base snapshot with its digest per role. Each sync evaluates only visible conditional keys and reuses the base JSON and digest when none changes. Replacing the configuration invalidates these caches; the server never retains a cache per client or attribute combination. The token is opaque to clients and carries no authorization meaning.
+
+Rules remain server-only in `keyRules[key]`. Each is `{ "when": [{ "field": "attributes.tier", "op": "lt", "value": 2 }], "value": 200 }`. Fields are `role`, `appVersion`, `environment`, `platform`, or `attributes.<literal attribute name>`. All conditions must match; the first matching rule replaces the base value. No match uses the stored base. `eq` and `in` use strict scalar equality; `gt`, `gte`, `lt`, and `lte` compare finite numbers only, without string or version coercion. Missing fields and incompatible types do not match. A matching object/array value replaces the complete value, not individual properties. No rule makes a role-hidden key or experiment visible.
+
+An applicable experiment variant overrides the resolved base on the client. Attributes do not change the experiment assignment hash or exposure state. `ship_experiment` copies the winner into the stored base and preserves rules, so matching rules take precedence again after the experiment is disabled.
 
 Error responses use `{ "ok": false, "error": "..." }`:
 

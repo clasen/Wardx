@@ -14,7 +14,7 @@ Read only the reference relevant to the task:
 - [references/package.md](references/package.md): programmatic integration,
   handler/server lifecycle, configuration, internals, and verification.
 - [references/tools.md](references/tools.md): MCP arguments, retention semantics,
-  config constraints, and experiment policy fields.
+  config constraints, conditional rules, and experiment policy fields.
 
 For a framework-owned HTTP/HTTPS transport, use `createWardxHandler(config)`
 and retain its `stop` function. Use `startServer` when Wardx should own listeners
@@ -59,6 +59,20 @@ Use `list_config_changes` for retained audit metadata. Use
 `rollback_config_change` to apply a retained inverse as a new version. Rollback
 never decrements a version or rewrites the journal.
 
+## Conditional Remote Config
+
+Keys and experiments remain scoped by role. Knobs are adjustable config keys;
+ordered rules choose each visible key's base value using client metadata and
+application-defined attributes. Keep role separate from OS/build/channel;
+`platform` identifies the SDK runtime. Do not hardcode update or platform logic
+in Wardx. Read the tools reference before writing conditions.
+
+Inspect a knob's current rules before tuning it. `set_config_value` preserves
+rules when omitted and clears them with `[]`. Conditions do not change experiment
+eligibility or assignment: an applicable variant overrides the resolved base.
+`ship_experiment` writes the winner to the base and preserves rules, which apply
+again after disablement. Account for them when a winner should reach all clients.
+
 ## Experiments
 
 Propose only over existing knobs visible to every `experiment.roles` entry.
@@ -66,7 +80,7 @@ Every experiment requires `assignmentUnitKind`, `goalMetric`, and
 `terminalRetentionMs`. Descriptive and closable plans have different policy
 requirements; use the all-or-none schema in the tools reference.
 
-Assignment remains client-side. The server's non-queryable SHA-256 ledger
+Assignment remains client-side. The server's non-queryable XXHash64 ledger
 deduplicates assignment units and preserves source role/trust. A trusted goal
 must match a trusted exposure with the same assignment hash and provenance.
 

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Net;
@@ -83,6 +84,45 @@ namespace Wardx.Tests
     {
         enum DisabledName { Value }
 
+        static void ConditionalConfig()
+        {
+            var attributes = new Dictionary<string, object> { ["tier"] = 1, ["region"] = "eu", ["enabled"] = false };
+            var settings = Fixtures.TestSettings(options => options.Attributes = attributes);
+            var token = new string('a', 16);
+            var transport = new MemoryTransport
+            {
+                Response = "{\"ok\":true,\"configVersion\":13,\"configContext\":\"" + token +
+                    "\",\"config\":{\"values\":{\"knob\":200},\"experiments\":[]}}"
+            };
+            var client = new WardxClient(settings, transport, () => 1, new SdkIdentity { Name = "wardx-csharp", Version = "test", Platform = "csharp" });
+            try
+            {
+                attributes["tier"] = 9;
+                client.FlushAsync().GetAwaiter().GetResult();
+                var first = Json.Parse(transport.LastJson);
+                AssertX.Equal(1.0, first["client"]["attributes"]["tier"].NumberValue, "initial attributes are copied");
+                AssertX.Equal(200, client.Config.Get("knob", -1), "conditional snapshot");
+                var replacement = new Dictionary<string, object> { ["tier"] = 3 };
+                client.SetAttributes(replacement);
+                replacement["tier"] = 1;
+                transport.Response = "{\"ok\":true,\"configVersion\":13,\"configContext\":\"" + new string('b', 16) +
+                    "\",\"config\":{\"values\":{\"knob\":1000},\"experiments\":[]}}";
+                client.FlushAsync().GetAwaiter().GetResult();
+                var next = Json.Parse(transport.LastJson);
+                AssertX.Equal(token, next["configContext"].StringValue, "previous snapshot context returned to server");
+                AssertX.Equal(3.0, next["client"]["attributes"]["tier"].NumberValue, "replacement attributes are copied");
+                AssertX.True(next["client"]["attributes"]["region"] == null, "attributes replace instead of merge");
+                AssertX.Equal(1000, client.Config.Get("knob", -1), "same-version context snapshot applied");
+                AssertX.Throws(() => client.SetAttributes(null), "attributes");
+                AssertX.Throws(() => client.SetAttributes(new Dictionary<string, object> { ["tier"] = double.NaN }), "finite");
+                AssertX.Throws(() => client.SetAttributes(new Dictionary<string, object> { ["tier"] = new object() }), "attributes");
+                client.SetAttributes(new Dictionary<string, object>());
+                client.FlushAsync().GetAwaiter().GetResult();
+                AssertX.Equal(0, Json.Parse(transport.LastJson)["client"]["attributes"].ObjectNative().Count, "clear attributes");
+            }
+            finally { client.ShutdownAsync().GetAwaiter().GetResult(); }
+        }
+
         static void DisabledClient()
         {
             var options = new WardxOptions { Enabled = false };
@@ -145,6 +185,7 @@ namespace Wardx.Tests
         public static void Run()
         {
             DisabledClient();
+            ConditionalConfig();
             var transport = new MemoryTransport();
             var client = WardxClient.Create(new WardxOptions
             {

@@ -1225,6 +1225,10 @@ test('analyze_experiment is cannot_decide without a close policy', () => {
 test('ship_experiment copies the winner and disables the experiment', async () => {
   await withServer(testServerConfig(), async (server, base) => {
     const control = server.wardx.control;
+    const rules = [{ when: [{ field: 'attributes.region', op: 'eq', value: 'eu' }], value: 800 }];
+    executeMutation(control, 'set_config_value', {
+      project: 'demo', key: 'message.delayMs', value: 1000, roles: ['client'], rules
+    });
     mutate(control, 'upsertExperiment', 'demo', SHIPPABLE);
     ingestVariant(server.wardx.experimentLedger, 'control', 50, 10);
     ingestVariant(server.wardx.experimentLedger, 'fast', 50, 40);
@@ -1241,6 +1245,11 @@ test('ship_experiment copies the winner and disables the experiment', async () =
     assert.equal(shipped.shippedVariant, 'fast');
     const snapshot = control.getConfig('demo');
     assert.equal(snapshot.values['message.delayMs'], 400);
+    assert.deepEqual(snapshot.keyRules['message.delayMs'], rules);
+    const regional = JSON.parse(server.wardx.registry.get('demo').configRepo.buildResponse(0, {
+      role: 'client', attributes: { region: 'eu' }
+    }));
+    assert.equal(regional.config.values['message.delayMs'], 800);
     assert.equal(snapshot.experiments[0].enabled, false);
     assert.equal(snapshot.experiments[0].shippedVariant, 'fast');
     assert.equal(snapshot.experiments[0].outcomeKind, 'conversion');

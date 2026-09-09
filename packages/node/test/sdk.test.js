@@ -18,6 +18,66 @@ async function withServer(fn) {
   }
 }
 
+test('conditional config refreshes attributes while preserving role-scoped experiments and exposures', async () => {
+  await withServer(async (server, endpoint) => {
+    const control = server.wardx.control;
+    const options = () => ({ expectedVersion: control.getConfig('demo').version, reason: 'test contextual config' });
+    const rules = [{ when: [{ field: 'attributes.tier', op: 'lt', value: 2 }], value: 200 }];
+    control.setValue('demo', 'message.delayMs', 1000, ['client'], options(), rules);
+    control.upsertExperiment('demo', {
+      id: 'context-test', enabled: true, allocation: 1, salt: 'stable', roles: ['client'],
+      primaryMetric: 'message.sent', goalMetric: 'message.sent', assignmentUnitKind: 'subject',
+      terminalRetentionMs: 604800000,
+      variants: [{ key: 'a', weight: 1, values: { 'message.delayMs': 500 } }]
+    }, options());
+    const attributes = { tier: 1, region: 'eu', enabled: false };
+    const settings = { endpoint, projectKey: 'test-key', project: 'demo', role: 'client',
+      appVersion: '1.0.0', environment: 'test', privacySalt: 'test-salt', attributes,
+      aggregateIntervalMs: 60_000, syncIntervalMs: 60_000 };
+    const wardx = createWardx(settings);
+    const other = createWardx({ ...settings, role: 'backend' });
+    try {
+      attributes.tier = 9;
+      await Promise.all([wardx.flush(), other.flush()]);
+      assert.equal(wardx.config.get('message.delayMs', -1), 200);
+      assert.equal(other.config.get('message.delayMs', -1, { subjectId: 'user-1' }), -1);
+      assert.deepEqual(other._core.configStore.experiments, []);
+      assert.equal(wardx.config.get('message.delayMs', -1, { subjectId: 'user-1' }), 500);
+      const version = wardx._core.configStore.version;
+      const replacement = { tier: 3 };
+      wardx.setAttributes(replacement);
+      replacement.tier = 1;
+      await wardx.flush();
+      assert.equal(wardx._core.configStore.version, version);
+      assert.equal(wardx.config.get('message.delayMs', -1), 1000);
+      assert.equal(wardx.config.get('message.delayMs', -1, { subjectId: 'user-1' }), 500);
+      wardx.experiment.goal('message.sent', { subjectId: 'user-1', value: 1 });
+      await wardx.flush();
+      const envelopes = server.wardx.sink.envelopes.filter((envelope) => envelope.client.role === 'client');
+      const events = envelopes.flatMap((envelope) => envelope.frames.flatMap((frame) => frame.events));
+      assert.equal(events.filter((event) => event[1] === 'experiment.exposure').length, 1);
+      assert.equal(events.filter((event) => event[1] === 'experiment.goal').length, 1);
+      assert.deepEqual(envelopes.at(-1).client.attributes, { tier: 3 });
+      assert.match(envelopes.at(-1).configContext, /^[0-9a-f]{16}$/);
+      wardx.setAttributes({});
+      await wardx.flush();
+      assert.equal(wardx.config.get('message.delayMs', -1), 1000);
+      control.setValue('demo', 'message.delayMs', 700, ['client'], options());
+      wardx.setAttributes({ tier: 1 });
+      await wardx.flush();
+      assert.equal(wardx.config.get('message.delayMs', -1), 200);
+      control.setValue('demo', 'message.delayMs', 700, ['client'], options(), []);
+      await wardx.flush();
+      assert.equal(wardx.config.get('message.delayMs', -1), 700);
+      for (const invalid of [null, [], { x: {} }, { x: Infinity }, { '': 1 }]) {
+        assert.throws(() => wardx.setAttributes(invalid), /attributes/);
+      }
+    } finally {
+      await Promise.all([wardx.shutdown(), other.shutdown()]);
+    }
+  });
+});
+
 test('createWardx does not require connectivity', () => {
   const wardx = createWardx({
     endpoint: 'http://127.0.0.1:1',

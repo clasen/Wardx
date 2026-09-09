@@ -80,6 +80,7 @@ export class WardxNode {
   constructor(settings: ResolvedSettings | DisabledWardxOptions);
   retentionActivity(userId: string): void;
   identify(subjectId: string | null | undefined): void;
+  setAttributes(attributes: Record<string, string | number | boolean>): void;
   counter(name: string, dims?: Dimensions | null): CounterHandle;
   gauge(name: string, dims?: Dimensions | null): GaugeHandle;
   histogram(name: string, a?: HistogramOptions | null, b?: HistogramOptions | null): HistogramHandle;

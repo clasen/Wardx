@@ -436,12 +436,46 @@ or `null`. Numeric `min` and `max` are inclusive. Optional `enum` is a nonempty
 list of unique scalar values matching the declared type and range; object and
 array constraints only check type. Values are never coerced.
 
-Constraints apply to bootstrap and hydrated SQLite state, config writes, every
+Constraints apply to bootstrap and hydrated SQLite state, config writes, conditional rule values, every
 experiment variant including disabled experiments, and rollback. Invalid
 candidates leave values, version, and journal unchanged. A constraint can be
 declared before the key exists; keys without constraints remain unrestricted.
 `set_signal` replaces the complete signal metadata: omitting `constraint`
 removes it. Constraints appear in MCP metadata and never in SDK config replies.
+
+### Conditional Remote Config
+
+Upgrade the server to 0.9.0 before adopting SDK 0.9.0: older servers reject the new client fields. Older clients can sync with this server, but receive a snapshot on every successful sync because they do not return `configContext`.
+
+Role routing still determines which keys and experiments a client receives. Optional ordered rules choose the base value of each visible key using `role`, `appVersion`, `environment`, `platform`, or an application-defined `attributes.<name>` field. `platform` identifies the SDK runtime; use attributes for operating system, build, region, channel, or other application concepts.
+
+For example, MCP `set_config_value` can receive:
+
+```json
+{
+  "project": "game",
+  "key": "matchmaking.timeoutMs",
+  "value": 5000,
+  "roles": ["app"],
+  "rules": [
+    {
+      "when": [
+        { "field": "attributes.region", "op": "in", "value": ["eu", "us"] },
+        { "field": "attributes.tier", "op": "lte", "value": 2 }
+      ],
+      "value": 8000
+    }
+  ],
+  "expectedVersion": 12,
+  "reason": "Allow longer matchmaking on these clients"
+}
+```
+
+All conditions in a rule must match, and the first matching rule wins. No match uses the stored base. `eq` compares scalar values strictly; `in` accepts a nonempty scalar list. `gt`, `gte`, `lt`, and `lte` compare finite numbers only. Missing fields and different types do not match. Attribute names are literal flat keys. Values replace the complete base, including objects and arrays; there is no deep merge or version-string parsing.
+
+Omitting `rules` preserves existing rules when tuning a base value; `rules: []` clears them. In-process callers pass rules as the sixth argument to `control.setValue(project, key, value, roles, options, rules)`. Bootstrap and `get_config` use optional `keyRules`, a map from existing config keys to rule arrays. Overview knobs expose their rules. Rules participate in atomic writes, constraints, deletion, persistence, and rollback, but stay off the client wire.
+
+The server resolves the base and returns a context token so changed attributes can refresh the snapshot without a new project version. Experiment variants still override that base locally for eligible roles and allocated subjects. Assignment, exposures, and goals are unchanged. `ship_experiment` updates the stored base and preserves rules; matching rules apply again after the experiment is disabled. Inspect the knob's rules when shipping a winner intended for every client.
 
 In-process example:
 

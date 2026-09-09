@@ -50,7 +50,28 @@ The core does not send HTTP. A runtime (this Node package, or a future SDK) must
 - Tracer is duck-typed and optional. Hooks: core `measure`, `event`, `log`, `frame`; runtime also `sync`. Omit unused hooks. Tracer must not change frames, delivery, or config.
 - Envelope `sdk.name` is `wardx-node`. `client.platform` is `node`. Every `createWardx()` instance owns one ULID `client.instanceId` and one ULID `sessionId`; they are not process-wide.
 - Sync delay is `syncIntervalMs * random(syncJitterMin, syncJitterMax)`, recomputed every cycle. Aggregate and sync timers are `unref()`'d.
-- `flush` snapshots if dirty and sends; it does not stop timers. `shutdown` stops timers, flushes, closes the HTTP agent, and is idempotent.
+- `flush` snapshots if dirty and syncs even with no telemetry; it does not stop timers. `shutdown` stops timers, flushes, closes the HTTP agent, and is idempotent.
+
+## Conditional config context
+
+`createWardx({ ...options, attributes })` copies a flat map of application-defined
+string, finite number, or boolean attributes. `setAttributes(map)` replaces it;
+`setAttributes({})` clears it. Disabled clients ignore the setter. Attribute
+names are literal, not paths. They travel in `client.attributes`, separately
+from `role`, `appVersion`, `environment`, and the SDK runtime `platform`.
+
+Every successful sync response includes opaque `configContext`. Return the
+token from the last applied snapshot alongside `configVersion`; do not compute
+it on the client or skip a returned snapshot just because its version is equal.
+The server resolves role-visible base values, then the existing local resolver
+applies experiment variants. Changing attributes must not reset assignments or
+duplicate exposure. There is one protocol path with or without rules.
+
+Reads keep the last snapshot until a successful sync. `await wardx.flush()`
+requests a sync after an attribute change, including with no pending frames;
+completion is not a guarantee of delivery because sync failures are recorded
+internally. Use the tracer when verification needs the sync result. Do not add
+HTTP calls to `config.get` or retry dropped telemetry.
 
 ## Settings
 

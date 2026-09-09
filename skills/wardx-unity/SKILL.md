@@ -122,6 +122,19 @@ question rather than always using session duration.
 network I/O. Missing keys use the caller's fallback. Remote Config contains no
 secrets; signal descriptions belong in the server catalog.
 
+Role controls which keys and experiments this instance receives. Server-side
+conditions resolve visible base values; an applicable A/B variant overrides
+that base. Knobs are the adjustable config keys.
+
+Use optional `WardxOptions.Attributes` or `wardx.SetAttributes(map)` with a flat
+`IReadOnlyDictionary<string, object>` of strings, finite numbers, or booleans.
+The client copies the map; the setter replaces it and an empty map clears it.
+These attributes belong to the instance, not the experiment subject. The wire
+`platform` is `unity`, not Android or iOS: provide OS/build/channel as attributes
+when the app needs those conditions, without creating a role per platform.
+`WardxBehaviour` has no attribute inspector fields; use manual options when the
+bootstrap must include them. Read the package reference for sync semantics.
+
 On a single-user instance, `Identify(userId)` sets the default experiment subject;
 `Identify(null)` clears it. For multiple users, pass `subjectId` per call instead
 of changing shared identity. Neither ordinary metrics nor base Remote Config
@@ -140,6 +153,8 @@ and emits only for a matching `goalMetric` exposed in this instance. The SDK
 hashes the subject; do not add the raw ID to dimensions or attrs. Do not define
 experiments or persist chosen variants in application code. After a shipped
 experiment's disabled state reaches the snapshot, no new exposure is expected.
+Shipping updates the stored base and preserves conditional rules, which can
+take precedence again after disablement.
 
 ## Retention
 
@@ -151,7 +166,7 @@ delayed activity can revise cohorts. Query semantics belong to the server skill.
 
 ## Lifecycle and diagnosis
 
-`FlushAsync()` sends pending frames without stopping scheduling.
+`FlushAsync()` syncs even with no pending frames, without stopping scheduling.
 `ShutdownAsync()` stops scheduling, waits for the current sync, attempts a final
 flush, and closes transport. Await it while the Unity player loop is still alive
 when the application requires a final send attempt.

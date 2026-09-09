@@ -67,6 +67,7 @@ export interface SdkDefaults {
 }
 
 export interface CreateWardxOptions extends Partial<SdkDefaults> {
+  attributes?: Record<string, string | number | boolean>;
   enabled?: boolean;
   endpoint: string;
   projectKey: string;
@@ -90,6 +91,7 @@ export interface CoreSettings extends SdkDefaults {
 }
 
 export interface ResolvedSettings extends SdkDefaults {
+  attributes?: Record<string, string | number | boolean>;
   enabled?: boolean;
   endpoint: string;
   projectKey: string;

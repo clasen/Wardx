@@ -217,7 +217,7 @@ export function validateEnvelope(body, limits) {
   if (!isObject(body)) return 'body must be an object';
   const invalidBodyKey = unknownKey(
     body,
-    new Set(['protocol', 'project', 'sdk', 'client', 'configVersion', 'frames']),
+    new Set(['protocol', 'project', 'sdk', 'client', 'configVersion', 'configContext', 'frames']),
     'body'
   );
   if (invalidBodyKey) return invalidBodyKey;
@@ -234,7 +234,7 @@ export function validateEnvelope(body, limits) {
   if (!isObject(body.client)) return 'client is required';
   const invalidClientKey = unknownKey(
     body.client,
-    new Set(['instanceId', 'sessionId', 'role', 'appVersion', 'environment', 'platform']),
+    new Set(['instanceId', 'sessionId', 'role', 'appVersion', 'environment', 'platform', 'attributes']),
     'client'
   );
   if (invalidClientKey) return invalidClientKey;
@@ -251,6 +251,20 @@ export function validateEnvelope(body, limits) {
   }
   if (!Number.isInteger(body.configVersion) || body.configVersion < 0) {
     return 'configVersion must be an integer >= 0';
+  }
+  if (body.configContext !== undefined && (typeof body.configContext !== 'string' || !/^[0-9a-f]{16}$/.test(body.configContext))) {
+    return 'configContext must be an XXHash64 hex digest';
+  }
+  if (body.client.attributes !== undefined) {
+    const attributes = body.client.attributes;
+    if (!isObject(attributes)) return 'client.attributes must be an object';
+    const invalid = validateJsonValue(attributes, 'client.attributes', limits);
+    if (invalid) return invalid;
+    for (const value of Object.values(attributes)) {
+      if (typeof value !== 'string' && typeof value !== 'boolean' && !isFiniteNumber(value)) {
+        return 'client.attributes values must be strings, finite numbers, or booleans';
+      }
+    }
   }
   if (!Array.isArray(body.frames)) return 'frames must be an array';
   if (body.frames.length > limits.maxFramesPerEnvelope) {

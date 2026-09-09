@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 
 namespace Wardx.Tests
@@ -41,6 +42,7 @@ namespace Wardx.Tests
                     Role = "csharp",
                     AppVersion = "1.0.0",
                     Environment = "test",
+                    Attributes = new Dictionary<string, object> { ["tier"] = 1 },
                     PrivacySalt = "black-box-privacy-salt",
                     AggregateIntervalMs = 60_000,
                     SyncIntervalMs = 60_000,
@@ -59,6 +61,13 @@ namespace Wardx.Tests
                         "interop.remote expected experiment, got " + remote
                     );
                 }
+                AssertX.Equal("conditional", client.Config.Get("interop.remote", "missing"), "conditional base from Node server");
+                var version = client.Core.ConfigStore.Version;
+                client.SetAttributes(new Dictionary<string, object> { ["tier"] = 3 });
+                client.FlushAsync().GetAwaiter().GetResult();
+                AssertX.Equal(version, client.Core.ConfigStore.Version, "attribute change keeps project version");
+                AssertX.Equal("base", client.Config.Get("interop.remote", "missing"), "attribute change refreshes base");
+                AssertX.Equal("experiment", client.Config.Get("interop.remote", "missing", "interop-subject"), "experiment still overrides base");
                 var hidden = client.Config.Get("interop.hidden", "hidden", "interop-subject");
                 if (hidden != "hidden")
                 {

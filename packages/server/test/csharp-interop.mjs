@@ -56,6 +56,10 @@ function config(ndjsonPath) {
           'interop.remote': ['csharp'],
           'interop.hidden': ['frontend']
         },
+        keyRules: {
+          'interop.remote': [{ when: [{ field: 'attributes.tier', op: 'lt', value: 2 }], value: 'conditional' }],
+          'interop.hidden': [{ when: [{ field: 'attributes.tier', op: 'lt', value: 2 }], value: 'still-hidden' }]
+        },
         experiments: [
           {
             id: 'csharp-interop-v1',

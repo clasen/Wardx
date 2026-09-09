@@ -118,6 +118,36 @@ async function callTool(client, name, args) {
   return JSON.parse(result.content[0].text);
 }
 
+async function verifyPackagedSdk(projectDirectory, endpoint) {
+  const scriptPath = join(projectDirectory, 'verify-config.mjs');
+  await writeFile(scriptPath, `
+import assert from 'node:assert/strict';
+import { createWardx } from 'wardx';
+
+const client = createWardx({
+  endpoint: process.argv[2], projectKey: 'pack-check-trusted-key', project: 'demo',
+  role: 'trusted', appVersion: '1.0.0', environment: 'pack-check',
+  privacySalt: 'pack-check-salt', attributes: { tier: 1 }
+});
+try {
+  await client.flush();
+  assert.equal(client.config.get('pack.conditional', -1), 200);
+  client.setAttributes({ tier: 3 });
+  await client.flush();
+  assert.equal(client.config.get('pack.conditional', -1), 1000);
+  client.setAttributes({});
+  await client.flush();
+  assert.equal(client.config.get('pack.conditional', -1), 1000);
+} finally {
+  await client.shutdown();
+}
+`, 'utf8');
+  await run(process.execPath, [scriptPath, endpoint], {
+    cwd: projectDirectory,
+    env: { ...process.env, NODE_PATH: '' }
+  });
+}
+
 function envelope(role, frames, instanceId) {
   return {
     protocol: 1,
@@ -185,6 +215,11 @@ async function verifyPackagedBinary(projectDirectory) {
   sourceConfig.projects.demo.experiments = [];
   sourceConfig.projects.demo.values['pack.variant'] = 'control';
   sourceConfig.projects.demo.keyRoles['pack.variant'] = ['trusted'];
+  sourceConfig.projects.demo.values['pack.conditional'] = 1000;
+  sourceConfig.projects.demo.keyRoles['pack.conditional'] = ['trusted'];
+  sourceConfig.projects.demo.keyRules = {
+    'pack.conditional': [{ when: [{ field: 'attributes.tier', op: 'lt', value: 2 }], value: 200 }]
+  };
   await writeFile(
     configPath,
     `${JSON.stringify({ ...sourceConfig, host: '127.0.0.1', port: 0, sink: 'null' }, null, 2)}\n`,
@@ -200,6 +235,7 @@ async function verifyPackagedBinary(projectDirectory) {
     const readiness = await fetch(`${first.endpoint}/ready`);
     assert.equal(readiness.status, 200);
     assert.equal((await readiness.json()).ok, true);
+    await verifyPackagedSdk(projectDirectory, first.endpoint);
     const experiment = {
       id: 'pack-terminal-v1',
       enabled: true,
@@ -331,6 +367,16 @@ async function verifyPackagedBinary(projectDirectory) {
   }
   const restored = await connectPackagedServer(binary, join(restoredDirectory, 'config.json'), projectDirectory, 'wardx-pack-check-restored');
   try {
+    const request = envelope('trusted', [], 'pack-restored-config');
+    for (const [tier, expected] of [[1, 200], [3, 1000]]) {
+      request.client.attributes = { tier };
+      const response = await sync(restored.endpoint, request);
+      assert.equal(response.status, 200);
+      const snapshot = await response.json();
+      assert.equal(snapshot.config.values['pack.conditional'], expected);
+      request.configVersion = snapshot.configVersion;
+      request.configContext = snapshot.configContext;
+    }
     const config = await callTool(restored.client, 'get_config', { project: 'demo' });
     assert.equal(config.version, 2);
     const analysis = await callTool(restored.client, 'analyze_experiment', {
@@ -368,7 +414,7 @@ export async function checkPackages() {
     await verifyImports(projectDirectory);
     await verifyPackagedBinary(projectDirectory);
     process.stdout.write(
-      'pack:check passed: clean tarballs served readiness, persisted state across restart and backup/restore, and exposed the monitor CLI\n'
+      'pack:check passed: clean tarballs resolved conditional config through the SDK, served readiness, persisted state across restart and backup/restore, and exposed the monitor CLI\n'
     );
   } finally {
     await rm(directory, { recursive: true, force: true });

@@ -24,6 +24,8 @@ namespace Wardx
         Action _stopScheduler;
         bool _stopped;
         Task _shutdownTask;
+        Dictionary<string, object> _attributes;
+        string _configContext;
 
         public LogApi Log { get; }
         public ConfigApi Config { get; }
@@ -37,6 +39,7 @@ namespace Wardx
             Config = new ConfigApi(this);
             Experiment = new ExperimentApi(this);
             if (!_enabled) return;
+            _attributes = CopyAttributes(settings.Attributes ?? new Dictionary<string, object>());
             _core = new WardxCore(settings);
             _transport = transport;
             _readRssBytes = readRssBytes ?? (() => 0);
@@ -52,6 +55,37 @@ namespace Wardx
 
         internal WardxCore Core => _core;
         internal bool Enabled => _enabled;
+
+        public void SetAttributes(IReadOnlyDictionary<string, object> attributes)
+        {
+            if (!_enabled) return;
+            var copy = CopyAttributes(attributes);
+            lock (_gate) _attributes = copy;
+        }
+
+        static Dictionary<string, object> CopyAttributes(IReadOnlyDictionary<string, object> attributes)
+        {
+            if (attributes == null) throw new ArgumentException("attributes must be an object");
+            var copy = new Dictionary<string, object>();
+            foreach (var pair in attributes)
+            {
+                if (string.IsNullOrEmpty(pair.Key)) throw new ArgumentException("attributes keys must be non-empty strings");
+                var value = pair.Value;
+                var number = value is byte || value is sbyte || value is short || value is ushort ||
+                    value is int || value is uint || value is long || value is ulong ||
+                    value is float || value is double || value is decimal;
+                if (!(value is string) && !(value is bool) && !number)
+                    throw new ArgumentException("attributes values must be strings, finite numbers, or booleans");
+                if (number)
+                {
+                    var numeric = Convert.ToDouble(value, System.Globalization.CultureInfo.InvariantCulture);
+                    if (double.IsNaN(numeric) || double.IsInfinity(numeric))
+                        throw new ArgumentException("attributes values must be finite numbers");
+                }
+                copy.Add(pair.Key, value);
+            }
+            return copy;
+        }
 
         public static WardxClient Create(WardxOptions options)
         {
@@ -291,7 +325,7 @@ namespace Wardx
                 }
                 frames = _core.TakePendingFrames();
             }
-            if (!flags.Bootstrap && frames.Count == 0) return;
+            if (!flags.Bootstrap && !flags.Flush && frames.Count == 0) return;
 
             var envelope = BuildEnvelope(frames);
             var json = Json.Stringify(envelope);
@@ -374,8 +408,15 @@ namespace Wardx
             var wireFrames = new List<object>(frames.Count);
             foreach (var frame in frames) wireFrames.Add(frame.ToWire());
             int configVersion;
-            lock (_gate) configVersion = _core.ConfigStore.Version;
-            return new Dictionary<string, object>
+            string configContext;
+            Dictionary<string, object> attributes;
+            lock (_gate)
+            {
+                configVersion = _core.ConfigStore.Version;
+                configContext = _configContext;
+                attributes = _attributes;
+            }
+            var envelope = new Dictionary<string, object>
             {
                 ["protocol"] = Protocol.Version,
                 ["project"] = _settings.Project,
@@ -391,11 +432,14 @@ namespace Wardx
                     ["role"] = _settings.Role,
                     ["appVersion"] = _settings.AppVersion,
                     ["environment"] = _settings.Environment,
-                    ["platform"] = _sdk.Platform
+                    ["platform"] = _sdk.Platform,
+                    ["attributes"] = attributes
                 },
                 ["configVersion"] = configVersion,
                 ["frames"] = wireFrames
             };
+            if (configContext != null) envelope["configContext"] = configContext;
+            return envelope;
         }
 
         void ApplyResponse(string text)
@@ -419,6 +463,7 @@ namespace Wardx
                 var experimentsNode = config["experiments"];
                 var values = valuesNode != null && valuesNode.IsObject ? valuesNode.ObjectNative() : new Dictionary<string, object>();
                 _core.ApplyConfig((int)versionNode.NumberValue, values, ParseExperiments(experimentsNode));
+                _configContext = json["configContext"]?.StringValue;
             }
         }
 

@@ -76,6 +76,7 @@ function hydrateAuthoritativeState(config, stateStore) {
         state: {
           values: bootstrap.values,
           keyRoles: bootstrap.keyRoles,
+          keyRules: bootstrap.keyRules ?? {},
           experiments: bootstrap.experiments
         },
         catalog: normalizeCatalog(bootstrap.catalog)
@@ -86,6 +87,7 @@ function hydrateAuthoritativeState(config, stateStore) {
       version: stored.version,
       values: stored.state.values,
       keyRoles: stored.state.keyRoles,
+      keyRules: stored.state.keyRules ?? {},
       experiments: stored.state.experiments,
       catalog: stored.catalog
     };

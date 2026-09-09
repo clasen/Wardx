@@ -99,6 +99,17 @@ from the product question; session duration is only one possible goal.
 I/O. Before a snapshot arrives, missing keys use the caller's fallback. Remote
 Config must contain no secrets; signal descriptions belong in the server catalog.
 
+Role controls which keys and experiments this instance receives. Optional
+server-side rules resolve the visible base values; an applicable A/B variant
+overrides that base. Knobs are the adjustable config keys, not experiments.
+
+Pass optional `attributes` to `createWardx`, or replace the whole map with
+`wardx.setAttributes(attributes)`; `{}` clears it. Names are application-defined
+and values are strings, finite numbers, or booleans. Attribute maps are copied
+and shared by the instance, not selected per experiment subject. Do not switch
+them between concurrent users. Keep role separate from OS/build/channel;
+`platform` means the SDK runtime. Read the package reference for sync semantics.
+
 On a single-user instance, `identify(userId)` sets the default experiment subject;
 `identify(null)` clears it. On a multi-user backend, pass `{ subjectId }` per call
 instead of changing the shared default. Identity is needed for assignment, not
@@ -118,6 +129,8 @@ The SDK hashes the subject; do not add the raw ID to dimensions or attrs.
 Do not define experiments or persist chosen variants in application code.
 After `ship_experiment` reaches the client snapshot, the disabled experiment no
 longer generates exposures; this is expected, not an identity failure.
+Shipping updates the stored base and preserves conditional rules, which can
+take precedence again after disablement.
 
 ## Retention
 

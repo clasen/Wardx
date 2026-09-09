@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { validateCatalog } from './control/catalog.js';
 import { validateConfigConstraints } from './control/configConstraints.js';
+import { validateConfigRules } from './config/rules.js';
 import { requireKeys } from './requireKeys.js';
 import { validateKeyRoles } from './roles.js';
 import { assertUnambiguousGoalMetrics, validateExperiment } from './control/validateExperiment.js';
@@ -41,7 +42,7 @@ const REQUIRED = [
 
 const REQUIRED_PROJECT = ['version', 'values', 'keyRoles', 'experiments'];
 const ALLOWED = new Set([...REQUIRED, 'ndjsonPath', 'configPath']);
-const ALLOWED_PROJECT = new Set([...REQUIRED_PROJECT, 'catalog']);
+const ALLOWED_PROJECT = new Set([...REQUIRED_PROJECT, 'catalog', 'keyRules']);
 
 const REQUIRED_SQLITE = [
   'path',
@@ -210,6 +211,7 @@ function validateProjectSnapshot(snapshot, label) {
     throw new Error(`${label}.experiments must be an array`);
   }
   validateKeyRoles(snapshot.values, snapshot.keyRoles, label);
+  validateConfigRules(snapshot.values, snapshot.keyRules, label);
   for (const experiment of snapshot.experiments) validateExperiment(experiment);
   assertUnambiguousGoalMetrics(snapshot.experiments);
   if (snapshot.catalog !== undefined) validateCatalog(snapshot.catalog, `${label}.catalog`);

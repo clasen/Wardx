@@ -185,8 +185,7 @@ export function createSyncHandler({
     store.clients.touch(body.client);
     store.events.ingest(body, store.catalog.inspectEvents);
     store.logs.ingest(body);
-    const includeConfig = body.configVersion !== store.configRepo.version;
-    json(res, 200, store.configRepo.buildResponse(includeConfig, body.client.role));
+    json(res, 200, store.configRepo.buildResponse(body.configVersion, body.client, body.configContext));
   };
 }
 

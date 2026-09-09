@@ -119,6 +119,17 @@ question rather than always using session duration.
 network I/O. Missing keys use the caller's fallback. Remote Config contains no
 secrets; signal descriptions belong in the server catalog.
 
+Role controls which keys and experiments this instance receives. Server-side
+conditions resolve visible base values; an applicable A/B variant overrides
+that base. Knobs are the adjustable config keys.
+
+Use optional `WardxOptions.Attributes` or `wardx.SetAttributes(map)` with a flat
+`IReadOnlyDictionary<string, object>` of strings, finite numbers, or booleans.
+The client copies the map; the setter replaces it and an empty map clears it.
+These attributes belong to the instance, not the experiment subject. Keep OS,
+build, and channel separate from role; `platform` identifies the SDK runtime.
+Read the package reference for token and sync semantics.
+
 On a single-user instance, `Identify(userId)` sets the default experiment subject;
 `Identify(null)` clears it. For multiple users, pass `subjectId` per call instead
 of changing shared identity. Neither ordinary metrics nor base Remote Config
@@ -137,6 +148,8 @@ and emits only for a matching `goalMetric` exposed in this instance. The SDK
 hashes the subject; do not add the raw ID to dimensions or attrs. Do not define
 experiments or persist chosen variants in application code. After a shipped
 experiment's disabled state reaches the snapshot, no new exposure is expected.
+Shipping updates the stored base and preserves conditional rules, which can
+take precedence again after disablement.
 
 ## Retention
 

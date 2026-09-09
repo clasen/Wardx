@@ -186,7 +186,7 @@ test('POST /v1/sync returns a non-sensitive 500 and reports unexpected handler f
   });
 });
 
-test('POST /v1/sync omits config when versions match', async () => {
+test('POST /v1/sync uses context tokens even without conditional rules', async () => {
   await withServer(testServerConfig(), async (_server, base) => {
     const res = await fetch(`${base}/v1/sync`, {
       method: 'POST',
@@ -195,7 +195,25 @@ test('POST /v1/sync omits config when versions match', async () => {
     });
     const json = await res.json();
     assert.equal(json.configVersion, 12);
-    assert.equal(json.config, undefined);
+    assert.equal(json.config.values['message.delayMs'], 1000);
+    assert.match(json.configContext, /^[0-9a-f]{16}$/);
+    const unchanged = await fetch(`${base}/v1/sync`, {
+      method: 'POST',
+      headers: syncHeaders(),
+      body: gzipJson(sampleEnvelope({ configVersion: json.configVersion, configContext: json.configContext, frames: [] }))
+    });
+    const unchangedJson = await unchanged.json();
+    assert.equal(unchangedJson.configContext, json.configContext);
+    assert.equal(unchangedJson.config, undefined);
+    const otherRole = await fetch(`${base}/v1/sync`, {
+      method: 'POST',
+      headers: syncHeaders(),
+      body: gzipJson(sampleEnvelope({ configVersion: json.configVersion, configContext: json.configContext, client: { role: 'backend' }, frames: [] }))
+    });
+    const otherJson = await otherRole.json();
+    assert.equal(otherJson.configVersion, json.configVersion);
+    assert.deepEqual(otherJson.config.values, {});
+    assert.notEqual(otherJson.configContext, json.configContext);
   });
 });
 
@@ -284,7 +302,7 @@ test('telemetry and config are isolated per project', async () => {
     });
     const otherJson = await otherSync.json();
     assert.equal(otherJson.configVersion, 3);
-    assert.equal(otherJson.config, undefined);
+    assert.deepEqual(otherJson.config.values, { 'message.delayMs': 50 });
     const demoWindows = server.wardx.control.aggregates('demo');
     const otherWindows = server.wardx.control.aggregates('other');
     assert.equal(

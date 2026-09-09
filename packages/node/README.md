@@ -522,7 +522,15 @@ If there is no identified subject and you omit `{ subjectId }`, that call is not
 2. If there is no subject (`identify` unset and no `{ subjectId }`), return the Remote Config value.
 3. If an experiment applies to the subject, return the variant value.
 
-The SDK updates the snapshot when a sync response contains a newer `configVersion`. Until that sync, `config.get` returns the fallback or the last snapshot.
+The server first filters keys and experiments by role, then resolves any conditional base values against the instance's metadata and attributes. An applicable experiment still overrides that resolved base. Attributes do not change experiment eligibility, allocation, assignment, or exposure tracking.
+
+SDK 0.9.0 requires `@wardx/server` 0.9.0 or newer. Upgrade the server first: older servers reject the new client fields even when attributes are empty.
+
+Pass an optional flat `attributes` object to `createWardx`, for example `attributes: { os: 'android', build: 119, channel: 'stable' }`. Names are application-defined; values must be strings, finite numbers, or booleans. Wardx's `platform` identifies the SDK runtime (`node`, `csharp`, or `unity`), so use a custom attribute for the operating system. Attributes are shared by the SDK instance, not set per `config.get` subject; do not use an instance's attributes to switch between concurrent users.
+
+`wardx.setAttributes({ os: 'android', build: 120 })` replaces the entire attribute map with a copy. Use `{}` to clear it. The next successful sync resolves the new context; `await wardx.flush()` requests a sync now. Reads remain local and use the last snapshot until then. Attributes travel as client metadata; send only non-secret values.
+
+The SDK updates the snapshot when the project version or the resolved configuration changes. Every successful server response includes an opaque `configContext` token, which the SDK returns on subsequent syncs. The same contract applies with or without rules, allowing context changes to refresh values at the same `configVersion`. Until a successful sync, `config.get` returns the fallback or the last snapshot.
 
 ## Use case 10: Run an A/B experiment and record a goal
 
