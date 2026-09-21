@@ -86,6 +86,6 @@ optional and not a default key. The privacy salt has no fallback.
 
 For documentation-only work, validate links and API claims without running tests.
 For behavior changes, start with the relevant core or Node test file, then use
-`npm run test:js` when the change crosses their shared contracts.
+`pnpm run test:js` when the change crosses their shared contracts.
 
 Node SDK tests: `packages/node/test/sdk.test.js` (ingest via `createIngestServer` + `listen`). Core tests: `packages/core/test/*.test.js`. Prefer a real ingest server for sync assertions. Do not mock `WardxCore` inside node tests unless the change is transport-only.

@@ -212,7 +212,7 @@ Primary evidence:
 The merge gate is:
 
 ```bash
-npm run verify
+pnpm run verify
 ```
 
 It runs lint, public type-consumer checks, the JavaScript suite, CLI black box,
@@ -222,7 +222,7 @@ smoke profiles, and clean tarball installation.
 The release gate is:
 
 ```bash
-npm run verify:release
+pnpm run verify:release
 ```
 
 It adds both five-minute server profiles and the million-subject experiment
@@ -254,8 +254,8 @@ active product roadmap.
 
 This hardening roadmap remains closed when:
 
-- `npm run verify` passes for every merge;
-- `npm run verify:release` passes for every release candidate;
+- `pnpm run verify` passes for every merge;
+- `pnpm run verify:release` passes for every release candidate;
 - changes to the wire, persisted formats, configuration, or public tools add
   matching unit, black-box, clean-package, and cross-runtime coverage;
 - production claims continue to distinguish deterministic repository proof from

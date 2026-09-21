@@ -1,8 +1,8 @@
 # Wardx stress gates
 
 ```bash
-npm run stress:smoke
-npm run stress:full
+pnpm run stress:smoke
+pnpm run stress:full
 ```
 
 Smoke is a short regression gate. Full mode runs for at least five minutes,

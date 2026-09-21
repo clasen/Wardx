@@ -9,7 +9,7 @@ C# / Unity clients.
 ## Runtime and package manager
 
 - Use Node.js 20 or newer.
-- Use npm workspaces and the committed `package-lock.json`.
+- Use pnpm workspaces from `pnpm-workspace.yaml` and the committed `pnpm-lock.yaml`.
 - The JavaScript packages use native ESM.
 - Do not add, remove, or upgrade dependencies without asking first.
 
@@ -18,8 +18,8 @@ C# / Unity clients.
 Always ask the user before running either full verification command:
 
 ```bash
-npm run verify
-npm run verify:release
+pnpm run verify
+pnpm run verify:release
 ```
 
 This requirement applies even when verification would normally be mandatory
@@ -30,18 +30,18 @@ not run.
 Focused checks such as the following do not require prior confirmation:
 
 ```bash
-npm run lint
-npm run typecheck
-npm run test:js
-npm run test:black-box
-npm run test:csharp
-npm run check:csharp
-npm run stress:smoke
-npm run pack:check
+pnpm run lint
+pnpm run typecheck
+pnpm run test:js
+pnpm run test:black-box
+pnpm run test:csharp
+pnpm run check:csharp
+pnpm run stress:smoke
+pnpm run pack:check
 ```
 
-Do not run `npm run stress:full` unless the user explicitly requests a full
-stress run or authorizes `npm run verify:release`.
+Do not run `pnpm run stress:full` unless the user explicitly requests a full
+stress run or authorizes `pnpm run verify:release`.
 
 ## Repository layout
 

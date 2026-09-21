@@ -553,8 +553,8 @@ See [docs/PROTOCOL.md](../../docs/PROTOCOL.md). Operational defaults match `pack
 Verify the C# suite, real CLI interoperability, formatting, and SDK analyzers from the repository root:
 
 ```bash
-npm run test:csharp
-npm run check:csharp
+pnpm run test:csharp
+pnpm run check:csharp
 ```
 
 ## User retention

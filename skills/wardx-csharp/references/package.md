@@ -17,7 +17,7 @@ Use this file when changing `clients/csharp`. Application instrumentation stays 
 | `Runtime/Unity/UnityRuntime.cs` | `#if UNITY_5_3_OR_NEWER`. `UnityWebRequestTransport`, `WardxHost`, `WardxBehaviour`. `sdk.name = wardx-unity`. |
 | `Runtime/Core/WardxNameAttribute.cs` | Optional enum wire-name attribute and cached `EnumNames` resolution. |
 | `Runtime/Core/` | Engine: settings, metrics, buffers, config, frames, hashes. `Wardx.Core.csproj` / `Wardx.Core.asmdef`. |
-| `Tests/Wardx.Tests.csproj` | `dotnet run` test host (`npm run test:csharp`). |
+| `Tests/Wardx.Tests.csproj` | `dotnet run` test host (`pnpm run test:csharp`). |
 
 Exports: `WardxClient`, `WardxOptions`, `WardxBehaviour` (Unity), `Dims`, `ConsoleTracer`, `WardxNameAttribute`. Namespace `Wardx`.
 
@@ -147,8 +147,8 @@ rather than copying numeric defaults. `Tracer` is optional and not a default key
 ## Verify
 
 ```bash
-npm run test:csharp
-npm run check:csharp
+pnpm run test:csharp
+pnpm run check:csharp
 ```
 
 For documentation-only work, validate links and API claims without running the

@@ -593,9 +593,9 @@ duration, and full output.
 
 ### REL-1: complete release gate
 
-The initial `npm run verify` gate includes deterministic SQLite initialization,
+The initial `pnpm run verify` gate includes deterministic SQLite initialization,
 history, trust, concurrency, rollback, and experiment fixtures. The initial
-`npm run verify:release` gate includes the full-feature sustained and burst
+`pnpm run verify:release` gate includes the full-feature sustained and burst
 profiles. Keep the longer soak in a scheduled required workflow.
 
 The package check installs released artifacts, initializes an empty SQLite

@@ -121,9 +121,9 @@ when `mcpHttp.enabled` is true.
 Repository commands:
 
 ```bash
-npm run server
-npm run verify
-npm run verify:release
+pnpm run server
+pnpm run verify
+pnpm run verify:release
 ```
 
 `GET /health` is liveness only. It does not prove SQLite writability, capacity,

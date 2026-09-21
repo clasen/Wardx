@@ -131,13 +131,13 @@ as part of a config update.
 ## Verification
 
 ```bash
-npm run lint
-npm run typecheck
-npm run test:js
-npm run test:csharp
-npm run check:csharp
-npm run stress:smoke
-npm run pack:check
+pnpm run lint
+pnpm run typecheck
+pnpm run test:js
+pnpm run test:csharp
+pnpm run check:csharp
+pnpm run stress:smoke
+pnpm run pack:check
 ```
 
 Use only checks relevant to the change; docs-only edits need link/API validation,
@@ -145,7 +145,7 @@ not the test suite. For handler/lifecycle changes, start with
 `node --test packages/server/test/handler.test.js`, then broaden for shared runtime
 changes. Socket tests need loopback capability.
 
-Ask before `npm run verify` or `npm run verify:release`, as required by this
+Ask before `pnpm run verify` or `pnpm run verify:release`, as required by this
 repository's AGENTS.md. Do not run `stress:full` without explicit full-stress or
 `verify:release` authorization. Stress results are hardware evidence, not
 production or deterministic unit-test proof.

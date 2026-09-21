@@ -17,12 +17,13 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: current
-          cache: npm
+          cache: pnpm
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 9.0.x
-      - run: npm ci
-      - run: npm run verify:release
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run verify:release

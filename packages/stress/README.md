@@ -13,7 +13,7 @@ Node.js 20 or later is required.
 From the repository root:
 
 ```bash
-npm install
+pnpm install --frozen-lockfile
 ```
 
 The workspace links `@wardx/core`, `wardx`, and `@wardx/server`.
@@ -23,8 +23,8 @@ The workspace links `@wardx/core`, `wardx`, and `@wardx/server`.
 Default is smoke mode. Smoke mode uses short durations and smaller fleets.
 
 ```bash
-npm install
-npm test
+pnpm install --frozen-lockfile
+pnpm test
 node packages/stress/src/index.js --smoke
 node packages/stress/src/index.js --full
 node packages/stress/src/index.js A

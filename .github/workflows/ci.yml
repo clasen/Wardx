@@ -18,14 +18,15 @@ jobs:
         node: [20, current]
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-          cache: npm
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm run test:js
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run lint
+      - run: pnpm run typecheck
+      - run: pnpm run test:js
 
   black-box:
     name: CLI black box / Node ${{ matrix.node }}
@@ -36,40 +37,43 @@ jobs:
         node: [20, current]
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-          cache: npm
-      - run: npm ci
-      - run: npm run test:black-box
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run test:black-box
 
   csharp:
     name: C# unit and HTTP interoperability / .NET 9
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: current
-          cache: npm
+          cache: pnpm
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 9.0.x
-      - run: npm ci
-      - run: npm run test:csharp
-      - run: npm run check:csharp
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run test:csharp
+      - run: pnpm run check:csharp
 
   stress-smoke:
     name: Persistence stress smoke
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: current
-          cache: npm
-      - run: npm ci
-      - run: npm run stress:smoke
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run stress:smoke
 
   packages:
     name: Clean package install / Node ${{ matrix.node }}
@@ -80,9 +84,10 @@ jobs:
         node: [20, current]
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-          cache: npm
-      - run: npm ci
-      - run: npm run pack:check
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run pack:check

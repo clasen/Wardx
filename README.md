@@ -69,13 +69,13 @@ Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Protocol: [docs/PROT
 ## Verification
 
 ```bash
-npm run verify
+pnpm run verify
 ```
 
 That merge gate runs JavaScript lint, representative public `.d.ts` consumer checks, the JavaScript suite and CLI black box, the C# suite and real C#→`wardx-server` interoperability, C# formatting/analyzers, both stress smoke profiles, and clean tarball installation with the packaged server binary.
 
 ```bash
-npm run verify:release
+pnpm run verify:release
 ```
 
 The release gate adds both five-minute server profiles and the million-subject assignment check. It exits non-zero on any missed threshold.

@@ -1,0 +1,7 @@
+packages:
+  - 'packages/*'
+  - 'examples/*'
+linkWorkspacePackages: true
+nodeLinker: hoisted
+allowBuilds:
+  better-sqlite3: true
