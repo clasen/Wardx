@@ -180,7 +180,7 @@ test('writeJsonAtomic keeps the previous file when rename is interrupted', async
   }
 });
 
-test('PersistenceCoordinator restart scan compacts persisted minutes through hour and day', async () => {
+test('PersistenceCoordinator restart scan compacts persisted minutes through hour and day', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'wardx-history-restart-'));
   const sqlitePath = join(directory, 'state.sqlite');
   const config = testServerConfig({
@@ -196,6 +196,7 @@ test('PersistenceCoordinator restart scan compacts persisted minutes through hou
     }
   });
   const from = Date.UTC(2026, 7, 20);
+  t.mock.method(Date, 'now', () => from + 2 * 86_400_000);
   const row = {
     kind: 'counter', name: 'requests', role: 'api', environment: 'production', appVersion: '1.0.0',
     dimensions: null, value: 4
