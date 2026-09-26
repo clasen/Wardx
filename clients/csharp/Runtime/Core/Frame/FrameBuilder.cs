@@ -39,7 +39,7 @@ namespace Wardx
             var rows = new List<object>(Counters.Count);
             foreach (var row in Counters)
             {
-                rows.Add(new object[] { row.Name, DimsOrNull(row.Dims), row.Value });
+                rows.Add(ToWire(row));
             }
             return rows;
         }
@@ -49,7 +49,7 @@ namespace Wardx
             var rows = new List<object>(Gauges.Count);
             foreach (var row in Gauges)
             {
-                rows.Add(new object[] { row.Name, DimsOrNull(row.Dims), row.Value, row.Timestamp });
+                rows.Add(ToWire(row));
             }
             return rows;
         }
@@ -59,7 +59,7 @@ namespace Wardx
             var rows = new List<object>(Histograms.Count);
             foreach (var row in Histograms)
             {
-                rows.Add(new object[] { row.Name, DimsOrNull(row.Dims), HistogramWire(row.Body) });
+                rows.Add(ToWire(row));
             }
             return rows;
         }
@@ -69,16 +69,7 @@ namespace Wardx
             var rows = new List<object>(Distincts.Count);
             foreach (var row in Distincts)
             {
-                rows.Add(new object[]
-                {
-                    row.Name,
-                    DimsOrNull(row.Dims),
-                    new Dictionary<string, object>
-                    {
-                        ["precision"] = row.Body.Precision,
-                        ["registers"] = row.Body.Registers
-                    }
-                });
+                rows.Add(ToWire(row));
             }
             return rows;
         }
@@ -88,7 +79,7 @@ namespace Wardx
             var rows = new List<object>(Events.Count);
             foreach (var row in Events)
             {
-                rows.Add(new object[] { row.Time, row.Name, AttrsOrNull(row.Attrs) });
+                rows.Add(ToWire(row));
             }
             return rows;
         }
@@ -98,10 +89,31 @@ namespace Wardx
             var rows = new List<object>(Logs.Count);
             foreach (var row in Logs)
             {
-                rows.Add(new object[] { row.Time, row.Level, row.Message, AttrsOrNull(row.Attrs) });
+                rows.Add(ToWire(row));
             }
             return rows;
         }
+
+        internal static object[] ToWire(CounterSample row) => new object[] { row.Name, DimsOrNull(row.Dims), row.Value };
+
+        internal static object[] ToWire(GaugeSample row) => new object[] { row.Name, DimsOrNull(row.Dims), row.Value, row.Timestamp };
+
+        internal static object[] ToWire(HistogramSample row) => new object[] { row.Name, DimsOrNull(row.Dims), HistogramWire(row.Body) };
+
+        internal static object[] ToWire(DistinctSample row) => new object[]
+        {
+            row.Name,
+            DimsOrNull(row.Dims),
+            new Dictionary<string, object>
+            {
+                ["precision"] = row.Body.Precision,
+                ["registers"] = row.Body.Registers
+            }
+        };
+
+        internal static object[] ToWire(EventSample row) => new object[] { row.Time, row.Name, AttrsOrNull(row.Attrs) };
+
+        internal static object[] ToWire(LogSample row) => new object[] { row.Time, row.Level, row.Message, AttrsOrNull(row.Attrs) };
 
         static Dictionary<string, object> HistogramWire(HistogramBody body)
         {
@@ -245,6 +257,7 @@ namespace Wardx
         readonly int _maxFrameBytes;
         readonly FrameBatch _batch = new FrameBatch();
         Frame _current;
+        long _currentBytes;
 
         public FrameSplitter(Frame source, int maxFrameBytes)
         {
@@ -253,36 +266,37 @@ namespace Wardx
             _to = source.To;
             _maxFrameBytes = maxFrameBytes;
             _current = EmptyFrame(_startingSeq, _from, _to);
+            _currentBytes = Measure(_current).Bytes;
         }
 
         public void AddCounter(CounterSample row)
         {
-            if (!TryAdd(row, frame => frame.Counters)) _batch.DroppedCounters++;
+            if (!TryAdd(row, frame => frame.Counters, Json.Utf8ByteLength(Frame.ToWire(row)))) _batch.DroppedCounters++;
         }
 
         public void AddGauge(GaugeSample row)
         {
-            if (!TryAdd(row, frame => frame.Gauges)) _batch.DroppedGauges++;
+            if (!TryAdd(row, frame => frame.Gauges, Json.Utf8ByteLength(Frame.ToWire(row)))) _batch.DroppedGauges++;
         }
 
         public void AddHistogram(HistogramSample row)
         {
-            if (!TryAdd(row, frame => frame.Histograms)) _batch.DroppedHistograms++;
+            if (!TryAdd(row, frame => frame.Histograms, Json.Utf8ByteLength(Frame.ToWire(row)))) _batch.DroppedHistograms++;
         }
 
         public void AddDistinct(DistinctSample row)
         {
-            if (!TryAdd(row, frame => frame.Distincts)) _batch.DroppedDistincts++;
+            if (!TryAdd(row, frame => frame.Distincts, Json.Utf8ByteLength(Frame.ToWire(row)), true)) _batch.DroppedDistincts++;
         }
 
         public void AddEvent(EventSample row)
         {
-            if (!TryAdd(row, frame => frame.Events)) _batch.DroppedEvents++;
+            if (!TryAdd(row, frame => frame.Events, Json.Utf8ByteLength(Frame.ToWire(row)))) _batch.DroppedEvents++;
         }
 
         public void AddLog(LogSample row)
         {
-            if (!TryAdd(row, frame => frame.Logs)) _batch.DroppedLogs++;
+            if (!TryAdd(row, frame => frame.Logs, Json.Utf8ByteLength(Frame.ToWire(row)))) _batch.DroppedLogs++;
         }
 
         public FrameBatch Finish()
@@ -300,7 +314,7 @@ namespace Wardx
                     null,
                     _batch.DroppedRows
                 );
-                if (!TryAdd(observable, frame => frame.Counters))
+                if (!TryAdd(observable, frame => frame.Counters, Json.Utf8ByteLength(Frame.ToWire(observable))))
                 {
                     throw new System.InvalidOperationException(
                         "maxFrameBytes cannot contain the frame drop metric"
@@ -311,21 +325,26 @@ namespace Wardx
             return _batch;
         }
 
-        bool TryAdd<T>(T row, System.Func<Frame, List<T>> collection)
+        bool TryAdd<T>(T row, System.Func<Frame, List<T>> collection, int rowBytes, bool distinct = false)
         {
-            var rows = collection(_current);
-            rows.Add(row);
-            if (Measure(_current).Bytes <= _maxFrameBytes) return true;
-            rows.RemoveAt(rows.Count - 1);
+            if (TryAppend(row, collection(_current), rowBytes, distinct)) return true;
             if (RowCount(_current) > 0)
             {
                 FinishCurrent();
-                rows = collection(_current);
-                rows.Add(row);
-                if (Measure(_current).Bytes <= _maxFrameBytes) return true;
-                rows.RemoveAt(rows.Count - 1);
+                if (TryAppend(row, collection(_current), rowBytes, distinct)) return true;
             }
             return false;
+        }
+
+        bool TryAppend<T>(T row, List<T> rows, int rowBytes, bool distinct)
+        {
+            // The first distinct row also introduces the optional JSON property.
+            var addedBytes = (long)rowBytes + (rows.Count > 0 ? 1 : 0)
+                + (distinct && rows.Count == 0 ? ",\"distincts\":[]".Length : 0);
+            if (_currentBytes + addedBytes > _maxFrameBytes) return false;
+            rows.Add(row);
+            _currentBytes += addedBytes;
+            return true;
         }
 
         void FinishCurrent()
@@ -338,6 +357,7 @@ namespace Wardx
             _batch.Frames.Add(_current);
             _batch.Jsons.Add(measured.Json);
             _current = EmptyFrame(_startingSeq + _batch.Frames.Count, _from, _to);
+            _currentBytes = Measure(_current).Bytes;
         }
 
         static Frame EmptyFrame(int seq, long from, long to)

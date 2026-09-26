@@ -36,6 +36,8 @@ namespace Wardx.Tests
     {
         public static void Run()
         {
+            LinearSerialization();
+            Utf8Boundaries();
             var bounded = new WardxCore(Fixtures.TestSettings(o => o.MaxPendingFrames = 3));
             for (var i = 0; i < 100; i++)
             {
@@ -220,6 +222,68 @@ namespace Wardx.Tests
             AssertX.Equal(1023, Encoding.UTF8.GetByteCount(shared.Jsons[0]), "shared fixture bytes 1");
             AssertX.Equal(997, Encoding.UTF8.GetByteCount(shared.Jsons[1]), "shared fixture bytes 2");
             AssertX.Equal(141, Encoding.UTF8.GetByteCount(shared.Jsons[2]), "shared fixture bytes 3");
+        }
+
+        static void LinearSerialization()
+        {
+            foreach (var count in new[] { 100, 1000, 10000 })
+            {
+                var dims = new ObservedDimensions();
+                var frame = Bare(new List<EventSample>(), new List<LogSample>());
+                for (var i = 0; i < count; i++) frame.Counters.Add(new CounterSample("series." + i, dims, i));
+                var allocatedBefore = System.GC.GetAllocatedBytesForCurrentThread();
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                var batch = FrameBuilder.SplitToMaxBytes(frame, 524288);
+                watch.Stop();
+                var allocated = System.GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+                AssertX.Equal(0, batch.DroppedRows, "many series stay lossless");
+                AssertX.Equal(count, AllCounters(batch).Count, "all series retained");
+                AssertX.True(dims.Enumerations <= count * 2, "row serialization work must stay linear");
+                AssertConsecutiveAndBounded(batch, 524288);
+                System.Console.WriteLine($"      split {count} series: {watch.Elapsed.TotalMilliseconds:F2} ms, {allocated} allocated bytes");
+            }
+        }
+
+        static void Utf8Boundaries()
+        {
+            var frame = Bare(new List<EventSample>(), new List<LogSample>());
+            frame.Seq = 9;
+            frame.Counters.Add(new CounterSample("requests", null, 1));
+            frame.Gauges.Add(new GaugeSample("温度", Dims.Of("city", "東京"), 21, 1));
+            var histogram = new Histogram("latency", null, new double[] { 10 }, 8, 64);
+            histogram.Observe(1, Dims.Of("text", "\"\\\n🧪"));
+            frame.Histograms.Add(new HistogramSample("latency", null, histogram.Snapshot()));
+            for (var i = 0; i < 30; i++)
+                frame.Distincts.Add(new DistinctSample("users." + i, null, new HllBody(9, System.Convert.ToBase64String(new byte[512]))));
+            for (var i = 0; i < 50; i++)
+                frame.Events.Add(new EventSample(i, "🧪", Dims.Of("text", new string('á', 200) + "\"\\\n")));
+            frame.Logs.Add(new LogSample(1, "info", "日本語", Dims.Of("text", "\ud800")));
+            var batch = FrameBuilder.SplitToMaxBytes(frame, 1024);
+            AssertX.Equal(0, batch.DroppedRows, "UTF-8 mixed rows retained");
+            AssertX.Equal(10, batch.Frames[1].Seq, "sequence width changes");
+            var distinctCount = 0;
+            for (var i = 0; i < batch.Frames.Count; i++)
+            {
+                AssertX.Equal(9 + i, batch.Frames[i].Seq, "consecutive sequences");
+                AssertX.Equal(Json.Stringify(batch.Frames[i].ToWire()), batch.Jsons[i], "JSON matches physical frame");
+                AssertX.True(Encoding.UTF8.GetByteCount(batch.Jsons[i]) <= 1024, "UTF-8 frame limit");
+                distinctCount += batch.Frames[i].Distincts.Count;
+            }
+            AssertX.Equal(30, distinctCount, "optional distinct rows retained");
+            AssertX.Equal(50, AllEvents(batch).Count, "all unicode events retained");
+            AssertX.Equal(1, AllLogs(batch).Count, "unicode log retained");
+
+            var exact = Bare(new List<EventSample>(), new List<LogSample>());
+            exact.Counters.Add(new CounterSample("exact", null, 1));
+            var baseBytes = Encoding.UTF8.GetByteCount(FrameBuilder.SplitToMaxBytes(exact, 1024).Jsons[0]);
+            exact.Counters[0] = new CounterSample("exact" + new string('x', 1024 - baseBytes), null, 1);
+            exact.Distincts.Add(new DistinctSample("too-large", null, new HllBody(9, new string('x', 1024))));
+            var fitted = FrameBuilder.SplitToMaxBytes(exact, 1024);
+            AssertX.Equal(1024, Encoding.UTF8.GetByteCount(fitted.Jsons[0]), "exact byte fit accepted");
+            AssertX.Equal(1, fitted.DroppedDistincts, "oversized distinct dropped");
+            AssertX.True(AllCounters(fitted).Exists(row => row.Name == Protocol.Internal.FrameRowsDropped && row.Value == 1), "drop reported");
+            foreach (var json in fitted.Jsons)
+                AssertX.True(json.IndexOf("\"distincts\"", System.StringComparison.Ordinal) < 0, "no empty distinct property");
         }
 
         static List<CounterSample> AllCounters(FrameBatch batch)

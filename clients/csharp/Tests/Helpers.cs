@@ -36,6 +36,26 @@ namespace Wardx.Tests
         }
     }
 
+    sealed class ObservedDimensions : IReadOnlyDictionary<string, object>
+    {
+        readonly Dictionary<string, object> _values = new Dictionary<string, object> { ["lane"] = "東京" };
+        public int Enumerations;
+        public Action OnEnumerate;
+        public int Count => _values.Count;
+        public IEnumerable<string> Keys => _values.Keys;
+        public IEnumerable<object> Values => _values.Values;
+        public object this[string key] => _values[key];
+        public bool ContainsKey(string key) => _values.ContainsKey(key);
+        public bool TryGetValue(string key, out object value) => _values.TryGetValue(key, out value);
+        public IEnumerator<KeyValuePair<string, object>> GetEnumerator()
+        {
+            Enumerations++;
+            OnEnumerate?.Invoke();
+            return _values.GetEnumerator();
+        }
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
     static class Fixtures
     {
         public static Settings TestSettings(Action<WardxOptions> overrideOptions = null)

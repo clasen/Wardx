@@ -8,7 +8,11 @@ namespace Wardx
     {
         public static byte[] Compress(string json)
         {
-            var bytes = Encoding.UTF8.GetBytes(json);
+            return Compress(Encoding.UTF8.GetBytes(json));
+        }
+
+        internal static byte[] Compress(byte[] bytes)
+        {
             using (var output = new MemoryStream())
             {
                 using (var gzip = new GZipStream(output, CompressionLevel.Optimal, true))

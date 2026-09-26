@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Net;
@@ -21,19 +22,46 @@ namespace Wardx.Tests
             public void Dispose() { Stop(); }
         }
 
+        sealed class ThreadObservedAttributes : IReadOnlyDictionary<string, object>
+        {
+            readonly Dictionary<string, object> _values = new Dictionary<string, object> { ["lane"] = "東京" };
+            public int LastThreadId;
+            public int Count => _values.Count;
+            public IEnumerable<string> Keys => _values.Keys;
+            public IEnumerable<object> Values => _values.Values;
+            public object this[string key] => _values[key];
+            public bool ContainsKey(string key) => _values.ContainsKey(key);
+            public bool TryGetValue(string key, out object value) => _values.TryGetValue(key, out value);
+            public IEnumerator<KeyValuePair<string, object>> GetEnumerator()
+            {
+                LastThreadId = Thread.CurrentThread.ManagedThreadId;
+                return _values.GetEnumerator();
+            }
+            System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+        }
+
         sealed class CaptureTransport : ISyncTransport
         {
             public string Json;
+            public string SecondJson;
+            public int PostCount;
+            public int CloseCount;
+            public readonly TaskCompletionSource<bool> Started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            public TaskCompletionSource<bool> Release;
 
-            public Task<SyncResult> PostAsync(byte[] body, CancellationToken token)
+            public async Task<SyncResult> PostAsync(byte[] body, CancellationToken token)
             {
                 using (var input = new MemoryStream(body))
                 using (var gzip = new GZipStream(input, CompressionMode.Decompress))
                 using (var reader = new StreamReader(gzip)) Json = reader.ReadToEnd();
-                return Task.FromResult(new SyncResult(true, 200, "{}"));
+                PostCount++;
+                if (PostCount == 2) SecondJson = Json;
+                Started.TrySetResult(true);
+                if (PostCount == 1 && Release != null) await Release.Task.ConfigureAwait(false);
+                return new SyncResult(true, 200, "{}");
             }
 
-            public void Close() { }
+            public void Close() { CloseCount++; }
         }
 
         public static async void Run()
@@ -79,14 +107,19 @@ namespace Wardx.Tests
 
         static async Task CheckRuntime()
         {
+            var mainThread = Thread.CurrentThread.ManagedThreadId;
             var capture = new CaptureTransport();
             using (var client = WardxClient.Create(Options("http://127.0.0.1:9"), capture))
             {
                 client.RetentionActivity("test-user");
+                var attributes = new ThreadObservedAttributes();
+                client.Event("thread.probe", attributes);
                 await Within(client.FlushAsync());
                 Require(capture.Json.Contains("\"name\":\"wardx-unity\""), "Unity SDK identity");
                 Require(capture.Json.Contains("\"platform\":\"unity\""), "Unity platform identity");
+                Require(attributes.LastThreadId != mainThread, "envelope encoding runs off the Unity main thread");
             }
+            await CheckCoalescing();
 
             using (var server = new LocalServer())
             {
@@ -109,6 +142,39 @@ namespace Wardx.Tests
                     client.Stop();
                     if (host != null) UnityEngine.Object.DestroyImmediate(host);
                 }
+            }
+        }
+
+        static async Task CheckCoalescing()
+        {
+            var capture = new CaptureTransport
+            {
+                Release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)
+            };
+            using (var client = WardxClient.Create(Options("http://127.0.0.1:9"), capture))
+            {
+                try
+                {
+                    var first = client.FlushAsync();
+                    await Within(capture.Started.Task);
+                    var pending = client.FlushAsync();
+                    var counter = client.Counter("operations");
+                    for (var i = 0; i < 10000; i++)
+                    {
+                        counter.Inc();
+                        Require(ReferenceEquals(pending, client.FlushAsync()), "one pending flush task");
+                    }
+                    await Task.Yield();
+                    Require(capture.PostCount == 1, "one active send while Unity continues updating");
+                    var shutdown = client.ShutdownAsync();
+                    Require(ReferenceEquals(shutdown, client.ShutdownAsync()), "shutdown shares its final flush");
+                    capture.Release.TrySetResult(true);
+                    await Within(Task.WhenAll(first, pending, shutdown));
+                    Require(capture.PostCount == 3, "active, coalesced and final sync only");
+                    Require(capture.SecondJson.Contains("[\"operations\",null,10000]"), "all observations preserved");
+                    Require(capture.CloseCount == 1, "transport closed once after drain");
+                }
+                finally { capture.Release.TrySetResult(true); }
             }
         }
 

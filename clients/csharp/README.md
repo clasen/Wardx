@@ -41,11 +41,11 @@ to both .NET and Unity.
 https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime
 ```
 
-Release `#v0.9.1` includes bounded pending telemetry, conditional Remote Config, disabled mode, and the optional enum API. In
+Release `#v0.9.2` adds linear frame splitting, background envelope encoding on threaded runtimes, and coalesced pending flushes. In
 `Packages/manifest.json`:
 
 ```json
-"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.9.1"
+"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.9.2"
 ```
 
 **Unity (this checkout).** Package Manager → Add package from disk → `clients/csharp/Runtime/package.json`.
@@ -496,6 +496,14 @@ Pending physical frames are capped by `MaxPendingFrames` (default: 32).
 On overflow, the oldest frames are discarded and counted in
 `wardx.internal.frames_failed`. This bounds the pending queue even while
 an HTTP request stalls; it is not a cap on total SDK memory.
+
+Frame splitting measures each row once instead of reserializing the accumulated
+frame on every insertion. Envelope JSON, UTF-8 encoding, and gzip run on the .NET
+thread pool, with one active sync and one coalesced pending request per client.
+Repeated `FlushAsync()` calls share the pending task; counters are not sampled
+or dropped by coalescing. Snapshot aggregation and frame splitting still run
+synchronously. Unity WebGL players keep envelope encoding synchronous because
+managed worker threads are unavailable; splitting and queue bounds still apply.
 
 ## Lifecycle
 

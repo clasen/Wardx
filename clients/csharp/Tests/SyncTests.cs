@@ -43,12 +43,14 @@ namespace Wardx.Tests
         public int PostCount;
         public int CloseCount;
         public string FinalJson;
+        public readonly TaskCompletionSource<bool> Started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public Task<SyncResult> PostAsync(byte[] gzippedBody, CancellationToken cancellationToken)
         {
             PostCount++;
             if (PostCount == 1)
             {
+                Started.TrySetResult(true);
                 var pending = new TaskCompletionSource<SyncResult>(TaskCreationOptions.RunContinuationsAsynchronously);
                 cancellationToken.Register(() => pending.TrySetCanceled(cancellationToken));
                 return pending.Task;
@@ -75,6 +77,42 @@ namespace Wardx.Tests
             var pending = new TaskCompletionSource<SyncResult>(TaskCreationOptions.RunContinuationsAsynchronously);
             cancellationToken.Register(() => pending.TrySetCanceled(cancellationToken));
             return pending.Task;
+        }
+
+        public void Close() { CloseCount++; }
+    }
+
+    sealed class SlowTransport : ISyncTransport
+    {
+        public readonly TaskCompletionSource<bool> Started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        public readonly TaskCompletionSource<bool> Release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        public readonly List<string> Envelopes = new List<string>();
+        public int MaxActive;
+        public int CloseCount;
+        int _active;
+
+        public async Task<SyncResult> PostAsync(byte[] body, CancellationToken token)
+        {
+            var active = Interlocked.Increment(ref _active);
+            bool first;
+            lock (Envelopes)
+            {
+                MaxActive = Math.Max(MaxActive, active);
+                using (var input = new MemoryStream(body))
+                using (var gzip = new GZipStream(input, CompressionMode.Decompress))
+                using (var reader = new StreamReader(gzip)) Envelopes.Add(reader.ReadToEnd());
+                first = Envelopes.Count == 1;
+            }
+            try
+            {
+                if (first)
+                {
+                    Started.TrySetResult(true);
+                    using (token.Register(() => Release.TrySetCanceled())) await Release.Task.ConfigureAwait(false);
+                }
+                return new SyncResult(!first, first ? 503 : 200, "{\"ok\":true,\"configVersion\":0}");
+            }
+            finally { Interlocked.Decrement(ref _active); }
         }
 
         public void Close() { CloseCount++; }
@@ -186,6 +224,9 @@ namespace Wardx.Tests
         {
             DisabledClient();
             ConditionalConfig();
+            EncodingRunsOffCallerThread();
+            EncodingFailureDropsEveryFrame();
+            CoalescedFlushes();
             var transport = new MemoryTransport();
             var client = WardxClient.Create(new WardxOptions
             {
@@ -215,6 +256,7 @@ namespace Wardx.Tests
             var cancellationClient = WardxClient.Create(Options(40), cancellationTransport);
             cancellationClient.Counter("first").Inc();
             var inFlight = cancellationClient.FlushAsync();
+            Wait(cancellationTransport.Started.Task);
             AssertX.Equal(1, cancellationTransport.PostCount, "first sync is in flight");
             cancellationClient.Event("pending-at-shutdown");
             var shutdownA = cancellationClient.ShutdownAsync();
@@ -244,6 +286,118 @@ namespace Wardx.Tests
             AssertX.Equal(1, timeoutTransport.CloseCount, "timed out transport closes once");
 
             RunRealHttpShutdown();
+        }
+
+        static void EncodingRunsOffCallerThread()
+        {
+            var callerThread = Thread.CurrentThread.ManagedThreadId;
+            var transport = new MemoryTransport();
+            var client = WardxClient.Create(Options(5000), transport);
+            var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using (var release = new ManualResetEventSlim())
+            {
+                var dims = new ObservedDimensions
+                {
+                    OnEnumerate = () =>
+                    {
+                        AssertX.True(Thread.CurrentThread.ManagedThreadId != callerThread, "encoding must not run on the caller thread");
+                        entered.TrySetResult(true);
+                        AssertX.True(release.Wait(5000), "encoding released by caller");
+                    }
+                };
+                var frame = client.Core.SnapshotFrame().Frames[0];
+                frame.Counters.Add(new CounterSample("encoding.probe", dims, 1));
+                try
+                {
+                    var flush = client.FlushAsync();
+                    Wait(entered.Task);
+                    AssertX.True(!flush.IsCompleted, "caller continues while serialization is blocked");
+                    client.Counter("during-encoding").Inc();
+                    release.Set();
+                    Wait(flush);
+                    AssertX.Equal(1, dims.Enumerations, "envelope row converted once");
+                    AssertX.True(transport.LastJson.Contains("encoding.probe"), "encoded frame delivered");
+                    AssertX.Equal((double)Encoding.UTF8.GetByteCount(transport.LastJson), client.Core.Internal.BytesUncompressed, "byte metric comes from encoded bytes");
+                }
+                finally
+                {
+                    release.Set();
+                    Wait(client.ShutdownAsync());
+                }
+            }
+        }
+
+        static void EncodingFailureDropsEveryFrame()
+        {
+            var transport = new MemoryTransport();
+            var client = WardxClient.Create(Options(5000), transport);
+            try
+            {
+                for (var i = 0; i < 3; i++)
+                {
+                    client.Event("discarded." + i);
+                    var frame = client.Core.SnapshotFrame().Frames[0];
+                    if (i == 0)
+                    {
+                        var dims = new ObservedDimensions { OnEnumerate = () => throw new InvalidOperationException("encoding failed") };
+                        frame.Counters.Add(new CounterSample("broken", dims, 1));
+                    }
+                }
+                Wait(client.FlushAsync());
+                AssertX.Equal(0, transport.PostCount, "broken envelope not sent");
+                AssertX.Equal(3.0, client.Core.Internal.FramesFailed, "all discarded frames counted");
+                Wait(client.FlushAsync());
+                AssertX.Equal(1, transport.PostCount, "next sync recovers");
+                AssertX.True(!transport.LastJson.Contains("discarded."), "failed frames not replayed");
+                AssertX.True(transport.LastJson.Contains("[\"wardx.internal.frames_failed\",null,3]"), "encoding loss is observable");
+            }
+            finally { Wait(client.ShutdownAsync()); }
+        }
+
+        static void CoalescedFlushes()
+        {
+            var transport = new SlowTransport();
+            var client = WardxClient.Create(Options(5000), transport);
+            try
+            {
+                client.Counter("lost-on-failure").Inc();
+                var first = client.FlushAsync();
+                Wait(transport.Started.Task);
+                var counter = client.Counter("operations");
+                var pending = client.EnqueueSync(default);
+                Parallel.For(0, 10000, _ =>
+                {
+                    counter.Inc();
+                    AssertX.True(ReferenceEquals(pending, client.FlushAsync()), "flush storm shares one pending task");
+                });
+                AssertX.Equal(1, transport.Envelopes.Count, "no concurrent send while destination stalls");
+                client.Event("pending-at-shutdown");
+                var shutdown = client.ShutdownAsync();
+                AssertX.True(ReferenceEquals(shutdown, client.ShutdownAsync()), "shutdown shared during flush storm");
+                AssertX.True(ReferenceEquals(shutdown, client.FlushAsync()), "late flush joins shutdown instead of queuing after close");
+                transport.Release.TrySetResult(true);
+                Wait(Task.WhenAll(first, pending, shutdown));
+                AssertX.Equal(3, transport.Envelopes.Count, "active, coalesced and final sync only");
+                AssertX.Equal(1, transport.MaxActive, "one active send");
+                AssertX.Equal(1, transport.CloseCount, "close after drain only once");
+                AssertX.True(transport.Envelopes[1].Contains("[\"operations\",null,10000]"), "exact operation count after saturation");
+                AssertX.True(transport.Envelopes[1].Contains("pending-at-shutdown"), "queued flush includes latest event");
+                AssertX.True(transport.Envelopes[1].Contains("wardx.internal.frames_failed"), "failed active batch reported");
+                AssertX.True(!transport.Envelopes[1].Contains("lost-on-failure"), "failed data not replayed");
+                Wait(client.FlushAsync());
+                AssertX.Equal(3, transport.Envelopes.Count, "no sends after shutdown");
+            }
+            finally
+            {
+                transport.Release.TrySetResult(true);
+                Wait(client.ShutdownAsync());
+            }
+        }
+
+        static void Wait(Task task)
+        {
+            AssertX.True(Task.WhenAny(task, Task.Delay(5000)).GetAwaiter().GetResult() == task, "operation completes within test deadline");
+            task.GetAwaiter().GetResult();
         }
 
         static WardxOptions Options(int httpTimeoutMs)

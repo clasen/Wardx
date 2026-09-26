@@ -19,6 +19,15 @@ namespace Wardx
         readonly object _gate = new object();
         readonly object _lifecycleGate = new object();
         readonly SemaphoreSlim _syncLock = new SemaphoreSlim(1, 1);
+        readonly object _syncQueueGate = new object();
+        Task _syncTail = Task.CompletedTask;
+        PendingSync _queuedSync;
+
+        sealed class PendingSync
+        {
+            public SyncFlags Flags;
+            public readonly TaskCompletionSource<bool> Completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
         readonly string _instanceId;
         readonly string _sessionId;
         Action _stopScheduler;
@@ -237,10 +246,9 @@ namespace Wardx
             }
         }
 
-        async Task SettleCurrentSync()
+        Task SettleCurrentSync()
         {
-            await _syncLock.WaitAsync().ConfigureAwait(false);
-            _syncLock.Release();
+            lock (_syncQueueGate) return _syncTail;
         }
 
         public void Stop()
@@ -278,7 +286,54 @@ namespace Wardx
         internal Task EnqueueSync(SyncFlags flags)
         {
             if (!_enabled) return Task.CompletedTask;
-            return RunBoundedSync(flags);
+            PendingSync pending;
+            Task previous;
+            lock (_lifecycleGate)
+            {
+                if (_stopped) return _shutdownTask ?? Task.CompletedTask;
+                lock (_syncQueueGate)
+                {
+                    if (_queuedSync != null)
+                    {
+                        _queuedSync.Flags.Flush |= flags.Flush;
+                        _queuedSync.Flags.Bootstrap |= flags.Bootstrap;
+                        return _queuedSync.Completion.Task;
+                    }
+                    pending = new PendingSync { Flags = flags };
+                    _queuedSync = pending;
+                    previous = _syncTail;
+                    _syncTail = pending.Completion.Task;
+                }
+            }
+            _ = RunQueuedSync(pending, previous);
+            return pending.Completion.Task;
+        }
+
+        async Task RunQueuedSync(PendingSync pending, Task previous)
+        {
+            try
+            {
+                await previous.ConfigureAwait(false);
+                SyncFlags flags;
+                lock (_syncQueueGate)
+                {
+                    _queuedSync = null;
+                    flags = pending.Flags;
+                }
+                await RunBoundedSync(flags).ConfigureAwait(false);
+            }
+            catch
+            {
+                lock (_gate) _core.Internal.FramesFailed += 1;
+            }
+            finally
+            {
+                lock (_syncQueueGate)
+                {
+                    if (ReferenceEquals(_queuedSync, pending)) _queuedSync = null;
+                }
+                pending.Completion.TrySetResult(true);
+            }
         }
 
         async Task RunBoundedSync(SyncFlags flags)
@@ -327,20 +382,34 @@ namespace Wardx
             }
             if (!flags.Bootstrap && !flags.Flush && frames.Count == 0) return;
 
-            var envelope = BuildEnvelope(frames);
-            var json = Json.Stringify(envelope);
-            var compressed = Gzip.Compress(json);
-            var bytesUncompressed = Encoding.UTF8.GetByteCount(json);
-            var bytesCompressed = compressed.Length;
-            lock (_gate)
-            {
-                _core.Internal.BytesUncompressed += bytesUncompressed;
-                _core.Internal.BytesCompressed += bytesCompressed;
-            }
+            var bytesUncompressed = 0;
+            var bytesCompressed = 0;
             var started = Stopwatch.GetTimestamp();
             var phase = flags.Bootstrap ? "bootstrap" : flags.Flush ? "flush" : "tick";
             try
             {
+                (byte[] Body, int Bytes) Encode()
+                {
+                    transportToken.ThrowIfCancellationRequested();
+                    var json = Json.Stringify(BuildEnvelope(frames));
+                    var bytes = Encoding.UTF8.GetBytes(json);
+                    return (Gzip.Compress(bytes), bytes.Length);
+                }
+#if UNITY_WEBGL && !UNITY_EDITOR
+                var encoded = Encode();
+#else
+                var encoded = await Task.Run(Encode, transportToken).ConfigureAwait(false);
+#endif
+                var compressed = encoded.Body;
+                bytesUncompressed = encoded.Bytes;
+                bytesCompressed = compressed.Length;
+                lock (_gate)
+                {
+                    _core.Internal.BytesUncompressed += bytesUncompressed;
+                    _core.Internal.BytesCompressed += bytesCompressed;
+                }
+                transportToken.ThrowIfCancellationRequested();
+                started = Stopwatch.GetTimestamp();
                 var result = await WithCancellation(
                     _transport.PostAsync(compressed, transportToken),
                     transportToken
