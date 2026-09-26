@@ -27,14 +27,14 @@ const subjects = Number(values.subjects || (smoke ? 50_000 : 1_000_000));
 
 const tests = {
   async A() {
-    testA(smoke ? 2_000_000 : 10_000_000);
+    await testA(smoke ? 2_000_000 : 10_000_000);
   },
   async B() {
     const rates = smoke ? [rate] : [10_000, 50_000, 100_000, 250_000];
     for (const r of rates) await testB({ rate: r, durationMs: smoke ? durationMs : 300_000 });
   },
   async C() {
-    testC();
+    for (const seriesCount of [50, 5000]) await testC(seriesCount);
   },
   async D() {
     const profiles = values.profile ? [values.profile] : ['raw', 'persistence'];

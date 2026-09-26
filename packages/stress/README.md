@@ -79,11 +79,28 @@ Gate at 100k mixed operations per second: extra event-loop p99 delay less than 5
 
 **When:** You change snapshot, JSON, or gzip code.
 
-**Objective:** Measure snapshot, `JSON.stringify`, gzip, and event-loop delay.
+**Objective:** Measure snapshot, `JSON.stringify`, asynchronous gzip, CPU, allocations, memory, and event-loop delay with many observations and active series.
 
 ```bash
-node packages/stress/src/index.js C
+node --expose-gc packages/stress/src/index.js C --smoke
 ```
+
+Test C runs 100,000 counter/histogram observation pairs with both 50 and 5,000
+pre-bound series of each kind, plus events and logs. It sends the actual pending
+frames through serialization and compression, without contacting a server.
+Assertions check observation counts, row loss, frame capacity, and byte limits.
+
+Allocation bytes are a V8 heap-sampling estimate (32 KiB sampling interval),
+including collected objects, not an exact allocation count. CPU includes profiler
+overhead and compression work; peak RSS/heap are sampled, not absolute maxima.
+`--expose-gc` enables collection before and after each workload; final heap still
+includes retained frames and serialization buffers. Event-loop probes are armed
+before work and drained afterward, and include the probe's 10 ms resolution.
+Compare repeated runs on the same Node version and hardware. These measurements
+are diagnostics, not fixed CPU/memory/latency release gates.
+
+`pnpm run test:js` also guards the splitter's linear row-serialization work,
+UTF-8 frame boundaries, asynchronous compression, and bounded pending sync work.
 
 ## Use case 4: Measure ingest throughput
 

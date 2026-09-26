@@ -1,8 +1,7 @@
-import { gzipSync, gunzipSync } from 'node:zlib';
+import { promisify } from 'node:util';
+import { gzip, gunzipSync } from 'node:zlib';
 
-export function gzipBuffer(input) {
-  return gzipSync(input);
-}
+export const gzipBuffer = promisify(gzip);
 
 export function gunzipBuffer(input) {
   return gunzipSync(input);

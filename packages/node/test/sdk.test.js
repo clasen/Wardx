@@ -231,6 +231,63 @@ test('createConsoleTracer writes one line per measure', () => {
   assert.match(lines[1], /sync\s+flush frames=1 gzip=120B 3\.3ms ok config=12/);
 });
 
+test('flush storms share one pending sync behind a slow destination without losing counts', async () => {
+  let releaseBootstrap;
+  let bootstrapStarted;
+  const blocked = new Promise((resolve) => { releaseBootstrap = resolve; });
+  const started = new Promise((resolve) => { bootstrapStarted = resolve; });
+  const envelopes = [];
+  let active = 0;
+  let maxActive = 0;
+  const wardx = createWardx({
+    endpoint: 'http://127.0.0.1:1',
+    projectKey: 'test-key',
+    project: 'demo',
+    role: 'client',
+    appVersion: '1.0.0',
+    environment: 'test',
+    privacySalt: 'test-salt',
+    aggregateIntervalMs: 60_000,
+    syncIntervalMs: 60_000
+  });
+  wardx._transport = {
+    post: async (body) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      envelopes.push(JSON.parse(gunzipSync(body).toString('utf8')));
+      if (envelopes.length === 1) {
+        bootstrapStarted();
+        await blocked;
+      }
+      active -= 1;
+      return { ok: true, status: 200, json: { ok: true, configVersion: 0 } };
+    },
+    close() {}
+  };
+  try {
+    await started;
+    const counter = wardx.counter('operations');
+    const pending = wardx._enqueueSync({});
+    for (let i = 0; i < 10000; i++) {
+      counter.inc();
+      assert.equal(wardx.flush(), pending);
+    }
+    assert.equal(envelopes.length, 1);
+    releaseBootstrap();
+    await pending;
+    assert.equal(envelopes.length, 2);
+    assert.equal(maxActive, 1);
+    const operations = envelopes[1].frames.flatMap((frame) => frame.metrics.counters)
+      .find((row) => row[0] === 'operations');
+    assert.equal(operations[2], 10000);
+    assert.equal(wardx._queuedSync, null);
+    assert.deepEqual(wardx._core.takePendingFrames(), []);
+  } finally {
+    releaseBootstrap();
+    await wardx.shutdown();
+  }
+});
+
 test('concurrent shutdown callers share final flush and close once', async () => {
   let releaseBootstrap;
   let posts = 0;

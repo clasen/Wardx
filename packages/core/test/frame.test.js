@@ -135,6 +135,69 @@ test('splitToMaxBytes handles 5000 mixed rows under a 32KB cap without loss', ()
   assert.ok(ms < 1000, `expected split under 1000ms, took ${ms.toFixed(1)}ms`);
 });
 
+test('splitToMaxBytes serializes only linear row volume as series count grows', (t) => {
+  const stringify = JSON.stringify;
+  let visitedRows = 0;
+  t.mock.method(JSON, 'stringify', (value, ...args) => {
+    if (value?.metrics) {
+      visitedRows += Object.values(value.metrics).reduce((sum, rows) => sum + rows.length, 0);
+      visitedRows += value.events.length + value.logs.length;
+    } else if (Array.isArray(value)) {
+      visitedRows += 1;
+    }
+    return stringify(value, ...args);
+  });
+  for (const count of [100, 1000, 10000]) {
+    const frame = bareFrame({});
+    frame.metrics.counters = Array.from({ length: count }, (_, i) => [`series.${i}`, null, i]);
+    visitedRows = 0;
+    const batch = FrameBuilder.splitToMaxBytes(frame, 524288);
+    assert.equal(batch.droppedRows, 0);
+    assert.equal(batch.frames.flatMap((part) => part.metrics.counters).length, count);
+    assert.ok(visitedRows <= count * 2, `serialized ${visitedRows} rows for ${count} series`);
+  }
+});
+
+test('splitToMaxBytes accounts for UTF-8, escapes, optional distincts and seq width', () => {
+  const frame = bareFrame({
+    gauges: [['温度', { city: '東京' }, 21, 1]],
+    histograms: [['latency', null, { count: 1, sum: 1, min: 1, max: 1, buckets: [[10, 1]] }]],
+    distincts: Array.from({ length: 30 }, (_, i) => [`users.${i}`, null, { registers: 'x'.repeat(130) }]),
+    events: Array.from({ length: 50 }, (_, i) => [i, '🧪', { text: 'á"\\\n'.repeat(45) }]),
+    logs: [[1, 'info', '日本語', { text: '\ud800' }]]
+  });
+  frame.seq = 9;
+  frame.metrics.counters = [['requests', null, 1]];
+  const batch = FrameBuilder.splitToMaxBytes(frame, 1024);
+  assert.equal(batch.droppedRows, 0);
+  assert.ok(batch.frames.length > 1);
+  assert.equal(batch.frames[1].seq, 10);
+  for (const kind of ['counters', 'gauges', 'histograms', 'distincts']) {
+    assert.deepEqual(batch.frames.flatMap((part) => part.metrics[kind] || []), frame.metrics[kind]);
+  }
+  assert.deepEqual(batch.frames.flatMap((part) => part.events), frame.events);
+  assert.deepEqual(batch.frames.flatMap((part) => part.logs), frame.logs);
+  for (let i = 0; i < batch.jsons.length; i++) {
+    assert.equal(batch.jsons[i], JSON.stringify(batch.frames[i]));
+    assert.ok(Buffer.byteLength(batch.jsons[i]) <= 1024);
+  }
+});
+
+test('splitToMaxBytes accepts exact byte fits and drops an oversized distinct without an empty property', () => {
+  const frame = bareFrame({});
+  frame.metrics.counters = [['exact', null, 1]];
+  const baseBytes = Buffer.byteLength(FrameBuilder.splitToMaxBytes(frame, 1024).jsons[0]);
+  frame.metrics.counters[0][0] += 'x'.repeat(1024 - baseBytes);
+  frame.metrics.distincts = [['too-large', null, { registers: 'x'.repeat(1024) }]];
+  const batch = FrameBuilder.splitToMaxBytes(frame, 1024);
+  assert.equal(Buffer.byteLength(batch.jsons[0]), 1024);
+  assert.equal(batch.droppedDistincts, 1);
+  assert.equal(batch.droppedRows, 1);
+  assert.ok(batch.frames.every((part) => !Object.hasOwn(part.metrics, 'distincts')));
+  assert.ok(batch.frames.flatMap((part) => part.metrics.counters)
+    .some((row) => row[0] === 'wardx.internal.frame_rows_dropped' && row[2] === 1));
+});
+
 test('counter-only, mixed, and internal-heavy snapshots all satisfy the byte limit', () => {
   const core = new WardxCore(testSettings({ maxFrameBytes: 1024, maxSeriesPerMetric: 500 }));
   for (let i = 0; i < 150; i++) core.counter(`counter.${i}`, { lane: i }).inc();

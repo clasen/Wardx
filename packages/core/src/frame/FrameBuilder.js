@@ -88,6 +88,7 @@ export class FrameBuilder {
       logs: 0
     };
     let current = emptyFrame(frame.seq, frame.from, frame.to);
+    let currentBytes = measure(current).bytes;
 
     const finishCurrent = () => {
       const measured = measure(current);
@@ -97,55 +98,44 @@ export class FrameBuilder {
       frames.push(current);
       jsons.push(measured.json);
       current = emptyFrame(frame.seq + frames.length, frame.from, frame.to);
+      currentBytes = measure(current).bytes;
     };
 
-    const addRow = (collection, row, countDrop = true) => {
-      collection(current).push(row);
-      if (measure(current).bytes <= maxFrameBytes) return true;
-      collection(current).pop();
-      if (collection.kind === 'distincts' && current.metrics.distincts.length === 0) {
-        delete current.metrics.distincts;
-      }
+    const tryAddRow = (kind, row, rowBytes) => {
+      const parent = kind === 'events' || kind === 'logs' ? current : current.metrics;
+      const rows = parent[kind];
+      // The first distinct row also introduces the optional JSON property.
+      const addedBytes = rowBytes + (rows?.length ? 1 : 0) +
+        (kind === 'distincts' && !rows ? ',"distincts":[]'.length : 0);
+      if (currentBytes + addedBytes > maxFrameBytes) return false;
+      if (rows) rows.push(row);
+      else parent[kind] = [row];
+      currentBytes += addedBytes;
+      return true;
+    };
+
+    const addRow = (kind, row, countDrop = true) => {
+      const rowBytes = Buffer.byteLength(JSON.stringify(row), 'utf8');
+      if (tryAddRow(kind, row, rowBytes)) return true;
       if (rowCount(current) > 0) {
         finishCurrent();
-        collection(current).push(row);
-        if (measure(current).bytes <= maxFrameBytes) return true;
-        collection(current).pop();
-        if (collection.kind === 'distincts' && current.metrics.distincts.length === 0) {
-          delete current.metrics.distincts;
-        }
+        if (tryAddRow(kind, row, rowBytes)) return true;
       }
-      if (countDrop) dropped[collection.kind] += 1;
+      if (countDrop) dropped[kind] += 1;
       return false;
     };
 
-    const counters = (candidate) => candidate.metrics.counters;
-    counters.kind = 'counters';
-    const gauges = (candidate) => candidate.metrics.gauges;
-    gauges.kind = 'gauges';
-    const histograms = (candidate) => candidate.metrics.histograms;
-    histograms.kind = 'histograms';
-    const distincts = (candidate) => {
-      if (!candidate.metrics.distincts) candidate.metrics.distincts = [];
-      return candidate.metrics.distincts;
-    };
-    distincts.kind = 'distincts';
-    const events = (candidate) => candidate.events;
-    events.kind = 'events';
-    const logs = (candidate) => candidate.logs;
-    logs.kind = 'logs';
-
-    for (const row of frame.metrics.counters) addRow(counters, row);
-    for (const row of frame.metrics.gauges) addRow(gauges, row);
-    for (const row of frame.metrics.histograms) addRow(histograms, row);
-    for (const row of frame.metrics.distincts || []) addRow(distincts, row);
-    for (const row of frame.events) addRow(events, row);
-    for (const row of frame.logs) addRow(logs, row);
+    for (const row of frame.metrics.counters) addRow('counters', row);
+    for (const row of frame.metrics.gauges) addRow('gauges', row);
+    for (const row of frame.metrics.histograms) addRow('histograms', row);
+    for (const row of frame.metrics.distincts || []) addRow('distincts', row);
+    for (const row of frame.events) addRow('events', row);
+    for (const row of frame.logs) addRow('logs', row);
 
     const droppedRows = Object.values(dropped).reduce((sum, value) => sum + value, 0);
     if (
       droppedRows > 0 &&
-      !addRow(counters, [INTERNAL.frameRowsDropped, null, droppedRows], false)
+      !addRow('counters', [INTERNAL.frameRowsDropped, null, droppedRows], false)
     ) {
       throw new Error('maxFrameBytes cannot contain the frame drop metric');
     }

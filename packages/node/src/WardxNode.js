@@ -50,6 +50,7 @@ export class WardxNode {
     this._stopped = false;
     this._shutdownPromise = null;
     this._syncChain = Promise.resolve();
+    this._queuedSync = null;
     this._instanceId = ulid();
     this._sessionId = ulid();
     this._aggregateTimer = setInterval(() => {
@@ -127,7 +128,16 @@ export class WardxNode {
   }
 
   _enqueueSync(flags) {
-    this._syncChain = this._syncChain.then(() => this._syncOnce(flags), () => this._syncOnce(flags));
+    if (this._queuedSync && !this._queuedSync.bootstrap) {
+      this._queuedSync.flush ||= flags.flush;
+      return this._syncChain;
+    }
+    this._queuedSync = flags;
+    const run = () => {
+      if (this._queuedSync === flags) this._queuedSync = null;
+      return this._syncOnce(flags);
+    };
+    this._syncChain = this._syncChain.then(run, run);
     return this._syncChain;
   }
 
@@ -168,7 +178,7 @@ export class WardxNode {
       frames
     };
     const json = JSON.stringify(envelope);
-    const compressed = gzipBuffer(json);
+    const compressed = await gzipBuffer(json);
     const bytesUncompressed = Buffer.byteLength(json);
     const bytesCompressed = compressed.length;
     this._core.internal.bytesUncompressed += bytesUncompressed;
