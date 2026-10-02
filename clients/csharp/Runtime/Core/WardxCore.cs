@@ -273,6 +273,34 @@ namespace Wardx
             return frames;
         }
 
+        public void RecordProcessRss(double bytes)
+        {
+            Internal.ProcessRssBytes = bytes;
+        }
+
+        public void RecordSyncBytes(double uncompressed, double compressed)
+        {
+            Internal.BytesUncompressed += uncompressed;
+            Internal.BytesCompressed += compressed;
+        }
+
+        public void RecordSyncResult(bool ok, int frames, double ms)
+        {
+            Internal.LastSyncMs = ms;
+            if (ok) Internal.FramesSent += frames;
+            else Internal.FramesFailed += Math.Max(frames, 1);
+        }
+
+        public void RecordSyncError()
+        {
+            Internal.FramesFailed += 1;
+        }
+
+        public void RecordConfigVersion(double version)
+        {
+            Internal.ConfigVersion = version;
+        }
+
         T Wrap<T>(T series, T noopSentinel, string name, IReadOnlyDictionary<string, object> dims, Func<T, bool, T> factory)
             where T : class
         {

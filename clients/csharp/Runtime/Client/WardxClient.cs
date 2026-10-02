@@ -278,7 +278,7 @@ namespace Wardx
             if (_stopped) return;
             lock (_gate)
             {
-                _core.Internal.ProcessRssBytes = _readRssBytes();
+                _core.RecordProcessRss(_readRssBytes());
                 _core.SnapshotIfDirty();
             }
         }
@@ -324,7 +324,7 @@ namespace Wardx
             }
             catch
             {
-                lock (_gate) _core.Internal.FramesFailed += 1;
+                lock (_gate) _core.RecordSyncError();
             }
             finally
             {
@@ -356,11 +356,11 @@ namespace Wardx
             }
             catch (OperationCanceledException)
             {
-                lock (_gate) _core.Internal.FramesFailed += 1;
+                lock (_gate) _core.RecordSyncError();
             }
             catch
             {
-                lock (_gate) _core.Internal.FramesFailed += 1;
+                lock (_gate) _core.RecordSyncError();
             }
             finally
             {
@@ -375,7 +375,7 @@ namespace Wardx
             {
                 if (flags.Flush || flags.Bootstrap)
                 {
-                    _core.Internal.ProcessRssBytes = _readRssBytes();
+                    _core.RecordProcessRss(_readRssBytes());
                     _core.SnapshotIfDirty();
                 }
                 frames = _core.TakePendingFrames();
@@ -403,11 +403,7 @@ namespace Wardx
                 var compressed = encoded.Body;
                 bytesUncompressed = encoded.Bytes;
                 bytesCompressed = compressed.Length;
-                lock (_gate)
-                {
-                    _core.Internal.BytesUncompressed += bytesUncompressed;
-                    _core.Internal.BytesCompressed += bytesCompressed;
-                }
+                lock (_gate) _core.RecordSyncBytes(bytesUncompressed, bytesCompressed);
                 transportToken.ThrowIfCancellationRequested();
                 started = Stopwatch.GetTimestamp();
                 var result = await WithCancellation(
@@ -415,16 +411,15 @@ namespace Wardx
                     transportToken
                 ).ConfigureAwait(false);
                 var ms = (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
-                lock (_gate) _core.Internal.LastSyncMs = ms;
                 if (!result.Ok)
                 {
-                    lock (_gate) _core.Internal.FramesFailed += Math.Max(frames.Count, 1);
+                    lock (_gate) _core.RecordSyncResult(false, frames.Count, ms);
                     TraceSync(phase, frames.Count, bytesUncompressed, bytesCompressed, ms, false, result.Status, false);
                     return;
                 }
                 lock (_gate)
                 {
-                    _core.Internal.FramesSent += frames.Count;
+                    _core.RecordSyncResult(true, frames.Count, ms);
                     ApplyResponse(result.Text);
                 }
                 var applied = false;
@@ -439,21 +434,13 @@ namespace Wardx
             catch (OperationCanceledException)
             {
                 var ms = (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
-                lock (_gate)
-                {
-                    _core.Internal.LastSyncMs = ms;
-                    _core.Internal.FramesFailed += Math.Max(frames.Count, 1);
-                }
+                lock (_gate) _core.RecordSyncResult(false, frames.Count, ms);
                 TraceSync(phase, frames.Count, bytesUncompressed, bytesCompressed, ms, false, null, false);
             }
             catch
             {
                 var ms = (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
-                lock (_gate)
-                {
-                    _core.Internal.LastSyncMs = ms;
-                    _core.Internal.FramesFailed += Math.Max(frames.Count, 1);
-                }
+                lock (_gate) _core.RecordSyncResult(false, frames.Count, ms);
                 TraceSync(phase, frames.Count, bytesUncompressed, bytesCompressed, ms, false, null, false);
             }
         }
@@ -523,7 +510,7 @@ namespace Wardx
             var versionNode = json["configVersion"];
             if (versionNode != null && versionNode.Type == JsonNode.Kind.Number)
             {
-                _core.Internal.ConfigVersion = versionNode.NumberValue;
+                _core.RecordConfigVersion(versionNode.NumberValue);
             }
             var config = json["config"];
             if (config != null && config.IsObject && versionNode != null)
