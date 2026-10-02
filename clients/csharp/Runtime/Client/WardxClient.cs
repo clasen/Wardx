@@ -318,7 +318,7 @@ namespace Wardx
                         frame = _core.CaptureFrameIfDirty();
                     }
                     if (frame == null) return;
-                    var batch = FrameBuilder.SplitToMaxBytes(frame, _settings.MaxFrameBytes);
+                    var batch = FrameBuilder.SplitToMaxBytes(frame, _settings.MaxFrameBytes, _settings.MaxEnvelopeItems);
                     lock (_gate) _core.CommitSnapshot(batch);
                     _core.TraceSnapshot(batch);
                 }
@@ -440,24 +440,44 @@ namespace Wardx
             lock (_gate) frames = _core.TakePendingFrames();
             if (!flags.Bootstrap && !flags.Flush && frames.Count == 0) return;
 
+            var phase = flags.Bootstrap ? "bootstrap" : flags.Flush ? "flush" : "tick";
+            var start = 0;
+            do
+            {
+                var sent = await PostEnvelope(phase, frames, start, transportToken).ConfigureAwait(false);
+                if (!sent.Ok) return;
+                start = sent.End;
+            } while (start < frames.Count);
+        }
+
+        async Task<(bool Ok, int End)> PostEnvelope(string phase, List<Frame> frames, int start, CancellationToken transportToken)
+        {
+            var unsent = frames.Count - start;
+            var count = unsent;
             var bytesUncompressed = 0;
             var bytesCompressed = 0;
             var started = Stopwatch.GetTimestamp();
-            var phase = flags.Bootstrap ? "bootstrap" : flags.Flush ? "flush" : "tick";
             try
             {
-                (byte[] Body, int Bytes) Encode()
+                (byte[] Body, int Bytes, int End) Encode()
                 {
                     transportToken.ThrowIfCancellationRequested();
-                    var json = Json.Stringify(BuildEnvelope(frames));
+                    var envelope = BuildEnvelope();
+                    var baseBytes = Encoding.UTF8.GetByteCount(Json.Stringify(envelope));
+                    var end = _core.EnvelopeEnd(frames, start, baseBytes);
+                    var wireFrames = new List<object>(end - start);
+                    for (var i = start; i < end; i++) wireFrames.Add(frames[i].ToWire());
+                    envelope["frames"] = wireFrames;
+                    var json = Json.Stringify(envelope);
                     var bytes = Encoding.UTF8.GetBytes(json);
-                    return (Gzip.Compress(bytes), bytes.Length);
+                    return (Gzip.Compress(bytes), bytes.Length, end);
                 }
 #if UNITY_WEBGL && !UNITY_EDITOR
                 var encoded = Encode();
 #else
                 var encoded = await Task.Run(Encode, transportToken).ConfigureAwait(false);
 #endif
+                count = encoded.End - start;
                 var compressed = encoded.Body;
                 bytesUncompressed = encoded.Bytes;
                 bytesCompressed = compressed.Length;
@@ -471,13 +491,13 @@ namespace Wardx
                 var ms = (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
                 if (!result.Ok)
                 {
-                    lock (_gate) _core.RecordSyncResult(false, frames.Count, ms);
-                    TraceSync(phase, frames.Count, bytesUncompressed, bytesCompressed, ms, false, result.Status, false);
-                    return;
+                    lock (_gate) _core.RecordSyncResult(false, unsent, ms);
+                    TraceSync(phase, count, bytesUncompressed, bytesCompressed, ms, false, result.Status, false);
+                    return (false, start);
                 }
                 lock (_gate)
                 {
-                    _core.RecordSyncResult(true, frames.Count, ms);
+                    _core.RecordSyncResult(true, count, ms);
                     ApplyResponse(result.Text);
                 }
                 var applied = false;
@@ -487,19 +507,22 @@ namespace Wardx
                     version = _core.ConfigStore.Version;
                     applied = result.Text != null && result.Text.IndexOf("\"config\"", StringComparison.Ordinal) >= 0;
                 }
-                TraceSync(phase, frames.Count, bytesUncompressed, bytesCompressed, ms, true, result.Status, applied, version);
+                TraceSync(phase, count, bytesUncompressed, bytesCompressed, ms, true, result.Status, applied, version);
+                return (true, encoded.End);
             }
             catch (OperationCanceledException)
             {
                 var ms = (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
-                lock (_gate) _core.RecordSyncResult(false, frames.Count, ms);
-                TraceSync(phase, frames.Count, bytesUncompressed, bytesCompressed, ms, false, null, false);
+                lock (_gate) _core.RecordSyncResult(false, unsent, ms);
+                TraceSync(phase, count, bytesUncompressed, bytesCompressed, ms, false, null, false);
+                return (false, start);
             }
             catch
             {
                 var ms = (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
-                lock (_gate) _core.RecordSyncResult(false, frames.Count, ms);
-                TraceSync(phase, frames.Count, bytesUncompressed, bytesCompressed, ms, false, null, false);
+                lock (_gate) _core.RecordSyncResult(false, unsent, ms);
+                TraceSync(phase, count, bytesUncompressed, bytesCompressed, ms, false, null, false);
+                return (false, start);
             }
         }
 
@@ -517,10 +540,8 @@ namespace Wardx
             return await task.ConfigureAwait(false);
         }
 
-        Dictionary<string, object> BuildEnvelope(List<Frame> frames)
+        Dictionary<string, object> BuildEnvelope()
         {
-            var wireFrames = new List<object>(frames.Count);
-            foreach (var frame in frames) wireFrames.Add(frame.ToWire());
             int configVersion;
             string configContext;
             Dictionary<string, object> attributes;
@@ -550,7 +571,7 @@ namespace Wardx
                     ["attributes"] = attributes
                 },
                 ["configVersion"] = configVersion,
-                ["frames"] = wireFrames
+                ["frames"] = new List<object>()
             };
             if (configContext != null) envelope["configContext"] = configContext;
             return envelope;

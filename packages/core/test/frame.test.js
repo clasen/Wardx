@@ -91,8 +91,8 @@ test('cooperative splitting preserves synchronous partitions, UTF-8 bytes and dr
   });
   frame.seq = 9;
   frame.metrics.counters = [['kept', null, 1], ['x'.repeat(2048), null, 1]];
-  const expected = FrameBuilder.splitToMaxBytes(frame, 1024);
-  const steps = FrameBuilder._splitToMaxBytesSteps(frame, 1024);
+  const expected = FrameBuilder.splitToMaxBytes(frame, 1024, 10000);
+  const steps = FrameBuilder._splitToMaxBytesSteps(frame, 1024, 10000);
   let result;
   let turns = 0;
   do {
@@ -123,12 +123,12 @@ test('internal dropped counters are merged into the next frame without recursion
   assert.equal(dropped[2], 1);
 });
 
-function bareFrame({ events = [], logs = [], histograms = [], gauges = [], distincts = [] }) {
+function bareFrame({ counters = [], events = [], logs = [], histograms = [], gauges = [], distincts = [] }) {
   return {
     seq: 1,
     from: 1,
     to: 2,
-    metrics: { counters: [], gauges, histograms, distincts },
+    metrics: { counters, gauges, histograms, distincts },
     events,
     logs
   };
@@ -144,9 +144,18 @@ test('splitToMaxBytes keeps an HLL row under the minimum frame size', () => {
   assert.doesNotMatch(batch.jsons.join(''), /private-hid/);
 });
 
+test('splitToMaxBytes caps rows per physical frame without losing rows', () => {
+  const counters = Array.from({ length: 25 }, (_, i) => [`rows.${i}`, null, 1]);
+  const batch = FrameBuilder.splitToMaxBytes(bareFrame({ counters }), 4096, 10);
+  assert.deepEqual(batch.frames.map((frame) => FrameBuilder.rowCount(frame)), [10, 10, 5]);
+  assert.deepEqual(batch.frames.flatMap((frame) => frame.metrics.counters), counters);
+  assert.equal(batch.droppedRows, 0);
+  assert.throws(() => FrameBuilder.splitToMaxBytes(bareFrame({ counters }), 4096, 0), /maxFrameRows/);
+});
+
 test('splitToMaxBytes keeps a frame that already fits', () => {
   const frame = bareFrame({ events: [[1, 'a', null]] });
-  const batch = FrameBuilder.splitToMaxBytes(frame, 4096);
+  const batch = FrameBuilder.splitToMaxBytes(frame, 4096, 10000);
   assert.equal(batch.droppedRows, 0);
   assert.equal(batch.frames.length, 1);
   assert.equal(batch.frames[0].events.length, 1);
@@ -156,7 +165,7 @@ test('splitToMaxBytes keeps a frame that already fits', () => {
 test('splitToMaxBytes preserves all splittable events in consecutive frames', () => {
   const events = [];
   for (let i = 0; i < 200; i++) events.push([i, 'e', { pad: 'y'.repeat(80) }]);
-  const batch = FrameBuilder.splitToMaxBytes(bareFrame({ events }), 4096);
+  const batch = FrameBuilder.splitToMaxBytes(bareFrame({ events }), 4096, 10000);
   assert.ok(batch.frames.length > 1);
   assert.equal(batch.droppedRows, 0);
   assert.deepEqual(batch.frames.flatMap((frame) => frame.events), events);
@@ -168,7 +177,7 @@ test('splitToMaxBytes drops only an indivisible row and reports it in-band', () 
   const huge = ['x'.repeat(3000), null, 1];
   const frame = bareFrame({});
   frame.metrics.counters = [['kept', null, 2], huge];
-  const batch = FrameBuilder.splitToMaxBytes(frame, 1024);
+  const batch = FrameBuilder.splitToMaxBytes(frame, 1024, 10000);
   assert.equal(batch.droppedRows, 1);
   assert.equal(batch.droppedCounters, 1);
   const counters = batch.frames.flatMap((physical) => physical.metrics.counters);
@@ -181,7 +190,7 @@ test('splitToMaxBytes handles 5000 mixed rows under a 32KB cap without loss', ()
   const events = [];
   for (let i = 0; i < 5000; i++) events.push([i, 'e', { payload: 'y'.repeat(40), i }]);
   const t0 = process.hrtime.bigint();
-  const batch = FrameBuilder.splitToMaxBytes(bareFrame({ events }), 32768);
+  const batch = FrameBuilder.splitToMaxBytes(bareFrame({ events }), 32768, 10000);
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   assert.equal(batch.droppedRows, 0);
   assert.equal(batch.frames.flatMap((frame) => frame.events).length, 5000);
@@ -205,7 +214,7 @@ test('splitToMaxBytes serializes only linear row volume as series count grows', 
     const frame = bareFrame({});
     frame.metrics.counters = Array.from({ length: count }, (_, i) => [`series.${i}`, null, i]);
     visitedRows = 0;
-    const batch = FrameBuilder.splitToMaxBytes(frame, 524288);
+    const batch = FrameBuilder.splitToMaxBytes(frame, 524288, 10000);
     assert.equal(batch.droppedRows, 0);
     assert.equal(batch.frames.flatMap((part) => part.metrics.counters).length, count);
     assert.ok(visitedRows <= count * 2, `serialized ${visitedRows} rows for ${count} series`);
@@ -222,7 +231,7 @@ test('splitToMaxBytes accounts for UTF-8, escapes, optional distincts and seq wi
   });
   frame.seq = 9;
   frame.metrics.counters = [['requests', null, 1]];
-  const batch = FrameBuilder.splitToMaxBytes(frame, 1024);
+  const batch = FrameBuilder.splitToMaxBytes(frame, 1024, 10000);
   assert.equal(batch.droppedRows, 0);
   assert.ok(batch.frames.length > 1);
   assert.equal(batch.frames[1].seq, 10);
@@ -240,10 +249,10 @@ test('splitToMaxBytes accounts for UTF-8, escapes, optional distincts and seq wi
 test('splitToMaxBytes accepts exact byte fits and drops an oversized distinct without an empty property', () => {
   const frame = bareFrame({});
   frame.metrics.counters = [['exact', null, 1]];
-  const baseBytes = Buffer.byteLength(FrameBuilder.splitToMaxBytes(frame, 1024).jsons[0]);
+  const baseBytes = Buffer.byteLength(FrameBuilder.splitToMaxBytes(frame, 1024, 10000).jsons[0]);
   frame.metrics.counters[0][0] += 'x'.repeat(1024 - baseBytes);
   frame.metrics.distincts = [['too-large', null, { registers: 'x'.repeat(1024) }]];
-  const batch = FrameBuilder.splitToMaxBytes(frame, 1024);
+  const batch = FrameBuilder.splitToMaxBytes(frame, 1024, 10000);
   assert.equal(Buffer.byteLength(batch.jsons[0]), 1024);
   assert.equal(batch.droppedDistincts, 1);
   assert.equal(batch.droppedRows, 1);
@@ -271,14 +280,14 @@ test('counter-only, mixed, and internal-heavy snapshots all satisfy the byte lim
 });
 
 test('maxFrameBytes rejects values below the physical frame minimum', () => {
-  assert.throws(() => FrameBuilder.splitToMaxBytes(bareFrame({}), 1023), /at least 1024/);
+  assert.throws(() => FrameBuilder.splitToMaxBytes(bareFrame({}), 1023, 10000), /at least 1024/);
 });
 
 test('shared Node/C# maximum-size fixture has identical partitions', () => {
   const frame = bareFrame({ events: [[1, 'fixture.event', { runtime: 'shared' }]] });
   frame.seq = 7;
   frame.metrics.counters = Array.from({ length: 80 }, (_, i) => [`counter.${i}`, null, i]);
-  const batch = FrameBuilder.splitToMaxBytes(frame, 1024);
+  const batch = FrameBuilder.splitToMaxBytes(frame, 1024, 10000);
   assert.deepEqual(batch.frames.map((physical) => physical.seq), [7, 8, 9]);
   assert.deepEqual(batch.frames.map((physical) => physical.metrics.counters.length), [41, 39, 0]);
   assert.deepEqual(batch.frames.map((physical) => physical.events.length), [0, 0, 1]);

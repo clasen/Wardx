@@ -47,7 +47,9 @@ import { WardxCore, assignVariant, loadSdkDefaults } from '@wardx/core';
 | `syncIntervalMs` | Default `15000`. Interval for the runtime sync. |
 | `maxBufferedEvents` | Default `5000`. |
 | `maxBufferedLogs` | Default `2000`. |
-| `maxFrameBytes` | Default `524288`; must be at least `1024`. |
+| `maxFrameBytes` | Default `524288`; must be at least `1024` and less than `maxEnvelopeBytes`. |
+| `maxEnvelopeItems` | Default `10000`. Maximum rows per physical frame and per sync request; match the server's `maxItemsPerEnvelope`. |
+| `maxEnvelopeBytes` | Default `2097152`. Maximum uncompressed sync request size; match the server's `maxRequestBytes`. |
 | `maxSeriesPerMetric` | Default `1000`. |
 | `maxDimensionKeys` | Default `8`. |
 | `maxDimensionValueLength` | Default `64`. |
@@ -282,7 +284,7 @@ if (batch) {
 
 `snapshotIfDirty` returns `null` when there is no new data.
 
-`snapshotFrame` uses `FrameBuilder.splitToMaxBytes`. It measures the serialized UTF-8 JSON, preserves row order within counters, gauges, histograms, events, and logs, and emits as many physical frames as needed with consecutive `seq` values. Every emitted frame is at most `maxFrameBytes`.
+`snapshotFrame` uses `FrameBuilder.splitToMaxBytes`. It measures the serialized UTF-8 JSON, preserves row order within counters, gauges, histograms, events, and logs, and emits as many physical frames as needed with consecutive `seq` values. Every emitted frame is at most `maxFrameBytes` and at most `maxEnvelopeItems` rows.
 
 An individual row that cannot fit in an otherwise empty frame is dropped. The batch reports dropped counts by collection and emits their total as `wardx.internal.frame_rows_dropped`. If even that internal row cannot fit, splitting throws. `maxFrameBytes` must be at least `1024`.
 

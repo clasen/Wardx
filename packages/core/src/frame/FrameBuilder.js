@@ -73,16 +73,23 @@ export class FrameBuilder {
     }
   }
 
-  static splitToMaxBytes(frame, maxFrameBytes) {
-    const steps = FrameBuilder._splitToMaxBytesSteps(frame, maxFrameBytes);
+  static rowCount(frame) {
+    return rowCount(frame);
+  }
+
+  static splitToMaxBytes(frame, maxFrameBytes, maxFrameRows) {
+    const steps = FrameBuilder._splitToMaxBytesSteps(frame, maxFrameBytes, maxFrameRows);
     let result = steps.next();
     while (!result.done) result = steps.next();
     return result.value;
   }
 
-  static *_splitToMaxBytesSteps(frame, maxFrameBytes) {
+  static *_splitToMaxBytesSteps(frame, maxFrameBytes, maxFrameRows) {
     if (!Number.isInteger(maxFrameBytes) || maxFrameBytes < 1024) {
       throw new Error('maxFrameBytes must be an integer at least 1024');
+    }
+    if (!Number.isInteger(maxFrameRows) || maxFrameRows < 1) {
+      throw new Error('maxFrameRows must be an integer at least 1');
     }
     const frames = [];
     const jsons = [];
@@ -116,7 +123,7 @@ export class FrameBuilder {
       // The first distinct row also introduces the optional JSON property.
       const addedBytes = rowBytes + (rows?.length ? 1 : 0) +
         (kind === 'distincts' && !rows ? ',"distincts":[]'.length : 0);
-      if (currentBytes + addedBytes > maxFrameBytes) return false;
+      if (currentBytes + addedBytes > maxFrameBytes || rowCount(current) >= maxFrameRows) return false;
       if (rows) rows.push(row);
       else parent[kind] = [row];
       currentBytes += addedBytes;

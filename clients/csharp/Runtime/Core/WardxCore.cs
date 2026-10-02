@@ -220,7 +220,7 @@ namespace Wardx
         public FrameBatch SnapshotFrame()
         {
             var frame = CaptureFrame();
-            var batch = FrameBuilder.SplitToMaxBytes(frame, _settings.MaxFrameBytes);
+            var batch = FrameBuilder.SplitToMaxBytes(frame, _settings.MaxFrameBytes, _settings.MaxEnvelopeItems);
             CommitSnapshot(batch);
             TraceSnapshot(batch);
             return batch;
@@ -287,6 +287,25 @@ namespace Wardx
             var frames = _pendingFrames;
             _pendingFrames = new List<Frame>();
             return frames;
+        }
+
+        internal int EnvelopeEnd(List<Frame> frames, int start, int baseBytes)
+        {
+            var end = start;
+            long items = 0;
+            long bytes = baseBytes;
+            while (end < frames.Count)
+            {
+                var frame = frames[end];
+                if (frame.WireBytes <= 0) throw new InvalidOperationException("pending frame has no measured size");
+                var nextItems = items + frame.RowCount;
+                var nextBytes = bytes + frame.WireBytes + (end > start ? 1 : 0);
+                if (end > start && (nextItems > _settings.MaxEnvelopeItems || nextBytes > _settings.MaxEnvelopeBytes)) break;
+                items = nextItems;
+                bytes = nextBytes;
+                end++;
+            }
+            return end;
         }
 
         public void RecordProcessRss(double bytes)

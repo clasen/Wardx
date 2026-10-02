@@ -13,6 +13,8 @@ namespace Wardx
         public const int MaxBufferedLogs = 2000;
         public const int MaxFrameBytes = 524288;
         public const int MaxPendingFrames = 32;
+        public const int MaxEnvelopeItems = 10000;
+        public const int MaxEnvelopeBytes = 2097152;
         public const int MaxSeriesPerMetric = 1000;
         public const int MaxDimensionKeys = 8;
         public const int MaxDimensionValueLength = 64;
@@ -21,6 +23,6 @@ namespace Wardx
 
         public static readonly double[] HistogramBuckets = { 10, 25, 50, 100, 250, 500, 1000 };
 
-        public const string Version = "0.9.3";
+        public const string Version = "0.9.4";
     }
 }

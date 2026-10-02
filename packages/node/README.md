@@ -56,7 +56,7 @@ To receive frames, run an ingest server. Install `@wardx/server` and start it wi
 - Snapshot construction yields to the event loop between serialization blocks, using `maxFrameBytes` as the work budget. Completed frames retain their JSON and stream into asynchronous gzip without reserializing their payloads. Snapshot and sync queues each allow one active job and one coalesced pending request; `flush()` and `shutdown()` wait for the required snapshots.
 - Capturing metric state still takes synchronous work proportional to registered series. Each individual row is serialized synchronously, so this is not a hard event-loop latency guarantee; very large individual payloads can still pause the application.
 - `httpTimeoutMs` bounds the entire HTTP request, including connection establishment and response reading.
-- Physical frames are serialized, split to `maxFrameBytes`, and assigned consecutive sequence numbers. An individually oversized row is counted in `wardx.internal.frame_rows_dropped`.
+- Physical frames are serialized, split to `maxFrameBytes` and `maxEnvelopeItems` rows, and assigned consecutive sequence numbers. A sync sends pending frames in as many requests as needed to keep each envelope within `maxEnvelopeItems` rows and `maxEnvelopeBytes` uncompressed bytes (defaults match the server's `maxItemsPerEnvelope` and `maxRequestBytes`). If a request fails, the rest of that sync is discarded and counted in `wardx.internal.frames_failed`; the tracer receives one `sync` record per request. An individually oversized row is counted in `wardx.internal.frame_rows_dropped`.
 - The application has priority over telemetry.
 - Remote Config is always read from local memory.
 - Remote Config must not contain secrets. The project key authenticates the project; client-selected `role` is routing metadata, not authorization.
@@ -79,7 +79,7 @@ When enabled, `createWardx` requires these keys:
 | `environment` | Environment name. |
 | `privacySalt` | Required stable, project-specific salt for one-way subject hashes. |
 
-Optional keys include `tracer` and overrides for centralized values in `@wardx/core` `defaults.json`. `maxFrameBytes` is at least `1024`; `experimentStateMaxSubjects` defaults to `100000` and bounds assignment/exposure state in this SDK instance. Missing or empty `privacySalt` is rejected; it is never derived from the project credential. `tracer` is a local diagnostic hook. It does not go over the wire.
+Optional keys include `tracer` and overrides for centralized values in `@wardx/core` `defaults.json`. `maxFrameBytes` is at least `1024` and less than `maxEnvelopeBytes`; if the server lowers `maxItemsPerEnvelope` or `maxRequestBytes`, set `maxEnvelopeItems` and `maxEnvelopeBytes` to match; `experimentStateMaxSubjects` defaults to `100000` and bounds assignment/exposure state in this SDK instance. Missing or empty `privacySalt` is rejected; it is never derived from the project credential. `tracer` is a local diagnostic hook. It does not go over the wire.
 
 The SDK starts a bootstrap sync immediately. The SDK then syncs on `syncIntervalMs` with jitter.
 

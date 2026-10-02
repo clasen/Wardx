@@ -105,7 +105,7 @@ A histogram body may include optional `exemplar`: `{ "value": 80, "attrs": { "gr
 
 Internal SDK series use the `wardx.internal.` prefix and are merged into the same arrays.
 
-SDKs measure the serialized UTF-8 JSON and split a logical snapshot into physical frames no larger than `maxFrameBytes`, with consecutive `seq` values. The setting is at least `1024`. A single row that cannot fit in an empty frame is dropped and counted by `wardx.internal.frame_rows_dropped`; the SDK never sends an oversized frame silently.
+SDKs measure the serialized UTF-8 JSON and split a logical snapshot into physical frames no larger than `maxFrameBytes`, with consecutive `seq` values. The setting is at least `1024`. Each physical frame also holds at most `maxEnvelopeItems` rows. A sync sends the pending frames in order across as many requests as needed so that each envelope stays within `maxEnvelopeItems` rows and `maxEnvelopeBytes` uncompressed bytes; SDK defaults match the server's `maxItemsPerEnvelope` and `maxRequestBytes`. If one request fails, the frames not yet sent in that sync are discarded and counted in `wardx.internal.frames_failed`. A single row that cannot fit in an empty frame is dropped and counted by `wardx.internal.frame_rows_dropped`; the SDK never sends an oversized frame silently.
 
 ## Response
 

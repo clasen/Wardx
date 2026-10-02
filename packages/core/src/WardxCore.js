@@ -197,7 +197,7 @@ export class WardxCore {
 
   snapshotFrame() {
     const frame = this._captureFrame();
-    const batch = FrameBuilder.splitToMaxBytes(frame, this.settings.maxFrameBytes);
+    const batch = FrameBuilder.splitToMaxBytes(frame, this.settings.maxFrameBytes, this.settings.maxEnvelopeItems);
     this._acceptFrameBatch(batch);
     return batch;
   }
@@ -205,7 +205,11 @@ export class WardxCore {
   async _snapshotIfDirtyAsync() {
     if (!this._hasActivity()) return null;
     const frame = this._captureFrame();
-    const steps = FrameBuilder._splitToMaxBytesSteps(frame, this.settings.maxFrameBytes);
+    const steps = FrameBuilder._splitToMaxBytesSteps(
+      frame,
+      this.settings.maxFrameBytes,
+      this.settings.maxEnvelopeItems
+    );
     let result;
     do {
       await setImmediate();
@@ -278,6 +282,23 @@ export class WardxCore {
       return json;
     });
     return { frames, jsons };
+  }
+
+  _envelopeEnd(batch, start, baseBytes) {
+    let end = start;
+    let items = 0;
+    let bytes = baseBytes;
+    while (end < batch.frames.length) {
+      const nextItems = items + FrameBuilder.rowCount(batch.frames[end]);
+      const nextBytes = bytes + Buffer.byteLength(batch.jsons[end], 'utf8') + (end > start ? 1 : 0);
+      if (end > start && (nextItems > this.settings.maxEnvelopeItems || nextBytes > this.settings.maxEnvelopeBytes)) {
+        break;
+      }
+      items = nextItems;
+      bytes = nextBytes;
+      end += 1;
+    }
+    return end;
   }
 
   takePendingFrames() {

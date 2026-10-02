@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { gunzipSync } from 'node:zlib';
 import { createServer } from 'node:net';
 import { createConsoleTracer, createWardx } from '../src/index.js';
+import { FrameBuilder } from '@wardx/core';
 import { createIngestServer, listen } from '../../server/src/server.js';
 import { testServerConfig } from '../../server/test/helpers.js';
 
@@ -284,6 +285,92 @@ test('flush storms share one pending sync behind a slow destination without losi
     assert.deepEqual(wardx._core.takePendingFrames(), []);
   } finally {
     releaseBootstrap();
+    await wardx.shutdown();
+  }
+});
+
+test('a flush above the server item limit is delivered in accepted envelopes', async () => {
+  await withServer(async (server, endpoint) => {
+    const syncs = [];
+    const wardx = createWardx({
+      endpoint, projectKey: 'test-key', project: 'demo', role: 'client',
+      appVersion: '1.0.0', environment: 'test', privacySalt: 'test-salt',
+      aggregateIntervalMs: 60_000, syncIntervalMs: 60_000,
+      tracer: { sync: (record) => syncs.push(record) }
+    });
+    try {
+      await wardx._syncChain;
+      syncs.length = 0;
+      for (let metric = 0; metric < 12; metric++) {
+        for (let series = 0; series < 1000; series++) wardx.counter(`bulk.${metric}`, { series: String(series) }).inc();
+      }
+      await wardx.flush();
+      assert.ok(syncs.length > 1);
+      assert.ok(syncs.every((record) => record.ok && record.status === 200), JSON.stringify(syncs));
+      const envelopes = server.wardx.sink.envelopes.slice(-syncs.length);
+      for (const envelope of envelopes) {
+        const items = envelope.frames.reduce((sum, frame) => sum + FrameBuilder.rowCount(frame), 0);
+        assert.ok(items <= 10000, `envelope carried ${items} items`);
+      }
+      const bulk = envelopes
+        .flatMap((envelope) => envelope.frames)
+        .flatMap((frame) => frame.metrics.counters)
+        .filter((row) => row[0].startsWith('bulk.'));
+      assert.equal(bulk.length, 12000);
+    } finally {
+      await wardx.shutdown();
+    }
+  });
+});
+
+test('envelopes respect maxEnvelopeBytes and a failed envelope discards the rest of the sync', async () => {
+  const envelopes = [];
+  const sizes = [];
+  let failAt = 0;
+  const wardx = createWardx({
+    endpoint: 'http://127.0.0.1:1', projectKey: 'test-key', project: 'demo', role: 'client',
+    appVersion: '1.0.0', environment: 'test', privacySalt: 'test-salt',
+    aggregateIntervalMs: 60_000, syncIntervalMs: 60_000,
+    maxFrameBytes: 2048, maxEnvelopeBytes: 8192
+  });
+  wardx._transport = {
+    post: async (body) => {
+      const json = gunzipSync(body);
+      sizes.push(json.length);
+      envelopes.push(JSON.parse(json.toString('utf8')));
+      if (envelopes.length === failAt) return { ok: false, status: 503, json: null };
+      return { ok: true, status: 200, json: { ok: true, configVersion: 0 } };
+    },
+    close() {}
+  };
+  try {
+    await wardx._syncChain;
+    envelopes.length = 0;
+    sizes.length = 0;
+    for (let i = 0; i < 200; i++) wardx.event('sized', { i, text: 'x'.repeat(100) });
+    await wardx.flush();
+    assert.ok(envelopes.length > 1);
+    assert.ok(sizes.every((size) => size <= 8192), JSON.stringify(sizes));
+    const seqs = envelopes.flatMap((envelope) => envelope.frames.map((frame) => frame.seq));
+    assert.deepEqual(seqs, seqs.map((_, i) => seqs[0] + i));
+    const sent = envelopes.flatMap((envelope) => envelope.frames).flatMap((frame) => frame.events);
+    assert.deepEqual(sent.map((row) => row[2].i), Array.from({ length: 200 }, (_, i) => i));
+
+    for (let i = 0; i < 200; i++) wardx.event('sized', { i, text: 'x'.repeat(100) });
+    await wardx._enqueueSnapshot();
+    const pending = wardx._core.pendingFrames.length;
+    envelopes.length = 0;
+    failAt = 2;
+    await wardx.flush();
+    assert.equal(envelopes.length, 2);
+    const delivered = envelopes[0].frames.length;
+    assert.equal(wardx._core.pendingFrames.length, 0);
+    await wardx._enqueueSnapshot();
+    const failed = wardx._core.pendingFrames
+      .flatMap((frame) => frame.metrics.counters)
+      .find((row) => row[0] === 'wardx.internal.frames_failed');
+    assert.equal(failed[2], pending - delivered);
+  } finally {
     await wardx.shutdown();
   }
 });

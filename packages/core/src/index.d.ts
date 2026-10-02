@@ -59,6 +59,8 @@ export interface SdkDefaults {
   maxBufferedLogs: number;
   maxFrameBytes: number;
   maxPendingFrames: number;
+  maxEnvelopeItems: number;
+  maxEnvelopeBytes: number;
   maxSeriesPerMetric: number;
   maxDimensionKeys: number;
   maxDimensionValueLength: number;
@@ -422,7 +424,7 @@ export class FrameBuilder {
     internal: InternalSnapshot;
   }): Frame;
   static mergeInternal(counters: CounterRow[], gauges: GaugeRow[], internal: InternalSnapshot): void;
-  static splitToMaxBytes(frame: Frame, maxFrameBytes: number): FrameBatch;
+  static splitToMaxBytes(frame: Frame, maxFrameBytes: number, maxFrameRows: number): FrameBatch;
 }
 
 export class WardxCore {
