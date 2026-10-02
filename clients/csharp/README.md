@@ -41,7 +41,7 @@ to both .NET and Unity.
 https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime
 ```
 
-Release `#v0.9.3` moves sync accounting into `WardxCore` (`RecordSyncBytes`, `RecordSyncResult`, `RecordSyncError`, `RecordProcessRss`, `RecordConfigVersion`); wire format and metrics are unchanged. `#v0.9.2` added linear frame splitting, background envelope encoding on threaded runtimes, and coalesced pending flushes. In
+Release `#v0.9.3` builds snapshots and splits frames on the thread pool on threaded runtimes, and moves sync accounting into `WardxCore` (`RecordSyncBytes`, `RecordSyncResult`, `RecordSyncError`, `RecordProcessRss`, `RecordConfigVersion`); wire format and metrics are unchanged. `#v0.9.2` added linear frame splitting, background envelope encoding on threaded runtimes, and coalesced pending flushes. In
 `Packages/manifest.json`:
 
 ```json
@@ -498,12 +498,18 @@ On overflow, the oldest frames are discarded and counted in
 an HTTP request stalls; it is not a cap on total SDK memory.
 
 Frame splitting measures each row once instead of reserializing the accumulated
-frame on every insertion. Envelope JSON, UTF-8 encoding, and gzip run on the .NET
-thread pool, with one active sync and one coalesced pending request per client.
-Repeated `FlushAsync()` calls share the pending task; counters are not sampled
-or dropped by coalescing. Snapshot aggregation and frame splitting still run
-synchronously. Unity WebGL players keep envelope encoding synchronous because
-managed worker threads are unavailable; splitting and queue bounds still apply.
+frame on every insertion. On threaded runtimes, snapshots, envelope JSON, UTF-8
+encoding, and gzip run on the .NET thread pool. Snapshot capture briefly locks
+metric state; splitting and serialization run outside that lock, allowing new
+measurements while a snapshot is built. Capture still scales with registered
+series, so it is not a constant-time or lock-free operation.
+
+Snapshot and sync queues each allow one active job and one coalesced pending
+request. `FlushAsync()` and `ShutdownAsync()` wait for the required snapshots;
+counters are not sampled or dropped by coalescing. Frame tracer callbacks can
+run on background threads. Unity WebGL players retain synchronous snapshot and
+envelope construction because managed workers are unavailable; queue bounds
+still apply.
 
 ## Lifecycle
 

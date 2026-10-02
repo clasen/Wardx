@@ -224,6 +224,8 @@ namespace Wardx.Tests
         {
             DisabledClient();
             ConditionalConfig();
+            SnapshotsReleaseTheMeasurementLock();
+            SnapshotFailureRecovers();
             EncodingRunsOffCallerThread();
             EncodingFailureDropsEveryFrame();
             CoalescedFlushes();
@@ -286,6 +288,84 @@ namespace Wardx.Tests
             AssertX.Equal(1, timeoutTransport.CloseCount, "timed out transport closes once");
 
             RunRealHttpShutdown();
+        }
+
+        static void SnapshotsReleaseTheMeasurementLock()
+        {
+            var callerThread = Thread.CurrentThread.ManagedThreadId;
+            var transport = new MemoryTransport();
+            var client = WardxClient.Create(Options(5000), transport);
+            var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using (var release = new ManualResetEventSlim())
+            {
+                var attrs = new ObservedDimensions();
+                var counter = client.Counter("snapshot.operations");
+                counter.Inc();
+                client.Event("snapshot.probe", attrs);
+                attrs.OnEnumerate = () =>
+                {
+                    AssertX.True(Thread.CurrentThread.ManagedThreadId != callerThread, "snapshot serialization runs off caller thread");
+                    entered.TrySetResult(true);
+                    AssertX.True(release.Wait(5000), "snapshot released by caller");
+                };
+                try
+                {
+                    var first = client.EnqueueSnapshot();
+                    Wait(entered.Task);
+                    AssertX.True(!first.IsCompleted, "snapshot is still serializing");
+                    Wait(Task.Run(() =>
+                    {
+                        Parallel.For(0, 10000, _ => counter.Inc());
+                        client.Event("during-snapshot");
+                    }));
+                    var pending = client.EnqueueSnapshot();
+                    for (var i = 0; i < 10000; i++)
+                        AssertX.True(ReferenceEquals(pending, client.EnqueueSnapshot()), "snapshot storm shares one pending task");
+                    var shutdown = client.ShutdownAsync();
+                    AssertX.Equal(0, transport.CloseCount, "shutdown waits for pending snapshots");
+                    release.Set();
+                    Wait(Task.WhenAll(first, pending, shutdown));
+                    AssertX.Equal(1, transport.PostCount, "final sync drains all snapshots");
+                    AssertX.Equal(1, transport.CloseCount, "transport closes after snapshot drain");
+                    var envelope = Json.Parse(transport.LastJson);
+                    double operations = 0;
+                    var expectedSeq = 1;
+                    foreach (var frame in envelope["frames"].ArrayValue)
+                    {
+                        AssertX.Equal((double)expectedSeq++, frame["seq"].NumberValue, "ordered snapshot commit");
+                        foreach (var row in frame["metrics"]["counters"].ArrayValue)
+                            if (row.ArrayValue[0].StringValue == "snapshot.operations") operations += row.ArrayValue[2].NumberValue;
+                    }
+                    AssertX.Equal(10001.0, operations, "measurements during snapshot stay exact");
+                    AssertX.True(transport.LastJson.Contains("during-snapshot"), "late event is in the following snapshot");
+                    AssertX.Equal(0, client.Core.TakePendingFrames().Count, "all completed frames drained");
+                }
+                finally
+                {
+                    release.Set();
+                    Wait(client.ShutdownAsync());
+                }
+            }
+        }
+
+        static void SnapshotFailureRecovers()
+        {
+            var transport = new MemoryTransport();
+            var client = WardxClient.Create(Options(5000), transport);
+            try
+            {
+                var attrs = new ObservedDimensions();
+                client.Event("invalid-snapshot", attrs);
+                attrs.OnEnumerate = () => throw new InvalidOperationException("snapshot encoding failed");
+                Wait(client.FlushAsync());
+                client.Counter("recovered").Inc();
+                Wait(client.FlushAsync());
+                AssertX.Equal(2, transport.PostCount, "later snapshots can be sent after failure");
+                AssertX.True(!transport.LastJson.Contains("invalid-snapshot"), "failed snapshot is not replayed");
+                AssertX.True(transport.LastJson.Contains("[\"wardx.internal.frames_failed\",null,1]"), "failed snapshot counted");
+                AssertX.True(transport.LastJson.Contains("[\"recovered\",null,1]"), "new observations survive failure");
+            }
+            finally { Wait(client.ShutdownAsync()); }
         }
 
         static void EncodingRunsOffCallerThread()

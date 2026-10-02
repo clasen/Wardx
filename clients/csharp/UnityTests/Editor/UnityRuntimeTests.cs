@@ -26,6 +26,9 @@ namespace Wardx.Tests
         {
             readonly Dictionary<string, object> _values = new Dictionary<string, object> { ["lane"] = "東京" };
             public int LastThreadId;
+            public int MainThreadId;
+            public int MainThreadReads;
+            public bool TrackReads;
             public int Count => _values.Count;
             public IEnumerable<string> Keys => _values.Keys;
             public IEnumerable<object> Values => _values.Values;
@@ -35,6 +38,7 @@ namespace Wardx.Tests
             public IEnumerator<KeyValuePair<string, object>> GetEnumerator()
             {
                 LastThreadId = Thread.CurrentThread.ManagedThreadId;
+                if (TrackReads && LastThreadId == MainThreadId) MainThreadReads++;
                 return _values.GetEnumerator();
             }
             System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
@@ -112,12 +116,15 @@ namespace Wardx.Tests
             using (var client = WardxClient.Create(Options("http://127.0.0.1:9"), capture))
             {
                 client.RetentionActivity("test-user");
-                var attributes = new ThreadObservedAttributes();
+                var attributes = new ThreadObservedAttributes { MainThreadId = mainThread };
                 client.Event("thread.probe", attributes);
+                attributes.TrackReads = true;
                 await Within(client.FlushAsync());
                 Require(capture.Json.Contains("\"name\":\"wardx-unity\""), "Unity SDK identity");
                 Require(capture.Json.Contains("\"platform\":\"unity\""), "Unity platform identity");
                 Require(attributes.LastThreadId != mainThread, "envelope encoding runs off the Unity main thread");
+                Require(attributes.MainThreadReads == 0, "snapshot splitting also runs off the Unity main thread");
+                Require(capture.Json.Contains("thread.probe"), "background snapshot is sent before flush completes");
             }
             await CheckCoalescing();
 

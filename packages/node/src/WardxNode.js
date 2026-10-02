@@ -9,7 +9,7 @@ import { disabledCore } from './disabled.js';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { gzipBuffer } from './compression/gzip.js';
+import { gzipEnvelope } from './compression/gzip.js';
 import { createHttpTransport } from './transport/HttpTransport.js';
 import { readProcessRssBytes } from './runtime/processMetrics.js';
 
@@ -49,11 +49,12 @@ export class WardxNode {
     this._shutdownPromise = null;
     this._syncChain = Promise.resolve();
     this._queuedSync = null;
+    this._snapshotChain = Promise.resolve();
+    this._queuedSnapshot = null;
     this._instanceId = ulid();
     this._sessionId = ulid();
     this._aggregateTimer = setInterval(() => {
-      this._core.recordProcessRss(readProcessRssBytes());
-      this._core.snapshotIfDirty();
+      this._enqueueSnapshot();
     }, settings.aggregateIntervalMs);
     this._aggregateTimer.unref();
     this._scheduleSync();
@@ -99,6 +100,7 @@ export class WardxNode {
 
   flush() {
     if (this._disabled) return Promise.resolve();
+    if (this._shutdownPromise !== null) return this._shutdownPromise;
     return this._enqueueSync({ flush: true });
   }
 
@@ -125,6 +127,23 @@ export class WardxNode {
     this._syncTimer.unref();
   }
 
+  _enqueueSnapshot() {
+    if (this._queuedSnapshot) return this._snapshotChain;
+    const queued = {};
+    this._queuedSnapshot = queued;
+    const run = async () => {
+      if (this._queuedSnapshot === queued) this._queuedSnapshot = null;
+      try {
+        this._core.recordProcessRss(readProcessRssBytes());
+        await this._core._snapshotIfDirtyAsync();
+      } catch {
+        this._core.recordSyncError();
+      }
+    };
+    this._snapshotChain = this._snapshotChain.then(run, run);
+    return this._snapshotChain;
+  }
+
   _enqueueSync(flags) {
     if (this._queuedSync && !this._queuedSync.bootstrap) {
       this._queuedSync.flush ||= flags.flush;
@@ -149,11 +168,9 @@ export class WardxNode {
   }
 
   async _syncOnceInner(flags) {
-    if (flags.flush || flags.bootstrap) {
-      this._core.recordProcessRss(readProcessRssBytes());
-      this._core.snapshotIfDirty();
-    }
-    const frames = this._core.takePendingFrames();
+    if (flags.flush || flags.bootstrap) await this._enqueueSnapshot();
+    else await this._snapshotChain;
+    const { frames, jsons } = this._core._takePendingBatch();
     if (!flags.bootstrap && !flags.flush && frames.length === 0) return;
     const envelope = this._core.syncEnvelope({
       project: this.settings.project,
@@ -170,26 +187,29 @@ export class WardxNode {
         platform: PLATFORM,
         attributes: this._attributes
       }
-    }, frames);
-    const json = JSON.stringify(envelope);
-    const compressed = await gzipBuffer(json);
-    const bytesUncompressed = Buffer.byteLength(json);
-    const bytesCompressed = compressed.length;
-    this._core.recordSyncBytes(bytesUncompressed, bytesCompressed);
-    const started = performance.now();
+    }, []);
+    let bytesUncompressed = 0;
+    let bytesCompressed = 0;
+    let started = performance.now();
     const phase = flags.bootstrap ? 'bootstrap' : flags.flush ? 'flush' : 'tick';
-    const trace = { phase, frames: frames.length, bytesUncompressed, bytesCompressed };
+    const trace = () => ({ phase, frames: frames.length, bytesUncompressed, bytesCompressed });
     try {
+      const encoded = await gzipEnvelope(envelope, jsons);
+      const compressed = encoded.compressed;
+      bytesUncompressed = encoded.bytesUncompressed;
+      bytesCompressed = compressed.length;
+      this._core.recordSyncBytes(bytesUncompressed, bytesCompressed);
+      started = performance.now();
       const result = await this._transport.post(compressed);
       const ms = performance.now() - started;
       this._core.recordSyncResult({ ok: result.ok, frames: frames.length, ms });
       if (!result.ok) {
-        this._traceSync({ ...trace, ms, ok: false, status: result.status });
+        this._traceSync({ ...trace(), ms, ok: false, status: result.status });
         return;
       }
       this._core.applySyncResponse(result.json);
       this._traceSync({
-        ...trace,
+        ...trace(),
         ms,
         ok: true,
         status: result.status,
@@ -199,7 +219,7 @@ export class WardxNode {
     } catch {
       const ms = performance.now() - started;
       this._core.recordSyncResult({ ok: false, frames: frames.length, ms });
-      this._traceSync({ ...trace, ms, ok: false });
+      this._traceSync({ ...trace(), ms, ok: false });
     }
   }
 

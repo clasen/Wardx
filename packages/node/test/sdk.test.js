@@ -288,6 +288,114 @@ test('flush storms share one pending sync behind a slow destination without losi
   }
 });
 
+async function capturedClient() {
+  const recorded = { envelopes: [], closes: 0 };
+  const wardx = createWardx({
+    endpoint: 'http://127.0.0.1:1', projectKey: 'test-key', project: 'demo', role: 'client',
+    appVersion: '1.0.0', environment: 'test', privacySalt: 'test-salt',
+    aggregateIntervalMs: 60_000, syncIntervalMs: 60_000
+  });
+  wardx._transport = {
+    post: async (body) => {
+      recorded.envelopes.push(JSON.parse(gunzipSync(body).toString('utf8')));
+      return { ok: true, status: 200, json: { ok: true, configVersion: 0 } };
+    },
+    close() { recorded.closes++; }
+  };
+  await wardx._syncChain;
+  return { wardx, recorded };
+}
+
+test('sending uses sealed snapshot JSON without revisiting event payloads', async () => {
+  const { wardx, recorded } = await capturedClient();
+  try {
+    let visits = 0;
+    const attrs = { toJSON() { visits++; return { text: '東京 🧪' }; } };
+    wardx.event('sealed', attrs);
+    await wardx._enqueueSnapshot();
+    const snapshotVisits = visits;
+    assert.ok(snapshotVisits > 0);
+    attrs.toJSON = () => { throw new Error('sealed payload serialized again'); };
+    await wardx.flush();
+    assert.equal(visits, snapshotVisits);
+    const events = recorded.envelopes.at(-1).frames.flatMap((frame) => frame.events);
+    assert.equal(events.find((row) => row[1] === 'sealed')[2].text, '東京 🧪');
+  } finally { await wardx.shutdown(); }
+});
+
+test('snapshot storms stay bounded and shutdown waits for late measurements', async (t) => {
+  const { wardx, recorded } = await capturedClient();
+  let release;
+  let notify;
+  const blocked = new Promise((resolve) => { release = resolve; });
+  const entered = new Promise((resolve) => { notify = resolve; });
+  const snapshot = wardx._core._snapshotIfDirtyAsync.bind(wardx._core);
+  let calls = 0;
+  let active = 0;
+  let maxActive = 0;
+  t.mock.method(wardx._core, '_snapshotIfDirtyAsync', async () => {
+    calls++;
+    active++;
+    maxActive = Math.max(maxActive, active);
+    try {
+      const batch = await snapshot();
+      if (calls === 1) {
+        notify();
+        await blocked;
+      }
+      return batch;
+    } finally { active--; }
+  });
+  try {
+    const counter = wardx.counter('snapshot.operations');
+    counter.inc();
+    const first = wardx._enqueueSnapshot();
+    await entered;
+    counter.add(9);
+    wardx.event('during-snapshot');
+    const pending = wardx._enqueueSnapshot();
+    for (let i = 0; i < 10000; i++) assert.equal(wardx._enqueueSnapshot(), pending);
+    const flush = wardx.flush();
+    const shutdown = wardx.shutdown();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls, 1);
+    assert.equal(recorded.envelopes.length, 1);
+    assert.equal(recorded.closes, 0);
+    release();
+    await Promise.all([first, pending, flush, shutdown]);
+    assert.equal(calls, 2);
+    assert.equal(maxActive, 1);
+    assert.equal(recorded.closes, 1);
+    const frames = recorded.envelopes.flatMap((envelope) => envelope.frames);
+    assert.deepEqual(frames.map((frame) => frame.seq), frames.map((_, i) => i + 1));
+    assert.equal(frames.flatMap((frame) => frame.metrics.counters)
+      .filter((row) => row[0] === 'snapshot.operations').reduce((sum, row) => sum + row[2], 0), 10);
+    assert.equal(frames.flatMap((frame) => frame.events).filter((row) => row[1] === 'during-snapshot').length, 1);
+    assert.equal(wardx._core.pendingFrames.length, 0);
+    assert.equal(wardx._queuedSnapshot, null);
+    assert.equal(wardx.flush(), shutdown, 'late flushes do not restart work after shutdown');
+    assert.equal(recorded.envelopes.length, 2);
+  } finally {
+    release();
+    await wardx.shutdown();
+  }
+});
+
+test('failed async snapshots are discarded, counted and do not poison later flushes', async () => {
+  const { wardx, recorded } = await capturedClient();
+  try {
+    wardx.event('invalid-snapshot', { value: 1n });
+    await wardx.flush();
+    wardx.counter('recovered').inc();
+    await wardx.flush();
+    const frames = recorded.envelopes.at(-1).frames;
+    const counters = frames.flatMap((frame) => frame.metrics.counters);
+    assert.equal(counters.find((row) => row[0] === 'wardx.internal.frames_failed')[2], 1);
+    assert.equal(counters.find((row) => row[0] === 'recovered')[2], 1);
+    assert.ok(recorded.envelopes.every((envelope) => envelope.frames.every((frame) => frame.events.length === 0)));
+  } finally { await wardx.shutdown(); }
+});
+
 test('concurrent shutdown callers share final flush and close once', async () => {
   let releaseBootstrap;
   let posts = 0;

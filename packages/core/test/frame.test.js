@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { setImmediate } from 'node:timers/promises';
 import { FrameBuilder } from '../src/frame/FrameBuilder.js';
 import { WardxCore } from '../src/WardxCore.js';
 import { testSettings } from './helpers.js';
@@ -48,6 +49,59 @@ test('snapshot swaps buffers so new writes land on the active buffer', () => {
   assert.equal(second.frames.flatMap((frame) => frame.events)[0][1], 'b');
   const counter = first.frames.flatMap((frame) => frame.metrics.counters).find((row) => row[0] === 'n');
   assert.equal(counter[2], 4);
+});
+
+test('async snapshots yield between blocks, isolate writes, and retain bounded encoded frames', async () => {
+  const core = new WardxCore(testSettings({ maxPendingFrames: 3, maxFrameBytes: 1024 }));
+  for (let i = 0; i < 1000; i++) core.event(`event.${i}`, { pad: '🧪'.repeat(20) });
+  const pending = core._snapshotIfDirtyAsync();
+  let finished = false;
+  pending.then(() => { finished = true; }, () => { finished = true; });
+  let turns = 0;
+  while (!finished) {
+    await setImmediate();
+    turns++;
+    if (turns === 1) {
+      assert.equal(core.pendingFrames.length, 0, 'an unfinished batch is not published');
+      core.counter('during-snapshot').inc();
+      core.event('fresh');
+    }
+  }
+  const batch = await pending;
+  assert.ok(turns > 1, 'the event loop runs during splitting, not just before it');
+  assert.equal(batch.droppedRows, 0);
+  assert.equal(batch.frames.flatMap((frame) => frame.events).length, 1000);
+  const encoded = core._takePendingBatch();
+  assert.deepEqual(encoded.frames, batch.frames.slice(-3));
+  assert.deepEqual(encoded.jsons, batch.jsons.slice(-3));
+  assert.deepEqual(encoded.jsons.map((json) => JSON.parse(json)), encoded.frames);
+  assert.equal(core.internal.framesFailed, batch.frames.length - 3);
+  const next = await core._snapshotIfDirtyAsync();
+  assert.equal(next.frames[0].seq, batch.frames.at(-1).seq + 1);
+  assert.deepEqual(next.frames.flatMap((frame) => frame.events).map((row) => row[1]), ['fresh']);
+  assert.equal(next.frames.flatMap((frame) => frame.metrics.counters)
+    .find((row) => row[0] === 'during-snapshot')[2], 1);
+});
+
+test('cooperative splitting preserves synchronous partitions, UTF-8 bytes and drops', async () => {
+  const frame = bareFrame({
+    distincts: [['users', null, { precision: 9, registers: 'x'.repeat(684) }]],
+    events: Array.from({ length: 200 }, (_, i) => [i, '🧪', { pad: 'á'.repeat(80) }]),
+    logs: [[1, 'info', '日本語', null]]
+  });
+  frame.seq = 9;
+  frame.metrics.counters = [['kept', null, 1], ['x'.repeat(2048), null, 1]];
+  const expected = FrameBuilder.splitToMaxBytes(frame, 1024);
+  const steps = FrameBuilder._splitToMaxBytesSteps(frame, 1024);
+  let result;
+  let turns = 0;
+  do {
+    await setImmediate();
+    turns++;
+    result = steps.next();
+  } while (!result.done);
+  assert.ok(turns > 1);
+  assert.deepEqual(result.value, expected);
 });
 
 test('seq increases monotonically', () => {

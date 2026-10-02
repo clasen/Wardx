@@ -1,3 +1,4 @@
+import { setImmediate } from 'node:timers/promises';
 import { MetricsRegistry } from './metrics/MetricsRegistry.js';
 import { EventBuffer } from './buffers/EventBuffer.js';
 import { LogBuffer } from './buffers/LogBuffer.js';
@@ -44,6 +45,7 @@ export class WardxCore {
     });
     this.seq = 0;
     this.pendingFrames = [];
+    this._frameJsons = new WeakMap();
     this.windowStart = Date.now();
     this._subjectId = null;
     this.configContext = undefined;
@@ -184,19 +186,36 @@ export class WardxCore {
     this.internal.configVersion = version;
   }
 
+  _hasActivity() {
+    return this.metrics.isDirty() || this.events.length > 0 ||
+      this.logs.length > 0 || this.internal.hasCounterActivity();
+  }
+
   snapshotIfDirty() {
-    if (
-      !this.metrics.isDirty() &&
-      this.events.length === 0 &&
-      this.logs.length === 0 &&
-      !this.internal.hasCounterActivity()
-    ) {
-      return null;
-    }
-    return this.snapshotFrame();
+    return this._hasActivity() ? this.snapshotFrame() : null;
   }
 
   snapshotFrame() {
+    const frame = this._captureFrame();
+    const batch = FrameBuilder.splitToMaxBytes(frame, this.settings.maxFrameBytes);
+    this._acceptFrameBatch(batch);
+    return batch;
+  }
+
+  async _snapshotIfDirtyAsync() {
+    if (!this._hasActivity()) return null;
+    const frame = this._captureFrame();
+    const steps = FrameBuilder._splitToMaxBytesSteps(frame, this.settings.maxFrameBytes);
+    let result;
+    do {
+      await setImmediate();
+      result = steps.next();
+    } while (!result.done);
+    this._acceptFrameBatch(result.value);
+    return result.value;
+  }
+
+  _captureFrame() {
     const to = Date.now();
     const from = this.windowStart;
     this.windowStart = to;
@@ -206,7 +225,7 @@ export class WardxCore {
     const events = this.events.swap();
     const logs = this.logs.swap();
     const internal = this.internal.snapshotAndReset();
-    const frame = FrameBuilder.build({
+    return FrameBuilder.build({
       seq: this.seq + 1,
       from,
       to,
@@ -215,7 +234,12 @@ export class WardxCore {
       logs,
       internal
     });
-    const batch = FrameBuilder.splitToMaxBytes(frame, this.settings.maxFrameBytes);
+  }
+
+  _acceptFrameBatch(batch) {
+    if (batch.frames[0].seq !== this.seq + 1) {
+      throw new Error('snapshots must be completed in sequence');
+    }
     this.seq = batch.frames.at(-1).seq;
     const capacity = this.settings.maxPendingFrames;
     const overflow = Math.max(0, this.pendingFrames.length + batch.frames.length - capacity);
@@ -225,6 +249,7 @@ export class WardxCore {
     }
     for (let i = Math.max(0, batch.frames.length - capacity); i < batch.frames.length; i++) {
       this.pendingFrames.push(batch.frames[i]);
+      this._frameJsons.set(batch.frames[i], batch.jsons[i]);
     }
     for (let i = 0; i < batch.frames.length; i++) {
       const physical = batch.frames[i];
@@ -243,7 +268,16 @@ export class WardxCore {
         droppedRows: i === 0 ? batch.droppedRows : 0
       });
     }
-    return batch;
+  }
+
+  _takePendingBatch() {
+    const frames = this.takePendingFrames();
+    const jsons = frames.map((frame) => {
+      const json = this._frameJsons.get(frame);
+      if (typeof json !== 'string') throw new Error('pending frame has no serialized snapshot');
+      return json;
+    });
+    return { frames, jsons };
   }
 
   takePendingFrames() {

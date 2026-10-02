@@ -210,16 +210,25 @@ namespace Wardx
             Internal.ConfigVersion = version;
         }
 
+        bool HasActivity() => _metrics.IsDirty() || _events.Length > 0 || _logs.Length > 0 || Internal.HasCounterActivity();
+
         public FrameBatch SnapshotIfDirty()
         {
-            if (!_metrics.IsDirty() && _events.Length == 0 && _logs.Length == 0 && !Internal.HasCounterActivity())
-            {
-                return null;
-            }
-            return SnapshotFrame();
+            return HasActivity() ? SnapshotFrame() : null;
         }
 
         public FrameBatch SnapshotFrame()
+        {
+            var frame = CaptureFrame();
+            var batch = FrameBuilder.SplitToMaxBytes(frame, _settings.MaxFrameBytes);
+            CommitSnapshot(batch);
+            TraceSnapshot(batch);
+            return batch;
+        }
+
+        internal Frame CaptureFrameIfDirty() => HasActivity() ? CaptureFrame() : null;
+
+        Frame CaptureFrame()
         {
             var to = Clock.UnixMs();
             var from = _windowStart;
@@ -230,8 +239,12 @@ namespace Wardx
             var events = _events.Swap();
             var logs = _logs.Swap();
             var internalSnap = Internal.SnapshotAndReset();
-            var frame = FrameBuilder.Build(_seq + 1, from, to, metrics, events, logs, internalSnap);
-            var batch = FrameBuilder.SplitToMaxBytes(frame, _settings.MaxFrameBytes);
+            return FrameBuilder.Build(_seq + 1, from, to, metrics, events, logs, internalSnap);
+        }
+
+        internal void CommitSnapshot(FrameBatch batch)
+        {
+            if (batch.Frames[0].Seq != _seq + 1) throw new InvalidOperationException("snapshots must be completed in sequence");
             _seq = batch.Frames[batch.Frames.Count - 1].Seq;
             var capacity = _settings.MaxPendingFrames;
             var overflow = Math.Max(0, _pendingFrames.Count + batch.Frames.Count - capacity);
@@ -244,6 +257,10 @@ namespace Wardx
             {
                 _pendingFrames.Add(batch.Frames[i]);
             }
+        }
+
+        internal void TraceSnapshot(FrameBatch batch)
+        {
             for (int i = 0; i < batch.Frames.Count; i++)
             {
                 var physical = batch.Frames[i];
@@ -263,7 +280,6 @@ namespace Wardx
                     DroppedRows = i == 0 ? batch.DroppedRows : 0
                 });
             }
-            return batch;
         }
 
         public List<Frame> TakePendingFrames()
