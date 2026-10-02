@@ -3,7 +3,7 @@ import { Session } from 'node:inspector';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { WardxCore, loadSdkDefaults } from '@wardx/core';
-import { gzipBuffer } from '../../node/src/compression/gzip.js';
+import { gzipEnvelope, gunzipBuffer } from '../../node/src/compression/gzip.js';
 import { memorySnapshot, report, startEventLoopProbe } from './measure.js';
 
 function core(overrides = {}) {
@@ -133,15 +133,13 @@ export async function testC(seriesCount = 5000) {
     for (let i = 0; i < 4000; i++) w.event('flush.event', { i: i % 17 });
     for (let i = 0; i < 1500; i++) w.log.info('flush_log', { i: i % 9 });
     const tSnap0 = process.hrtime.bigint();
-    const fitted = w.snapshotFrame();
+    const fitted = await w._snapshotIfDirtyAsync();
     const tSnap1 = process.hrtime.bigint();
     sampleMemory();
-    const tJson0 = process.hrtime.bigint();
-    const json = JSON.stringify({ frames: w.takePendingFrames() });
-    const tJson1 = process.hrtime.bigint();
-    sampleMemory();
+    const pending = w._takePendingBatch();
     const tGzip0 = process.hrtime.bigint();
-    const compressed = await gzipBuffer(json);
+    const encoded = await gzipEnvelope({}, pending.jsons);
+    const compressed = encoded.compressed;
     const tGzip1 = process.hrtime.bigint();
     const cpu = process.cpuUsage(cpuStart);
     sampleMemory();
@@ -166,9 +164,8 @@ export async function testC(seriesCount = 5000) {
     report(`C flush spike (${seriesCount} counter + ${seriesCount} histogram series)`, {
       observations,
       'observe ns/op (counter + histogram)': Number(tObserve1 - tObserve0) / observations,
-      'snapshot ns': Number(tSnap1 - tSnap0),
-      'JSON.stringify ns': Number(tJson1 - tJson0),
-      'async gzip wall ns': Number(tGzip1 - tGzip0),
+      'async snapshot wall ns': Number(tSnap1 - tSnap0),
+      'streamed envelope + gzip wall ns': Number(tGzip1 - tGzip0),
       'CPU user ms': cpu.user / 1000,
       'CPU system ms': cpu.system / 1000,
       'allocated bytes (sampling estimate, includes GC)': allocatedBytes,
@@ -177,11 +174,13 @@ export async function testC(seriesCount = 5000) {
       'final heap delta bytes': memAfter.heapUsed - memBefore.heapUsed,
       'forced GC': Boolean(global.gc),
       frames: fitted.frames.length,
-      'uncompressed bytes': Buffer.byteLength(json),
+      'uncompressed bytes': encoded.bytesUncompressed,
       'compressed bytes': compressed.length,
       'event-loop p99 ms': loopStats.p99Ms.toFixed(3),
       'event-loop max ms': loopStats.maxMs.toFixed(3)
     });
+    const json = gunzipBuffer(compressed).toString('utf8');
+    assert.deepEqual(JSON.parse(json).frames, pending.frames);
     return { compressed, json, loopStats };
   } finally {
     clearInterval(memoryTimer);

@@ -74,6 +74,13 @@ export class FrameBuilder {
   }
 
   static splitToMaxBytes(frame, maxFrameBytes) {
+    const steps = FrameBuilder._splitToMaxBytesSteps(frame, maxFrameBytes);
+    let result = steps.next();
+    while (!result.done) result = steps.next();
+    return result.value;
+  }
+
+  static *_splitToMaxBytesSteps(frame, maxFrameBytes) {
     if (!Number.isInteger(maxFrameBytes) || maxFrameBytes < 1024) {
       throw new Error('maxFrameBytes must be an integer at least 1024');
     }
@@ -89,6 +96,7 @@ export class FrameBuilder {
     };
     let current = emptyFrame(frame.seq, frame.from, frame.to);
     let currentBytes = measure(current).bytes;
+    let workBytes = 0;
 
     const finishCurrent = () => {
       const measured = measure(current);
@@ -97,6 +105,7 @@ export class FrameBuilder {
       }
       frames.push(current);
       jsons.push(measured.json);
+      workBytes += measured.bytes;
       current = emptyFrame(frame.seq + frames.length, frame.from, frame.to);
       currentBytes = measure(current).bytes;
     };
@@ -116,6 +125,7 @@ export class FrameBuilder {
 
     const addRow = (kind, row, countDrop = true) => {
       const rowBytes = Buffer.byteLength(JSON.stringify(row), 'utf8');
+      workBytes += rowBytes;
       if (tryAddRow(kind, row, rowBytes)) return true;
       if (rowCount(current) > 0) {
         finishCurrent();
@@ -125,12 +135,18 @@ export class FrameBuilder {
       return false;
     };
 
-    for (const row of frame.metrics.counters) addRow('counters', row);
-    for (const row of frame.metrics.gauges) addRow('gauges', row);
-    for (const row of frame.metrics.histograms) addRow('histograms', row);
-    for (const row of frame.metrics.distincts || []) addRow('distincts', row);
-    for (const row of frame.events) addRow('events', row);
-    for (const row of frame.logs) addRow('logs', row);
+    for (const kind of Object.keys(dropped)) {
+      let rows = kind === 'events' || kind === 'logs' ? frame[kind] : frame.metrics[kind];
+      if (kind === 'distincts' && !rows) rows = [];
+      for (const row of rows) {
+        addRow(kind, row);
+        // Use the physical frame limit as the cooperative serialization budget.
+        if (workBytes >= maxFrameBytes) {
+          workBytes = 0;
+          yield;
+        }
+      }
+    }
 
     const droppedRows = Object.values(dropped).reduce((sum, value) => sum + value, 0);
     if (

@@ -53,6 +53,8 @@ To receive frames, run an ingest server. Install `@wardx/server` and start it wi
 - A measure call does not wait for a Promise.
 - Delivery is at-most-once. If a sync fails, the SDK discards the batch.
 - Pending physical frames are capped by `maxPendingFrames` (default: 32). On overflow, the oldest frames are discarded and counted in `wardx.internal.frames_failed`. This bounds the pending queue even while an HTTP request stalls; it is not a cap on total SDK memory.
+- Snapshot construction yields to the event loop between serialization blocks, using `maxFrameBytes` as the work budget. Completed frames retain their JSON and stream into asynchronous gzip without reserializing their payloads. Snapshot and sync queues each allow one active job and one coalesced pending request; `flush()` and `shutdown()` wait for the required snapshots.
+- Capturing metric state still takes synchronous work proportional to registered series. Each individual row is serialized synchronously, so this is not a hard event-loop latency guarantee; very large individual payloads can still pause the application.
 - `httpTimeoutMs` bounds the entire HTTP request, including connection establishment and response reading.
 - Physical frames are serialized, split to `maxFrameBytes`, and assigned consecutive sequence numbers. An individually oversized row is counted in `wardx.internal.frame_rows_dropped`.
 - The application has priority over telemetry.

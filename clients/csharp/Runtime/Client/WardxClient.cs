@@ -22,6 +22,9 @@ namespace Wardx
         readonly object _syncQueueGate = new object();
         Task _syncTail = Task.CompletedTask;
         PendingSync _queuedSync;
+        readonly object _snapshotQueueGate = new object();
+        Task _snapshotTail = Task.CompletedTask;
+        TaskCompletionSource<bool> _queuedSnapshot;
 
         sealed class PendingSync
         {
@@ -275,11 +278,67 @@ namespace Wardx
         internal void AggregateTick()
         {
             if (!_enabled) return;
-            if (_stopped) return;
-            lock (_gate)
+            lock (_lifecycleGate)
             {
-                _core.RecordProcessRss(_readRssBytes());
-                _core.SnapshotIfDirty();
+                if (_stopped) return;
+                _ = EnqueueSnapshot();
+            }
+        }
+
+        internal Task EnqueueSnapshot()
+        {
+            if (!_enabled) return Task.CompletedTask;
+            TaskCompletionSource<bool> pending;
+            Task previous;
+            lock (_snapshotQueueGate)
+            {
+                if (_queuedSnapshot != null) return _queuedSnapshot.Task;
+                pending = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                _queuedSnapshot = pending;
+                previous = _snapshotTail;
+                _snapshotTail = pending.Task;
+            }
+            _ = RunQueuedSnapshot(pending, previous);
+            return pending.Task;
+        }
+
+        async Task RunQueuedSnapshot(TaskCompletionSource<bool> pending, Task previous)
+        {
+            try
+            {
+                await previous.ConfigureAwait(false);
+                void Build()
+                {
+                    lock (_snapshotQueueGate) _queuedSnapshot = null;
+                    var rss = _readRssBytes();
+                    Frame frame;
+                    lock (_gate)
+                    {
+                        _core.RecordProcessRss(rss);
+                        frame = _core.CaptureFrameIfDirty();
+                    }
+                    if (frame == null) return;
+                    var batch = FrameBuilder.SplitToMaxBytes(frame, _settings.MaxFrameBytes);
+                    lock (_gate) _core.CommitSnapshot(batch);
+                    _core.TraceSnapshot(batch);
+                }
+#if UNITY_WEBGL && !UNITY_EDITOR
+                Build();
+#else
+                await Task.Run(Build).ConfigureAwait(false);
+#endif
+            }
+            catch
+            {
+                lock (_gate) _core.RecordSyncError();
+            }
+            finally
+            {
+                lock (_snapshotQueueGate)
+                {
+                    if (ReferenceEquals(_queuedSnapshot, pending)) _queuedSnapshot = null;
+                }
+                pending.TrySetResult(true);
             }
         }
 
@@ -370,16 +429,15 @@ namespace Wardx
 
         async Task SyncOnceInner(SyncFlags flags, CancellationToken transportToken)
         {
-            List<Frame> frames;
-            lock (_gate)
+            if (flags.Flush || flags.Bootstrap) await EnqueueSnapshot().ConfigureAwait(false);
+            else
             {
-                if (flags.Flush || flags.Bootstrap)
-                {
-                    _core.RecordProcessRss(_readRssBytes());
-                    _core.SnapshotIfDirty();
-                }
-                frames = _core.TakePendingFrames();
+                Task snapshot;
+                lock (_snapshotQueueGate) snapshot = _snapshotTail;
+                await snapshot.ConfigureAwait(false);
             }
+            List<Frame> frames;
+            lock (_gate) frames = _core.TakePendingFrames();
             if (!flags.Bootstrap && !flags.Flush && frames.Count == 0) return;
 
             var bytesUncompressed = 0;
