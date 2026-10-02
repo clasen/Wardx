@@ -7,12 +7,6 @@ export function percentile(values, p) {
   return sorted[idx];
 }
 
-export function formatNs(ns) {
-  if (ns >= 1_000_000) return `${(ns / 1_000_000).toFixed(2)} ms`;
-  if (ns >= 1_000) return `${(ns / 1_000).toFixed(2)} us`;
-  return `${ns.toFixed(2)} ns`;
-}
-
 export function startEventLoopProbe() {
   const histogram = monitorEventLoopDelay({ resolution: 10 });
   histogram.enable();

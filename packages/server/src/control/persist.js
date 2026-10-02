@@ -1,66 +1,7 @@
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { normalizeHllBody } from '../aggregation/HyperLogLog.js';
 
 const STAT_KEYS = ['exposures', 'goals', 'goalSum', 'goalSumSq'];
-
-function writeJsonAtomic(path, value) {
-  const body = JSON.stringify(value, null, 2) + '\n';
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, body);
-  renameSync(tmp, path);
-}
-
-function fileShape(config, registry, override) {
-  const projects = {};
-  for (const name of registry.names()) {
-    const store = registry.get(name);
-    projects[name] = {
-      ...(override && override.project === name ? override.snapshot : store.configRepo.snapshot()),
-      catalog: override && override.project === name ? override.catalog : store.catalog
-    };
-  }
-  const out = {
-    host: config.host,
-    port: config.port,
-    credentials: config.credentials,
-    sink: config.sink,
-    maxRequestBytes: config.maxRequestBytes,
-    maxClockSkewMs: config.maxClockSkewMs,
-    maxFramesPerEnvelope: config.maxFramesPerEnvelope,
-    maxItemsPerEnvelope: config.maxItemsPerEnvelope,
-    maxNameBytes: config.maxNameBytes,
-    maxDimensionKeys: config.maxDimensionKeys,
-    maxDimensionValueLength: config.maxDimensionValueLength,
-    maxAttributeKeys: config.maxAttributeKeys,
-    maxAttributeValueLength: config.maxAttributeValueLength,
-    persistenceFlushIntervalMs: config.persistenceFlushIntervalMs,
-    diagnostics: config.diagnostics,
-    readiness: config.readiness,
-    aggregateRetentionMinutes: config.aggregateRetentionMinutes,
-    aggregateMaxSeriesPerMetric: config.aggregateMaxSeriesPerMetric,
-    memorySinkMaxEnvelopes: config.memorySinkMaxEnvelopes,
-    recentClientsMax: config.recentClientsMax,
-    recentEventsMax: config.recentEventsMax,
-    recentLogsMax: config.recentLogsMax,
-    sqlite: config.sqlite,
-    history: config.history,
-    retention: config.retention,
-    control: config.control,
-    capacity: config.capacity,
-    experiments: config.experiments,
-    projects
-  };
-  if (typeof config.ndjsonPath === 'string' && config.ndjsonPath.length > 0) {
-    out.ndjsonPath = config.ndjsonPath;
-  }
-  return out;
-}
-
-export function persistServerConfig(config, registry, override) {
-  const path = config.configPath;
-  if (!path) return;
-  writeJsonAtomic(path, fileShape(config, registry, override));
-}
 
 export function experimentStatsPath(configPath) {
   if (typeof configPath !== 'string' || configPath.length === 0) {
@@ -136,13 +77,6 @@ function emptyStats() {
   return { projects: {} };
 }
 
-function isEmptyStats(snapshot) {
-  for (const experiments of Object.values(snapshot.projects)) {
-    if (Object.keys(experiments).length > 0) return false;
-  }
-  return true;
-}
-
 export function snapshotExperimentStats(registry) {
   const projects = {};
   for (const name of registry.names()) {
@@ -162,24 +96,6 @@ export function loadExperimentStats(path) {
   const parsed = JSON.parse(raw);
   validateExperimentStats(parsed);
   return parsed;
-}
-
-export function hydrateExperimentStats(config, registry) {
-  if (!config.configPath) return;
-  const snapshot = loadExperimentStats(experimentStatsPath(config.configPath));
-  for (const name of registry.names()) {
-    const experiments = snapshot.projects[name];
-    if (experiments) registry.get(name).aggregator.replaceLifetime(experiments);
-  }
-}
-
-export function persistExperimentStats(config, registry) {
-  const path = config.configPath;
-  if (!path) return;
-  const snapshot = snapshotExperimentStats(registry);
-  const dest = experimentStatsPath(path);
-  if (isEmptyStats(snapshot) && !existsSync(dest)) return;
-  writeJsonAtomic(dest, snapshot);
 }
 
 const LOG_LEVELS = new Set(['debug', 'info', 'warn', 'error']);
@@ -273,13 +189,6 @@ function validateLogExemplar(exemplar, label) {
   }
 }
 
-function isEmptyLogStats(snapshot) {
-  for (const logs of Object.values(snapshot.projects)) {
-    if (Object.keys(logs).length > 0) return false;
-  }
-  return true;
-}
-
 export function snapshotLogStats(registry) {
   const projects = {};
   for (const name of registry.names()) {
@@ -307,31 +216,6 @@ export function loadLogStats(path) {
   const parsed = JSON.parse(raw);
   validateLogStats(parsed);
   return parsed;
-}
-
-export function hydrateLogStats(config, registry) {
-  if (!config.configPath) return;
-  const snapshot = loadLogStats(logStatsPath(config.configPath));
-  for (const name of registry.names()) {
-    const store = registry.get(name);
-    const allowed = new Set(store.catalog.persistLogs);
-    const incoming = snapshot.projects[name];
-    if (!incoming) continue;
-    const logs = {};
-    for (const [message, byRole] of Object.entries(incoming)) {
-      if (allowed.has(message)) logs[message] = byRole;
-    }
-    store.aggregator.replacePersistLogs(logs);
-  }
-}
-
-export function persistLogStats(config, registry) {
-  const path = config.configPath;
-  if (!path) return;
-  const snapshot = snapshotLogStats(registry);
-  const dest = logStatsPath(path);
-  if (isEmptyLogStats(snapshot) && !existsSync(dest)) return;
-  writeJsonAtomic(dest, snapshot);
 }
 
 const WINDOW_KEYS = [
@@ -615,13 +499,6 @@ export function validateAggregateWindows(snapshot, label = 'aggregate windows') 
   }
 }
 
-function isEmptyAggregateWindows(snapshot) {
-  for (const windows of Object.values(snapshot.projects)) {
-    if (windows.length > 0) return false;
-  }
-  return true;
-}
-
 export function snapshotAggregateWindows(registry) {
   const projects = {};
   for (const name of registry.names()) {
@@ -643,20 +520,3 @@ export function loadAggregateWindows(path) {
   return parsed;
 }
 
-export function hydrateAggregateWindows(config, registry) {
-  if (!config.configPath) return;
-  const snapshot = loadAggregateWindows(aggregateWindowsPath(config.configPath));
-  for (const name of registry.names()) {
-    const windows = snapshot.projects[name];
-    if (windows) registry.get(name).aggregator.replaceWindows(windows);
-  }
-}
-
-export function persistAggregateWindows(config, registry) {
-  const path = config.configPath;
-  if (!path) return;
-  const snapshot = snapshotAggregateWindows(registry);
-  const dest = aggregateWindowsPath(path);
-  if (isEmptyAggregateWindows(snapshot) && !existsSync(dest)) return;
-  writeJsonAtomic(dest, snapshot);
-}
