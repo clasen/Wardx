@@ -57,7 +57,7 @@ importers:
   packages/node:
     dependencies:
       '@wardx/core':
-        specifier: 0.9.2
+        specifier: 0.9.3
         version: link:../core
 
   packages/server:
@@ -75,13 +75,13 @@ importers:
   packages/stress:
     dependencies:
       '@wardx/core':
-        specifier: 0.9.2
+        specifier: 0.9.3
         version: link:../core
       '@wardx/server':
-        specifier: 0.9.2
+        specifier: 0.9.3
         version: link:../server
       wardx:
-        specifier: 0.9.2
+        specifier: 0.9.3
         version: link:../node
 
 packages:

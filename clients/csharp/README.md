@@ -41,11 +41,11 @@ to both .NET and Unity.
 https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime
 ```
 
-Release `#v0.9.2` adds linear frame splitting, background envelope encoding on threaded runtimes, and coalesced pending flushes. In
+Release `#v0.9.3` moves sync accounting into `WardxCore` (`RecordSyncBytes`, `RecordSyncResult`, `RecordSyncError`, `RecordProcessRss`, `RecordConfigVersion`); wire format and metrics are unchanged. `#v0.9.2` added linear frame splitting, background envelope encoding on threaded runtimes, and coalesced pending flushes. In
 `Packages/manifest.json`:
 
 ```json
-"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.9.2"
+"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.9.3"
 ```
 
 **Unity (this checkout).** Package Manager → Add package from disk → `clients/csharp/Runtime/package.json`.
