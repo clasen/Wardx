@@ -79,6 +79,13 @@ export function resolveSettings(options) {
   if (settings.maxFrameBytes < 1024) {
     throw new Error('maxFrameBytes must be at least 1024');
   }
+  for (const key of ['maxEnvelopeItems', 'maxEnvelopeBytes']) {
+    assertPositiveNumber(settings, key);
+    if (!Number.isSafeInteger(settings[key])) throw new Error(`${key} must be a safe integer`);
+  }
+  if (settings.maxFrameBytes >= settings.maxEnvelopeBytes) {
+    throw new Error('maxFrameBytes must be less than maxEnvelopeBytes');
+  }
   assertPositiveNumber(settings, 'httpTimeoutMs');
   assertNumberInRange(settings, 'syncJitterMin', 0, 1);
   assertNumberInRange(settings, 'syncJitterMax', 1, 2);

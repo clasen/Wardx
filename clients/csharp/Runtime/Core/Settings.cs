@@ -23,6 +23,8 @@ namespace Wardx
         public int? MaxBufferedLogs;
         public int? MaxFrameBytes;
         public int? MaxPendingFrames;
+        public int? MaxEnvelopeItems;
+        public int? MaxEnvelopeBytes;
         public int? MaxSeriesPerMetric;
         public int? MaxDimensionKeys;
         public int? MaxDimensionValueLength;
@@ -51,6 +53,8 @@ namespace Wardx
         public int MaxBufferedLogs;
         public int MaxFrameBytes;
         public int MaxPendingFrames;
+        public int MaxEnvelopeItems;
+        public int MaxEnvelopeBytes;
         public int MaxSeriesPerMetric;
         public int MaxDimensionKeys;
         public int MaxDimensionValueLength;
@@ -102,6 +106,8 @@ namespace Wardx
                 MaxBufferedLogs = options.MaxBufferedLogs ?? SdkDefaults.MaxBufferedLogs,
                 MaxFrameBytes = options.MaxFrameBytes ?? SdkDefaults.MaxFrameBytes,
                 MaxPendingFrames = options.MaxPendingFrames ?? SdkDefaults.MaxPendingFrames,
+                MaxEnvelopeItems = options.MaxEnvelopeItems ?? SdkDefaults.MaxEnvelopeItems,
+                MaxEnvelopeBytes = options.MaxEnvelopeBytes ?? SdkDefaults.MaxEnvelopeBytes,
                 MaxSeriesPerMetric = options.MaxSeriesPerMetric ?? SdkDefaults.MaxSeriesPerMetric,
                 MaxDimensionKeys = options.MaxDimensionKeys ?? SdkDefaults.MaxDimensionKeys,
                 MaxDimensionValueLength = options.MaxDimensionValueLength ?? SdkDefaults.MaxDimensionValueLength,
@@ -124,6 +130,12 @@ namespace Wardx
             if (settings.MaxFrameBytes < 1024)
             {
                 throw new ArgumentException("maxFrameBytes must be at least 1024");
+            }
+            AssertPositive(settings.MaxEnvelopeItems, "maxEnvelopeItems");
+            AssertPositive(settings.MaxEnvelopeBytes, "maxEnvelopeBytes");
+            if (settings.MaxFrameBytes >= settings.MaxEnvelopeBytes)
+            {
+                throw new ArgumentException("maxFrameBytes must be less than maxEnvelopeBytes");
             }
             AssertPositive(settings.MaxSeriesPerMetric, "maxSeriesPerMetric");
             AssertPositive(settings.MaxDimensionKeys, "maxDimensionKeys");

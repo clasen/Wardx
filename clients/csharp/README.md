@@ -4,7 +4,7 @@ C# SDK for Wardx. It implements Protocol v1 over `POST /v1/sync`, JSON + gzip, a
 
 This SDK talks to that server. See [Wardx](https://github.com/clasen/Wardx). Architecture: [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md).
 
-A measure call changes local memory only. Delivery is at-most-once. A failed sync discards that batch. Remote Config is a local read of the last snapshot. Physical frames are serialized and split to `MaxFrameBytes` with consecutive sequence numbers; an individually oversized row is counted in `wardx.internal.frame_rows_dropped`.
+A measure call changes local memory only. Delivery is at-most-once. A failed sync discards that batch. Remote Config is a local read of the last snapshot. Physical frames are serialized and split to `MaxFrameBytes` and `MaxEnvelopeItems` rows with consecutive sequence numbers. A sync sends pending frames in as many requests as needed to keep each envelope within `MaxEnvelopeItems` rows and `MaxEnvelopeBytes` uncompressed bytes; if a request fails, the rest of that sync is discarded and counted in `wardx.internal.frames_failed`; an individually oversized row is counted in `wardx.internal.frame_rows_dropped`.
 
 **WARNING:** The SDK does not write a disk queue. The SDK does not retry the same frames.
 
@@ -41,11 +41,11 @@ to both .NET and Unity.
 https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime
 ```
 
-Release `#v0.9.3` builds snapshots and splits frames on the thread pool on threaded runtimes, and moves sync accounting into `WardxCore` (`RecordSyncBytes`, `RecordSyncResult`, `RecordSyncError`, `RecordProcessRss`, `RecordConfigVersion`); wire format and metrics are unchanged. `#v0.9.2` added linear frame splitting, background envelope encoding on threaded runtimes, and coalesced pending flushes. In
+Release `#v0.9.4` keeps each sync request within `MaxEnvelopeItems` rows and `MaxEnvelopeBytes`, sending pending frames across several requests when needed. `#v0.9.3` built snapshots and split frames on the thread pool on threaded runtimes, and moved sync accounting into `WardxCore` (`RecordSyncBytes`, `RecordSyncResult`, `RecordSyncError`, `RecordProcessRss`, `RecordConfigVersion`); wire format and metrics are unchanged. `#v0.9.2` added linear frame splitting, background envelope encoding on threaded runtimes, and coalesced pending flushes. In
 `Packages/manifest.json`:
 
 ```json
-"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.9.3"
+"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.9.4"
 ```
 
 **Unity (this checkout).** Package Manager → Add package from disk → `clients/csharp/Runtime/package.json`.
@@ -562,7 +562,7 @@ Examples use application-owned identifiers and functions where indicated.
 
 ## Protocol
 
-See [docs/PROTOCOL.md](../../docs/PROTOCOL.md). Operational defaults match `packages/core/defaults.json`: `MaxFrameBytes` is at least `1024`, and `ExperimentStateMaxSubjects` defaults to `100000` to bound assignment/exposure state in this SDK instance.
+See [docs/PROTOCOL.md](../../docs/PROTOCOL.md). Operational defaults match `packages/core/defaults.json`: `MaxFrameBytes` is at least `1024` and less than `MaxEnvelopeBytes`; `MaxEnvelopeItems` (`10000`) and `MaxEnvelopeBytes` (`2097152`) match the server's `maxItemsPerEnvelope` and `maxRequestBytes` and must be lowered with them; and `ExperimentStateMaxSubjects` defaults to `100000` to bound assignment/exposure state in this SDK instance.
 
 Verify the C# suite, real CLI interoperability, formatting, and SDK analyzers from the repository root:
 

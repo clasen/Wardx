@@ -170,9 +170,10 @@ export class WardxNode {
   async _syncOnceInner(flags) {
     if (flags.flush || flags.bootstrap) await this._enqueueSnapshot();
     else await this._snapshotChain;
-    const { frames, jsons } = this._core._takePendingBatch();
-    if (!flags.bootstrap && !flags.flush && frames.length === 0) return;
-    const envelope = this._core.syncEnvelope({
+    const batch = this._core._takePendingBatch();
+    if (!flags.bootstrap && !flags.flush && batch.frames.length === 0) return;
+    const phase = flags.bootstrap ? 'bootstrap' : flags.flush ? 'flush' : 'tick';
+    const metadata = {
       project: this.settings.project,
       sdk: {
         name: SDK_NAME,
@@ -187,12 +188,22 @@ export class WardxNode {
         platform: PLATFORM,
         attributes: this._attributes
       }
-    }, []);
+    };
+    let start = 0;
+    do {
+      const envelope = this._core.syncEnvelope(metadata, []);
+      const end = this._core._envelopeEnd(batch, start, Buffer.byteLength(JSON.stringify(envelope)));
+      const unsentFrames = batch.frames.length - start;
+      if (!(await this._postEnvelope(phase, envelope, batch.jsons.slice(start, end), unsentFrames))) return;
+      start = end;
+    } while (start < batch.frames.length);
+  }
+
+  async _postEnvelope(phase, envelope, jsons, unsentFrames) {
     let bytesUncompressed = 0;
     let bytesCompressed = 0;
     let started = performance.now();
-    const phase = flags.bootstrap ? 'bootstrap' : flags.flush ? 'flush' : 'tick';
-    const trace = () => ({ phase, frames: frames.length, bytesUncompressed, bytesCompressed });
+    const trace = () => ({ phase, frames: jsons.length, bytesUncompressed, bytesCompressed });
     try {
       const encoded = await gzipEnvelope(envelope, jsons);
       const compressed = encoded.compressed;
@@ -202,11 +213,12 @@ export class WardxNode {
       started = performance.now();
       const result = await this._transport.post(compressed);
       const ms = performance.now() - started;
-      this._core.recordSyncResult({ ok: result.ok, frames: frames.length, ms });
       if (!result.ok) {
+        this._core.recordSyncResult({ ok: false, frames: unsentFrames, ms });
         this._traceSync({ ...trace(), ms, ok: false, status: result.status });
-        return;
+        return false;
       }
+      this._core.recordSyncResult({ ok: true, frames: jsons.length, ms });
       this._core.applySyncResponse(result.json);
       this._traceSync({
         ...trace(),
@@ -216,10 +228,12 @@ export class WardxNode {
         configVersion: this._core.configVersion,
         appliedConfig: Boolean(result.json && result.json.config)
       });
+      return true;
     } catch {
       const ms = performance.now() - started;
-      this._core.recordSyncResult({ ok: false, frames: frames.length, ms });
+      this._core.recordSyncResult({ ok: false, frames: unsentFrames, ms });
       this._traceSync({ ...trace(), ms, ok: false });
+      return false;
     }
   }
 

@@ -140,12 +140,18 @@ namespace Wardx.Tests
                 events.Add(new EventSample(i, "e", Dims.Of("pad", new string('y', 80))));
             }
             var frame = Bare(events, new List<LogSample>());
-            var split = FrameBuilder.SplitToMaxBytes(frame, 4096);
+            var split = FrameBuilder.SplitToMaxBytes(frame, 4096, 10000);
             AssertX.True(split.Frames.Count > 1, "events split");
             AssertX.Equal(0, split.DroppedRows, "no event loss");
             AssertX.Equal(200, AllEvents(split).Count, "all events preserved");
             AssertX.Equal(0L, AllEvents(split)[0].Time, "prefix preserved");
             AssertConsecutiveAndBounded(split, 4096);
+            var capped = FrameBuilder.SplitToMaxBytes(frame, 524288, 64);
+            AssertX.Equal(4, capped.Frames.Count, "rows capped per frame");
+            foreach (var physical in capped.Frames) AssertX.True(physical.RowCount <= 64, "frame row cap");
+            AssertX.Equal(200, AllEvents(capped).Count, "row cap preserves events");
+            AssertX.Equal(0, capped.DroppedRows, "row cap drops nothing");
+            AssertX.Throws(() => FrameBuilder.SplitToMaxBytes(frame, 4096, 0), "maxFrameRows");
 
             var logs = new List<LogSample>
             {
@@ -154,7 +160,7 @@ namespace Wardx.Tests
                 new LogSample(3, "error", "keep-error-2", Dims.Of("pad", new string('x', 40)))
             };
             var logFrame = Bare(new List<EventSample>(), logs);
-            var logSplit = FrameBuilder.SplitToMaxBytes(logFrame, 1024);
+            var logSplit = FrameBuilder.SplitToMaxBytes(logFrame, 1024, 10000);
             AssertX.Equal(0, logSplit.DroppedRows, "logs preserved");
             AssertX.Equal(3, AllLogs(logSplit).Count, "all logs kept");
             AssertConsecutiveAndBounded(logSplit, 1024);
@@ -162,7 +168,7 @@ namespace Wardx.Tests
             var indivisible = Bare(new List<EventSample>(), new List<LogSample>());
             indivisible.Counters.Add(new CounterSample(new string('x', 3000), null, 1));
             indivisible.Counters.Add(new CounterSample("kept", null, 2));
-            var droppedBatch = FrameBuilder.SplitToMaxBytes(indivisible, 1024);
+            var droppedBatch = FrameBuilder.SplitToMaxBytes(indivisible, 1024, 10000);
             AssertX.Equal(1, droppedBatch.DroppedRows, "one indivisible row dropped");
             AssertX.Equal(1, droppedBatch.DroppedCounters, "counter drop classified");
             var sawDropMetric = false;
@@ -194,7 +200,7 @@ namespace Wardx.Tests
             AssertConsecutiveAndBounded(mixed, 1024);
 
             AssertX.Throws(
-                () => FrameBuilder.SplitToMaxBytes(Bare(new List<EventSample>(), new List<LogSample>()), 1023),
+                () => FrameBuilder.SplitToMaxBytes(Bare(new List<EventSample>(), new List<LogSample>()), 1023, 10000),
                 "at least 1024"
             );
 
@@ -210,7 +216,7 @@ namespace Wardx.Tests
             {
                 sharedFixture.Counters.Add(new CounterSample("counter." + i, null, i));
             }
-            var shared = FrameBuilder.SplitToMaxBytes(sharedFixture, 1024);
+            var shared = FrameBuilder.SplitToMaxBytes(sharedFixture, 1024, 10000);
             AssertX.Equal(3, shared.Frames.Count, "shared fixture frame count");
             AssertX.Equal(7, shared.Frames[0].Seq, "shared fixture seq 1");
             AssertX.Equal(8, shared.Frames[1].Seq, "shared fixture seq 2");
@@ -233,7 +239,7 @@ namespace Wardx.Tests
                 for (var i = 0; i < count; i++) frame.Counters.Add(new CounterSample("series." + i, dims, i));
                 var allocatedBefore = System.GC.GetAllocatedBytesForCurrentThread();
                 var watch = System.Diagnostics.Stopwatch.StartNew();
-                var batch = FrameBuilder.SplitToMaxBytes(frame, 524288);
+                var batch = FrameBuilder.SplitToMaxBytes(frame, 524288, 10000);
                 watch.Stop();
                 var allocated = System.GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
                 AssertX.Equal(0, batch.DroppedRows, "many series stay lossless");
@@ -258,7 +264,7 @@ namespace Wardx.Tests
             for (var i = 0; i < 50; i++)
                 frame.Events.Add(new EventSample(i, "🧪", Dims.Of("text", new string('á', 200) + "\"\\\n")));
             frame.Logs.Add(new LogSample(1, "info", "日本語", Dims.Of("text", "\ud800")));
-            var batch = FrameBuilder.SplitToMaxBytes(frame, 1024);
+            var batch = FrameBuilder.SplitToMaxBytes(frame, 1024, 10000);
             AssertX.Equal(0, batch.DroppedRows, "UTF-8 mixed rows retained");
             AssertX.Equal(10, batch.Frames[1].Seq, "sequence width changes");
             var distinctCount = 0;
@@ -275,10 +281,10 @@ namespace Wardx.Tests
 
             var exact = Bare(new List<EventSample>(), new List<LogSample>());
             exact.Counters.Add(new CounterSample("exact", null, 1));
-            var baseBytes = Encoding.UTF8.GetByteCount(FrameBuilder.SplitToMaxBytes(exact, 1024).Jsons[0]);
+            var baseBytes = Encoding.UTF8.GetByteCount(FrameBuilder.SplitToMaxBytes(exact, 1024, 10000).Jsons[0]);
             exact.Counters[0] = new CounterSample("exact" + new string('x', 1024 - baseBytes), null, 1);
             exact.Distincts.Add(new DistinctSample("too-large", null, new HllBody(9, new string('x', 1024))));
-            var fitted = FrameBuilder.SplitToMaxBytes(exact, 1024);
+            var fitted = FrameBuilder.SplitToMaxBytes(exact, 1024, 10000);
             AssertX.Equal(1024, Encoding.UTF8.GetByteCount(fitted.Jsons[0]), "exact byte fit accepted");
             AssertX.Equal(1, fitted.DroppedDistincts, "oversized distinct dropped");
             AssertX.True(AllCounters(fitted).Exists(row => row.Name == Protocol.Internal.FrameRowsDropped && row.Value == 1), "drop reported");
@@ -373,6 +379,16 @@ namespace Wardx.Tests
                 AssertX.Throws(() => Settings.Resolve(baseOpts), "maxPendingFrames");
             }
             baseOpts.MaxPendingFrames = null;
+            baseOpts.MaxEnvelopeItems = 0;
+            AssertX.Throws(() => Settings.Resolve(baseOpts), "maxEnvelopeItems");
+            baseOpts.MaxEnvelopeItems = null;
+            baseOpts.MaxEnvelopeBytes = 0;
+            AssertX.Throws(() => Settings.Resolve(baseOpts), "maxEnvelopeBytes");
+            baseOpts.MaxFrameBytes = 4096;
+            baseOpts.MaxEnvelopeBytes = 4096;
+            AssertX.Throws(() => Settings.Resolve(baseOpts), "maxFrameBytes must be less than maxEnvelopeBytes");
+            baseOpts.MaxFrameBytes = null;
+            baseOpts.MaxEnvelopeBytes = null;
             baseOpts.ExperimentStateMaxSubjects = 0;
             AssertX.Throws(() => Settings.Resolve(baseOpts), "experimentStateMaxSubjects");
         }

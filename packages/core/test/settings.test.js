@@ -68,6 +68,15 @@ test('createWardx requires an explicit privacy salt and a 1KB frame minimum', ()
   for (const maxPendingFrames of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
     assert.throws(() => resolveSettings({ ...base, maxPendingFrames }), /maxPendingFrames/);
   }
+  for (const key of ['maxEnvelopeItems', 'maxEnvelopeBytes']) {
+    for (const value of [0, -1, 1.5, NaN, Infinity]) {
+      assert.throws(() => resolveSettings({ ...base, [key]: value }), new RegExp(key));
+    }
+  }
+  assert.throws(
+    () => resolveSettings({ ...base, maxFrameBytes: 4096, maxEnvelopeBytes: 4096 }),
+    /maxFrameBytes must be less than maxEnvelopeBytes/
+  );
   assert.throws(
     () => resolveSettings({ ...base, experimentStateMaxSubjects: 1.5 }),
     /experimentStateMaxSubjects must be an integer/

@@ -38,6 +38,27 @@ namespace Wardx.Tests
         }
     }
 
+    sealed class RecordingTransport : ISyncTransport
+    {
+        public readonly List<string> Jsons = new List<string>();
+        public int FailAt;
+
+        public Task<SyncResult> PostAsync(byte[] gzippedBody, CancellationToken cancellationToken)
+        {
+            using (var input = new MemoryStream(gzippedBody))
+            using (var gzip = new GZipStream(input, CompressionMode.Decompress))
+            using (var output = new MemoryStream())
+            {
+                gzip.CopyTo(output);
+                Jsons.Add(Encoding.UTF8.GetString(output.ToArray()));
+            }
+            if (Jsons.Count == FailAt) return Task.FromResult(new SyncResult(false, 503, null));
+            return Task.FromResult(new SyncResult(true, 200, "{\"ok\":true,\"serverTime\":1,\"configVersion\":0}"));
+        }
+
+        public void Close() { }
+    }
+
     sealed class CancellationThenSuccessTransport : ISyncTransport
     {
         public int PostCount;
@@ -228,6 +249,7 @@ namespace Wardx.Tests
             SnapshotFailureRecovers();
             EncodingRunsOffCallerThread();
             EncodingFailureDropsEveryFrame();
+            EnvelopesRespectServerLimits();
             CoalescedFlushes();
             var transport = new MemoryTransport();
             var client = WardxClient.Create(new WardxOptions
@@ -430,6 +452,71 @@ namespace Wardx.Tests
                 AssertX.Equal(1, transport.PostCount, "next sync recovers");
                 AssertX.True(!transport.LastJson.Contains("discarded."), "failed frames not replayed");
                 AssertX.True(transport.LastJson.Contains("[\"wardx.internal.frames_failed\",null,3]"), "encoding loss is observable");
+            }
+            finally { Wait(client.ShutdownAsync()); }
+        }
+
+        static void EnvelopesRespectServerLimits()
+        {
+            var transport = new RecordingTransport();
+            var options = Options(5000);
+            options.MaxFrameBytes = 2048;
+            options.MaxEnvelopeBytes = 8192;
+            options.MaxEnvelopeItems = 25;
+            options.AggregateIntervalMs = 60000;
+            options.SyncIntervalMs = 60000;
+            var client = WardxClient.Create(options, transport);
+            try
+            {
+                Wait(client.FlushAsync());
+                transport.Jsons.Clear();
+                for (var i = 0; i < 200; i++) client.Event("sized", Dims.Of("i", i, "text", new string('x', 100)));
+                Wait(client.FlushAsync());
+                AssertX.True(transport.Jsons.Count > 1, "flush split into several envelopes");
+                var seqs = new List<double>();
+                var events = new List<double>();
+                foreach (var json in transport.Jsons)
+                {
+                    AssertX.True(Encoding.UTF8.GetByteCount(json) <= 8192, "envelope within maxEnvelopeBytes");
+                    var items = 0;
+                    foreach (var frame in Json.Parse(json)["frames"].ArrayValue)
+                    {
+                        seqs.Add(frame["seq"].NumberValue);
+                        var metrics = frame["metrics"];
+                        foreach (var key in new[] { "counters", "gauges", "histograms", "distincts" })
+                        {
+                            if (metrics[key] != null) items += metrics[key].ArrayValue.Count;
+                        }
+                        items += frame["logs"].ArrayValue.Count;
+                        foreach (var row in frame["events"].ArrayValue)
+                        {
+                            items++;
+                            events.Add(row.ArrayValue[2]["i"].NumberValue);
+                        }
+                    }
+                    AssertX.True(items <= 25, "envelope within maxEnvelopeItems");
+                }
+                for (var i = 1; i < seqs.Count; i++) AssertX.Equal(seqs[0] + i, seqs[i], "frames sent in sequence");
+                AssertX.Equal(200, events.Count, "every event delivered once");
+                for (var i = 0; i < events.Count; i++) AssertX.Equal((double)i, events[i], "event order preserved");
+
+                transport.Jsons.Clear();
+                transport.FailAt = 2;
+                for (var i = 0; i < 200; i++) client.Event("sized", Dims.Of("i", i, "text", new string('x', 100)));
+                Wait(client.FlushAsync());
+                AssertX.Equal(2, transport.Jsons.Count, "sync stops at the failed envelope");
+                var delivered = Json.Parse(transport.Jsons[0])["frames"].ArrayValue;
+                transport.FailAt = 0;
+                Wait(client.FlushAsync());
+                var recovery = Json.Parse(transport.Jsons[2])["frames"].ArrayValue[0];
+                var failed = 0.0;
+                foreach (var row in recovery["metrics"]["counters"].ArrayValue)
+                {
+                    if (row.ArrayValue[0].StringValue == "wardx.internal.frames_failed") failed = row.ArrayValue[2].NumberValue;
+                }
+                var unsent = recovery["seq"].NumberValue - delivered[0]["seq"].NumberValue - delivered.Count;
+                AssertX.True(unsent > 1, "several envelopes were left unsent");
+                AssertX.Equal(unsent, failed, "unsent frames counted as failed");
             }
             finally { Wait(client.ShutdownAsync()); }
         }

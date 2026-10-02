@@ -48,6 +48,8 @@ export const REQUIRED_SDK_DEFAULT_KEYS = [
   'maxBufferedLogs',
   'maxFrameBytes',
   'maxPendingFrames',
+  'maxEnvelopeItems',
+  'maxEnvelopeBytes',
   'maxSeriesPerMetric',
   'maxDimensionKeys',
   'maxDimensionValueLength',

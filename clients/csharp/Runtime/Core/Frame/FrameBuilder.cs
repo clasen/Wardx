@@ -13,6 +13,14 @@ namespace Wardx
         public List<DistinctSample> Distincts = new List<DistinctSample>();
         public List<EventSample> Events = new List<EventSample>();
         public List<LogSample> Logs = new List<LogSample>();
+        internal int WireBytes;
+
+        internal int RowCount => Counters.Count
+            + Gauges.Count
+            + Histograms.Count
+            + Distincts.Count
+            + Events.Count
+            + Logs.Count;
 
         public Dictionary<string, object> ToWire()
         {
@@ -232,13 +240,17 @@ namespace Wardx
             }
         }
 
-        public static FrameBatch SplitToMaxBytes(Frame frame, int maxFrameBytes)
+        public static FrameBatch SplitToMaxBytes(Frame frame, int maxFrameBytes, int maxFrameRows)
         {
             if (maxFrameBytes < 1024)
             {
                 throw new System.ArgumentException("maxFrameBytes must be an integer at least 1024");
             }
-            var splitter = new FrameSplitter(frame, maxFrameBytes);
+            if (maxFrameRows < 1)
+            {
+                throw new System.ArgumentException("maxFrameRows must be an integer at least 1");
+            }
+            var splitter = new FrameSplitter(frame, maxFrameBytes, maxFrameRows);
             foreach (var row in frame.Counters) splitter.AddCounter(row);
             foreach (var row in frame.Gauges) splitter.AddGauge(row);
             foreach (var row in frame.Histograms) splitter.AddHistogram(row);
@@ -255,16 +267,18 @@ namespace Wardx
         readonly long _from;
         readonly long _to;
         readonly int _maxFrameBytes;
+        readonly int _maxFrameRows;
         readonly FrameBatch _batch = new FrameBatch();
         Frame _current;
         long _currentBytes;
 
-        public FrameSplitter(Frame source, int maxFrameBytes)
+        public FrameSplitter(Frame source, int maxFrameBytes, int maxFrameRows)
         {
             _startingSeq = source.Seq;
             _from = source.From;
             _to = source.To;
             _maxFrameBytes = maxFrameBytes;
+            _maxFrameRows = maxFrameRows;
             _current = EmptyFrame(_startingSeq, _from, _to);
             _currentBytes = Measure(_current).Bytes;
         }
@@ -321,14 +335,14 @@ namespace Wardx
                     );
                 }
             }
-            if (_batch.Frames.Count == 0 || RowCount(_current) > 0) FinishCurrent();
+            if (_batch.Frames.Count == 0 || _current.RowCount > 0) FinishCurrent();
             return _batch;
         }
 
         bool TryAdd<T>(T row, System.Func<Frame, List<T>> collection, int rowBytes, bool distinct = false)
         {
             if (TryAppend(row, collection(_current), rowBytes, distinct)) return true;
-            if (RowCount(_current) > 0)
+            if (_current.RowCount > 0)
             {
                 FinishCurrent();
                 if (TryAppend(row, collection(_current), rowBytes, distinct)) return true;
@@ -341,7 +355,7 @@ namespace Wardx
             // The first distinct row also introduces the optional JSON property.
             var addedBytes = (long)rowBytes + (rows.Count > 0 ? 1 : 0)
                 + (distinct && rows.Count == 0 ? ",\"distincts\":[]".Length : 0);
-            if (_currentBytes + addedBytes > _maxFrameBytes) return false;
+            if (_currentBytes + addedBytes > _maxFrameBytes || _current.RowCount >= _maxFrameRows) return false;
             rows.Add(row);
             _currentBytes += addedBytes;
             return true;
@@ -354,6 +368,7 @@ namespace Wardx
             {
                 throw new System.InvalidOperationException("frame splitter produced an oversized frame");
             }
+            _current.WireBytes = measured.Bytes;
             _batch.Frames.Add(_current);
             _batch.Jsons.Add(measured.Json);
             _current = EmptyFrame(_startingSeq + _batch.Frames.Count, _from, _to);
@@ -363,16 +378,6 @@ namespace Wardx
         static Frame EmptyFrame(int seq, long from, long to)
         {
             return new Frame { Seq = seq, From = from, To = to };
-        }
-
-        static int RowCount(Frame frame)
-        {
-            return frame.Counters.Count
-                + frame.Gauges.Count
-                + frame.Histograms.Count
-                + frame.Distincts.Count
-                + frame.Events.Count
-                + frame.Logs.Count;
         }
 
         static FrameMeasurement Measure(Frame frame)

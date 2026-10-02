@@ -54,6 +54,8 @@ const coreSettings: CoreSettings = {
   maxBufferedLogs: 2000,
   maxFrameBytes: 524288,
   maxPendingFrames: 32,
+  maxEnvelopeItems: 10000,
+  maxEnvelopeBytes: 2097152,
   maxSeriesPerMetric: 1000,
   maxDimensionKeys: 8,
   maxDimensionValueLength: 64,
