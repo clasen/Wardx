@@ -437,7 +437,9 @@ export class WardxCore {
   seq: number;
   pendingFrames: Frame[];
   windowStart: number;
+  configContext: string | undefined;
   log: LogApi;
+  readonly configVersion: number;
   constructor(settings: CoreSettings);
   counter(name: string, dims?: Dimensions | null): CounterHandle;
   gauge(name: string, dims?: Dimensions | null): GaugeHandle;
@@ -453,6 +455,25 @@ export class WardxCore {
   snapshotIfDirty(): FrameBatch | null;
   snapshotFrame(): FrameBatch;
   takePendingFrames(): Frame[];
+  syncEnvelope(meta: SyncEnvelopeMeta, frames: Frame[]): SyncEnvelope;
+  recordProcessRss(bytes: number): void;
+  recordSyncBytes(uncompressed: number, compressed: number): void;
+  recordSyncResult(result: { ok: boolean; frames: number; ms: number }): void;
+  recordSyncError(): void;
+  applySyncResponse(response: unknown): void;
+}
+
+export interface SyncEnvelopeMeta {
+  project: string;
+  sdk: { name: string; version: string };
+  client: Record<string, unknown>;
+}
+
+export interface SyncEnvelope extends SyncEnvelopeMeta {
+  protocol: typeof PROTOCOL_VERSION;
+  configVersion: number;
+  configContext: string | undefined;
+  frames: Frame[];
 }
 
 export function fnv1a32(input: string | Uint8Array): number;

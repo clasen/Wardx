@@ -1,6 +1,5 @@
 import {
   PLATFORM,
-  PROTOCOL_VERSION,
   SDK_NAME,
   WardxCore,
   nextSyncDelayMs,
@@ -45,7 +44,6 @@ export class WardxNode {
     };
     if (this._disabled) return;
     this._attributes = copyAttributes(settings.attributes === undefined ? {} : settings.attributes);
-    this._configContext = undefined;
     this._transport = createHttpTransport(settings);
     this._stopped = false;
     this._shutdownPromise = null;
@@ -54,7 +52,7 @@ export class WardxNode {
     this._instanceId = ulid();
     this._sessionId = ulid();
     this._aggregateTimer = setInterval(() => {
-      this._core.internal.processRssBytes = readProcessRssBytes();
+      this._core.recordProcessRss(readProcessRssBytes());
       this._core.snapshotIfDirty();
     }, settings.aggregateIntervalMs);
     this._aggregateTimer.unref();
@@ -146,19 +144,18 @@ export class WardxNode {
     try {
       await this._syncOnceInner(flags);
     } catch {
-      this._core.internal.framesFailed += 1;
+      this._core.recordSyncError();
     }
   }
 
   async _syncOnceInner(flags) {
     if (flags.flush || flags.bootstrap) {
-      this._core.internal.processRssBytes = readProcessRssBytes();
+      this._core.recordProcessRss(readProcessRssBytes());
       this._core.snapshotIfDirty();
     }
     const frames = this._core.takePendingFrames();
     if (!flags.bootstrap && !flags.flush && frames.length === 0) return;
-    const envelope = {
-      protocol: PROTOCOL_VERSION,
+    const envelope = this._core.syncEnvelope({
       project: this.settings.project,
       sdk: {
         name: SDK_NAME,
@@ -172,59 +169,37 @@ export class WardxNode {
         environment: this.settings.environment,
         platform: PLATFORM,
         attributes: this._attributes
-      },
-      configVersion: this._core.configStore.version,
-      configContext: this._configContext,
-      frames
-    };
+      }
+    }, frames);
     const json = JSON.stringify(envelope);
     const compressed = await gzipBuffer(json);
     const bytesUncompressed = Buffer.byteLength(json);
     const bytesCompressed = compressed.length;
-    this._core.internal.bytesUncompressed += bytesUncompressed;
-    this._core.internal.bytesCompressed += bytesCompressed;
+    this._core.recordSyncBytes(bytesUncompressed, bytesCompressed);
     const started = performance.now();
     const phase = flags.bootstrap ? 'bootstrap' : flags.flush ? 'flush' : 'tick';
+    const trace = { phase, frames: frames.length, bytesUncompressed, bytesCompressed };
     try {
       const result = await this._transport.post(compressed);
-      this._core.internal.lastSyncMs = performance.now() - started;
+      const ms = performance.now() - started;
+      this._core.recordSyncResult({ ok: result.ok, frames: frames.length, ms });
       if (!result.ok) {
-        this._core.internal.framesFailed += Math.max(frames.length, 1);
-        this._traceSync({
-          phase,
-          frames: frames.length,
-          bytesUncompressed,
-          bytesCompressed,
-          ms: this._core.internal.lastSyncMs,
-          ok: false,
-          status: result.status
-        });
+        this._traceSync({ ...trace, ms, ok: false, status: result.status });
         return;
       }
-      this._core.internal.framesSent += frames.length;
-      this._applyResponse(result.json);
+      this._core.applySyncResponse(result.json);
       this._traceSync({
-        phase,
-        frames: frames.length,
-        bytesUncompressed,
-        bytesCompressed,
-        ms: this._core.internal.lastSyncMs,
+        ...trace,
+        ms,
         ok: true,
         status: result.status,
-        configVersion: this._core.configStore.version,
+        configVersion: this._core.configVersion,
         appliedConfig: Boolean(result.json && result.json.config)
       });
     } catch {
-      this._core.internal.lastSyncMs = performance.now() - started;
-      this._core.internal.framesFailed += Math.max(frames.length, 1);
-      this._traceSync({
-        phase,
-        frames: frames.length,
-        bytesUncompressed,
-        bytesCompressed,
-        ms: this._core.internal.lastSyncMs,
-        ok: false
-      });
+      const ms = performance.now() - started;
+      this._core.recordSyncResult({ ok: false, frames: frames.length, ms });
+      this._traceSync({ ...trace, ms, ok: false });
     }
   }
 
@@ -233,16 +208,5 @@ export class WardxNode {
     if (tracer == null) return;
     const fn = tracer.sync;
     if (typeof fn === 'function') fn.call(tracer, record);
-  }
-
-  _applyResponse(json) {
-    if (!json || json.ok !== true) return;
-    if (typeof json.configVersion === 'number') {
-      this._core.internal.configVersion = json.configVersion;
-    }
-    if (json.config) {
-      this._core.applyConfig(json.configVersion, json.config);
-      this._configContext = json.configContext;
-    }
   }
 }

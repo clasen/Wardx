@@ -222,7 +222,11 @@ export class MutationJournal {
         throw new MutationConflictError(current.version);
       }
       const nextVersion = current.version + 1;
-      const nextState = this.applyChange(cloneJson(current.state, 'state'), cloneJson(mutation.forward, 'forward'));
+      const nextState = this.applyChange(
+        cloneJson(current.state, 'state'),
+        cloneJson(mutation.forward, 'forward'),
+        nextVersion
+      );
       const entry = {
         id: entryIdentity(this.idFactory, current.changes),
         timestamp: entryTimestamp(this.clock),
@@ -264,7 +268,7 @@ export class MutationJournal {
       const nextVersion = current.version + 1;
       const forward = cloneJson(target.reversible.inverse, 'retained inverse');
       const inverse = cloneJson(target.reversible.forward, 'retained forward');
-      const nextState = this.applyChange(cloneJson(current.state, 'state'), cloneJson(forward, 'rollback change'));
+      const nextState = this.applyChange(cloneJson(current.state, 'state'), cloneJson(forward, 'rollback change'), nextVersion);
       const entry = {
         id: entryIdentity(this.idFactory, current.changes),
         timestamp: entryTimestamp(this.clock),

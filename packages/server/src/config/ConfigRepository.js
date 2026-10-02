@@ -21,28 +21,33 @@ function wireSnapshot(values, experimentsJson) {
   return { wire, context: h64ToString(wire) };
 }
 
+// Everything a config snapshot must satisfy on its own, before catalog constraints.
+export function validateConfigSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+    throw new Error('config snapshot must be an object');
+  }
+  if (typeof snapshot.version !== 'number' || !Number.isFinite(snapshot.version)) {
+    throw new Error('config version must be a finite number');
+  }
+  if (!snapshot.values || typeof snapshot.values !== 'object' || Array.isArray(snapshot.values)) {
+    throw new Error('config values must be an object');
+  }
+  if (!Array.isArray(snapshot.experiments)) {
+    throw new Error('config experiments must be an array');
+  }
+  validateKeyRoles(snapshot.values, snapshot.keyRoles, 'config snapshot');
+  validateConfigRules(snapshot.values, snapshot.keyRules);
+  for (const experiment of snapshot.experiments) validateExperiment(experiment);
+  assertUnambiguousGoalMetrics(snapshot.experiments);
+}
+
 export class ConfigRepository {
   constructor(initial) {
     this.replace(initial);
   }
 
   replace(snapshot) {
-    if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
-      throw new Error('config snapshot must be an object');
-    }
-    if (typeof snapshot.version !== 'number' || !Number.isFinite(snapshot.version)) {
-      throw new Error('config version must be a finite number');
-    }
-    if (!snapshot.values || typeof snapshot.values !== 'object' || Array.isArray(snapshot.values)) {
-      throw new Error('config values must be an object');
-    }
-    if (!Array.isArray(snapshot.experiments)) {
-      throw new Error('config experiments must be an array');
-    }
-    validateKeyRoles(snapshot.values, snapshot.keyRoles, 'config snapshot');
-    validateConfigRules(snapshot.values, snapshot.keyRules);
-    for (const experiment of snapshot.experiments) validateExperiment(experiment);
-    assertUnambiguousGoalMetrics(snapshot.experiments);
+    validateConfigSnapshot(snapshot);
     validateConfigConstraints(snapshot, snapshot.catalog);
     this.version = snapshot.version;
     this.values = cloneJson(snapshot.values);
