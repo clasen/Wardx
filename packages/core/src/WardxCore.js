@@ -12,6 +12,7 @@ import { NOOP_HISTOGRAM } from './metrics/Histogram.js';
 import { NOOP_DISTINCT } from './metrics/HyperLogLog.js';
 import { startTimer } from './metrics/Timer.js';
 import { emit } from './trace/emit.js';
+import { PROTOCOL_VERSION } from './protocol.js';
 import { wrapCounter, wrapDistinct, wrapGauge, wrapHistogram } from './trace/wrap.js';
 
 export class WardxCore {
@@ -45,6 +46,7 @@ export class WardxCore {
     this.pendingFrames = [];
     this.windowStart = Date.now();
     this._subjectId = null;
+    this.configContext = undefined;
     this.log = {
       debug: (message, attrs) => this._log('debug', message, attrs),
       info: (message, attrs) => this._log('info', message, attrs),
@@ -248,5 +250,51 @@ export class WardxCore {
     const frames = this.pendingFrames;
     this.pendingFrames = [];
     return frames;
+  }
+
+  get configVersion() {
+    return this.configStore.version;
+  }
+
+  syncEnvelope({ project, sdk, client }, frames) {
+    return {
+      protocol: PROTOCOL_VERSION,
+      project,
+      sdk,
+      client,
+      configVersion: this.configStore.version,
+      configContext: this.configContext,
+      frames
+    };
+  }
+
+  recordProcessRss(bytes) {
+    this.internal.processRssBytes = bytes;
+  }
+
+  recordSyncBytes(uncompressed, compressed) {
+    this.internal.bytesUncompressed += uncompressed;
+    this.internal.bytesCompressed += compressed;
+  }
+
+  recordSyncResult({ ok, frames, ms }) {
+    this.internal.lastSyncMs = ms;
+    if (ok) this.internal.framesSent += frames;
+    else this.internal.framesFailed += Math.max(frames, 1);
+  }
+
+  recordSyncError() {
+    this.internal.framesFailed += 1;
+  }
+
+  applySyncResponse(response) {
+    if (!response || response.ok !== true) return;
+    if (typeof response.configVersion === 'number') {
+      this.internal.configVersion = response.configVersion;
+    }
+    if (response.config) {
+      this.applyConfig(response.configVersion, response.config);
+      this.configContext = response.configContext;
+    }
   }
 }

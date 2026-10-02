@@ -188,6 +188,30 @@ test('optimistic mutations journal once, conflict cleanly, and rollback as a new
   assert.equal(afterRollback.changes[1].rolledBackChangeId, first.changeId);
 });
 
+test('rollback that would leave an invalid project state is rejected before it is journaled', async () => {
+  const server = createIngestServer(testServerConfig());
+  const control = server.wardx.control;
+  try {
+    mutate(control, 'upsertExperiment', 'demo', DELAY_EXPERIMENT);
+    const disabled = mutate(control, 'setExperimentEnabled', 'demo', DELAY_EXPERIMENT.id, false);
+    mutate(control, 'upsertExperiment', 'demo', { ...DELAY_EXPERIMENT, id: 'message-delay-v2', salt: '9c41e2' });
+    const before = control.getConfig('demo');
+    const changes = control.listConfigChanges('demo').changes.length;
+
+    assert.throws(
+      () => control.rollbackConfigChange('demo', disabled.changeId, {
+        expectedVersion: before.version,
+        reason: 're-enable the first delay experiment'
+      }),
+      /share goalMetric message\.sent/
+    );
+    assert.deepEqual(control.getConfig('demo'), before);
+    assert.equal(control.listConfigChanges('demo').changes.length, changes);
+  } finally {
+    await server.wardx.stop();
+  }
+});
+
 test('aggregator rolls up experiment exposure and goals', async () => {
   const now = Date.now();
   await withServer(testServerConfig(), async (server, base) => {

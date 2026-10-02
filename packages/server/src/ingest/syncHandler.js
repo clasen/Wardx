@@ -1,8 +1,8 @@
 import { gunzipSync } from 'node:zlib';
 import { PayloadTooLargeError, readBody } from './readBody.js';
-import { validateEnvelope, validateExperimentEvents } from './validate.js';
+import { validateEnvelope } from './validate.js';
 import { CredentialAuthorizationError } from '../auth/CredentialRegistry.js';
-import { RetentionInputError, RetentionCapacityError } from '../storage/RetentionLedger.js';
+import { createIngestPipeline } from './IngestPipeline.js';
 
 function json(res, status, body) {
   const payload = typeof body === 'string' ? body : JSON.stringify(body);
@@ -11,36 +11,6 @@ function json(res, status, body) {
     'content-length': Buffer.byteLength(payload)
   });
   res.end(payload);
-}
-
-function experimentEvents(envelope) {
-  const events = [];
-  for (const frame of envelope.frames) {
-    for (const row of frame.events) {
-      const name = row[1];
-      const attrs = row[2];
-      if (name === 'experiment.exposure') {
-        events.push({
-          kind: 'exposure',
-          experiment: attrs.experiment,
-          variant: attrs.variant,
-          assignmentHash: attrs.subject,
-          timestamp: row[0]
-        });
-      } else if (name === 'experiment.goal') {
-        const assignment = attrs.experiments[0];
-        events.push({
-          kind: 'goal',
-          experiment: assignment.experiment,
-          variant: assignment.variant,
-          assignmentHash: attrs.subject,
-          timestamp: row[0],
-          value: attrs.value === undefined ? 1 : attrs.value
-        });
-      }
-    }
-  }
-  return events;
 }
 
 export function createSyncHandler({
@@ -54,6 +24,7 @@ export function createSyncHandler({
   stateStore,
   diagnostics
 }) {
+  const ingest = createIngestPipeline({ sink, persistence, experimentLedger, retentionLedger, stateStore, diagnostics });
   return async function handleSync(req, res) {
     const key = req.headers['x-wardx-key'];
     let credential;
@@ -124,68 +95,8 @@ export function createSyncHandler({
       json(res, 400, { ok: false, error: 'project does not match key' });
       return;
     }
-    const invalidExperiments = validateExperimentEvents(body, store.configRepo.experiments);
-    if (invalidExperiments) {
-      diagnostics.report('ingest.validation_rejected', new Error(invalidExperiments), { project });
-      json(res, 400, { ok: false, error: invalidExperiments });
-      return;
-    }
-    let preparedHistory;
-    try {
-      preparedHistory = store.history.prepare(body, store.catalog.persistLogs);
-    } catch (error) {
-      diagnostics.report('ingest.history_rejected', error, { project, credentialLabel: source.label });
-      json(res, 400, { ok: false, error: error.message });
-      return;
-    }
-    const historyCapacity = persistence.canAcceptHistory(store.history, preparedHistory);
-    if (!historyCapacity.accepted) {
-      diagnostics.report('ingest.persistence_overloaded', new Error('SQLite pending history limit reached'), {
-        project,
-        pendingBatches: historyCapacity.batches,
-        pendingBytes: historyCapacity.bytes
-      });
-      json(res, 503, { ok: false, error: 'overloaded' });
-      return;
-    }
-    const activity = body.frames.flatMap((frame) => frame.events
-      .filter((row) => row[1] === 'retention.activity')
-      .map(([timestamp, , attrs]) => ({ timestamp, subject: attrs.subject, salt: attrs.salt })));
-    let rejectedEvidence;
-    try {
-      const ingestEvidence = () => {
-        const evidence = experimentLedger.ingestBatch(project, experimentEvents(body), source);
-        rejectedEvidence = evidence.find(
-          (result) => result.status === 'variant_conflict' || result.status === 'missing_exposure'
-        );
-        if (rejectedEvidence) return;
-        retentionLedger.ingestBatch(project, activity);
-      };
-      if (activity.length > 0) stateStore.transaction(ingestEvidence);
-      else ingestEvidence();
-    } catch (error) {
-      if (!(error instanceof RetentionInputError) && !(error instanceof RetentionCapacityError)) throw error;
-      diagnostics.report('ingest.retention_rejected', error, { project });
-      json(res, error instanceof RetentionCapacityError ? 503 : 400, { ok: false, error: error.message });
-      return;
-    }
-    if (rejectedEvidence) {
-      diagnostics.report('ingest.experiment_rejected', new Error(rejectedEvidence.status), {
-        project,
-        credentialLabel: source.label,
-        experiment: rejectedEvidence.experiment
-      });
-      json(res, 400, { ok: false, error: rejectedEvidence.status.replaceAll('_', ' ') });
-      return;
-    }
-    sink.ingest(body);
-    store.history.commit(preparedHistory);
-    store.aggregator.ingest(body, store.catalog.persistLogs, source);
-    if (preparedHistory.updates.length > 0) persistence.mark('history');
-    store.clients.touch(body.client);
-    store.events.ingest(body, store.catalog.inspectEvents);
-    store.logs.ingest(body);
-    json(res, 200, store.configRepo.buildResponse(body.configVersion, body.client, body.configContext));
+    const result = ingest(store, body, source);
+    json(res, result.status, result.body);
   };
 }
 

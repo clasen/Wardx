@@ -9,32 +9,19 @@ import {
   namesInCategory,
   presentRole,
   signalCategories,
-  validateCatalog,
   validateSignalEntry
 } from './catalog.js';
-import { ConfigRepository } from '../config/ConfigRepository.js';
-import { validateConfigRules } from '../config/rules.js';
 import { decideExperiment } from './experimentDecision.js';
 import { assertRole, assertRoles } from '../roles.js';
 import { assertExperimentKeysExist, toClientExperiment, validateExperiment } from './validateExperiment.js';
 import { MutationConflictError, MutationJournal } from './MutationJournal.js';
 import { applyControlStateChange, diffControlState } from './ControlStateChange.js';
 import { SqliteMutationRepository } from '../storage/SqliteMutationRepository.js';
-import { ConfigConstraintError, validateConfigConstraints } from './configConstraints.js';
+import { ConfigConstraintError } from './configConstraints.js';
+import { materialize, validateProjectState } from './ProjectState.js';
 
-function materialize(normalized) {
-  const catalog = structuredClone(normalized.catalog);
-  catalog.persistLogs = Object.keys(catalog.persistLogsByName).sort();
-  delete catalog.persistLogsByName;
-  return {
-    snapshot: {
-      values: structuredClone(normalized.values),
-      keyRoles: structuredClone(normalized.keyRoles),
-      keyRules: structuredClone(normalized.keyRules),
-      experiments: Object.values(normalized.experimentsById).map((experiment) => structuredClone(experiment))
-    },
-    catalog
-  };
+function requireName(name) {
+  if (typeof name !== 'string' || name.length === 0) throw new Error('name is required');
 }
 
 function mutationOptions(options) {
@@ -112,12 +99,9 @@ export class ControlService {
     this.mutationJournal = new MutationJournal({
       repository: this.mutationRepository,
       capacity: config.control.journalCapacity,
-      applyChange: (state, change) => {
+      applyChange: (state, change, version) => {
         const next = applyControlStateChange(state, change);
-        const candidate = materialize(next);
-        validateConfigRules(candidate.snapshot.values, candidate.snapshot.keyRules);
-        validateCatalog(candidate.catalog, 'catalog');
-        validateConfigConstraints(candidate.snapshot, candidate.catalog);
+        validateProjectState(materialize(next), { version, catalogLabel: 'catalog' });
         return next;
       }
     });
@@ -146,73 +130,73 @@ export class ControlService {
 
   setProjectDescription(project, description, options) {
     if (typeof description !== 'string') throw new Error('description must be a string');
-    const store = this.requireStore(project);
-    const result = this._commitCatalog(project, store, (catalog) => {
+    this.requireStore(project);
+    const result = this._commitCatalog(project, (catalog) => {
       catalog.description = description;
     }, options, 'set_project_description', ['description']);
     return { project, ...result };
   }
 
   setSignal(project, name, signal, options) {
-    if (typeof name !== 'string' || name.length === 0) throw new Error('name is required');
+    requireName(name);
     if (!signal || typeof signal !== 'object' || Array.isArray(signal)) {
       throw new Error('signal is required');
     }
     validateSignalEntry(signal, 'signal');
-    const store = this.requireStore(project);
-    const result = this._commitCatalog(project, store, (catalog) => {
+    this.requireStore(project);
+    const result = this._commitCatalog(project, (catalog) => {
       catalog.signals[name] = structuredClone(signal);
     }, options, 'set_signal', [name]);
     return { project, name, ...result };
   }
 
   deleteSignal(project, name, options) {
-    if (typeof name !== 'string' || name.length === 0) throw new Error('name is required');
+    requireName(name);
     const store = this.requireStore(project);
     if (!Object.prototype.hasOwnProperty.call(store.catalog.signals, name)) {
       throw new Error(`unknown signal: ${name}`);
     }
-    const result = this._commitCatalog(project, store, (catalog) => {
+    const result = this._commitCatalog(project, (catalog) => {
       delete catalog.signals[name];
     }, options, 'delete_signal', [name]);
     return { project, name, ...result };
   }
 
   setInspectEvent(project, name, options) {
-    if (typeof name !== 'string' || name.length === 0) throw new Error('name is required');
-    const store = this.requireStore(project);
-    const result = this._commitCatalog(project, store, (catalog) => {
+    requireName(name);
+    this.requireStore(project);
+    const result = this._commitCatalog(project, (catalog) => {
       if (!catalog.inspectEvents.includes(name)) catalog.inspectEvents.push(name);
     }, options, 'set_inspect_event', [name]);
     return { project, name, ...result };
   }
 
   deleteInspectEvent(project, name, options) {
-    if (typeof name !== 'string' || name.length === 0) throw new Error('name is required');
+    requireName(name);
     const store = this.requireStore(project);
     const index = store.catalog.inspectEvents.indexOf(name);
     if (index === -1) throw new Error(`unknown inspect event: ${name}`);
-    const result = this._commitCatalog(project, store, (catalog) => {
+    const result = this._commitCatalog(project, (catalog) => {
       catalog.inspectEvents.splice(index, 1);
     }, options, 'delete_inspect_event', [name]);
     return { project, name, ...result };
   }
 
   setPersistLog(project, name, options) {
-    if (typeof name !== 'string' || name.length === 0) throw new Error('name is required');
-    const store = this.requireStore(project);
-    const result = this._commitCatalog(project, store, (catalog) => {
+    requireName(name);
+    this.requireStore(project);
+    const result = this._commitCatalog(project, (catalog) => {
       if (!catalog.persistLogs.includes(name)) catalog.persistLogs.push(name);
     }, options, 'set_persist_log', [name]);
     return { project, name, ...result };
   }
 
   deletePersistLog(project, name, options) {
-    if (typeof name !== 'string' || name.length === 0) throw new Error('name is required');
+    requireName(name);
     const store = this.requireStore(project);
     const index = store.catalog.persistLogs.indexOf(name);
     if (index === -1) throw new Error(`unknown persist log: ${name}`);
-    const result = this._commitCatalog(project, store, (catalog) => {
+    const result = this._commitCatalog(project, (catalog) => {
       catalog.persistLogs.splice(index, 1);
     }, options, 'delete_persist_log', [name]);
     store.aggregator.forgetPersistLog(name);
@@ -224,8 +208,8 @@ export class ControlService {
     if (typeof description !== 'string' || description.length === 0) {
       throw new Error('description is required');
     }
-    const store = this.requireStore(project);
-    const result = this._commitCatalog(project, store, (catalog) => {
+    this.requireStore(project);
+    const result = this._commitCatalog(project, (catalog) => {
       ensureRoleEntry(catalog, role).description = description;
     }, options, 'set_role_description', [role]);
     return { project, role, ...result };
@@ -247,8 +231,8 @@ export class ControlService {
     if (path === undefined && git === undefined) {
       throw new Error('path or git is required');
     }
-    const store = this.requireStore(project);
-    const result = this._commitCatalog(project, store, (catalog) => {
+    this.requireStore(project);
+    const result = this._commitCatalog(project, (catalog) => {
       const entry = ensureRoleEntry(catalog, role);
       if (path !== undefined) entry.path = path;
       if (git !== undefined) entry.git = git;
@@ -733,7 +717,7 @@ export class ControlService {
     }
   }
 
-  _commitCatalog(project, _store, mutate, options, operation, affectedNames) {
+  _commitCatalog(project, mutate, options, operation, affectedNames) {
     return this._mutate(project, options, operation, affectedNames, (state) => {
       const catalog = materialize(state).catalog;
       mutate(catalog);
@@ -749,9 +733,10 @@ export class ControlService {
     const after = structuredClone(before);
     mutate(after);
     const candidate = materialize(after);
-    new ConfigRepository({ version: settings.expectedVersion + 1, ...candidate.snapshot });
-    validateCatalog(candidate.catalog, `server config.projects.${project}.catalog`);
-    validateConfigConstraints(candidate.snapshot, candidate.catalog, `server config.projects.${project}`);
+    validateProjectState(candidate, {
+      version: settings.expectedVersion + 1,
+      label: `server config.projects.${project}`
+    });
     const snapshots = this.registry.names().map((name) =>
       name === project ? candidate.snapshot : this.requireStore(name).configRepo.snapshot()
     );
@@ -790,11 +775,6 @@ export class ControlService {
   _publish(project) {
     const current = this.mutationRepository.read(project);
     const { snapshot, catalog } = materialize(current.state);
-    const store = this.requireStore(project);
-    const removedInspectEvents = store.catalog.inspectEvents
-      .filter((name) => !catalog.inspectEvents.includes(name));
-    for (const name of removedInspectEvents) store.events.forget(name);
-    store.configRepo = new ConfigRepository({ version: current.version, ...snapshot });
-    store.catalog = catalog;
+    this.requireStore(project).publish(current.version, snapshot, catalog);
   }
 }
