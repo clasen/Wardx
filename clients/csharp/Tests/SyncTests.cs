@@ -153,7 +153,7 @@ namespace Wardx.Tests
                 Response = "{\"ok\":true,\"configVersion\":13,\"configContext\":\"" + token +
                     "\",\"config\":{\"values\":{\"knob\":200},\"experiments\":[]}}"
             };
-            var client = new WardxClient(settings, transport, () => 1, new SdkIdentity { Name = "wardx-csharp", Version = "test", Platform = "csharp" });
+            var client = new WardxClient(settings, transport, () => 1, new SdkIdentity { Name = "wardx-csharp", Version = "test", Platform = "csharp", Os = "linux" });
             try
             {
                 attributes["tier"] = 9;
@@ -271,6 +271,8 @@ namespace Wardx.Tests
             AssertX.Equal("wardx-csharp", envelope["sdk"]["name"].StringValue, "sdk name");
             AssertX.Equal("unity", envelope["client"]["role"].StringValue, "role");
             AssertX.Equal("csharp", envelope["client"]["platform"].StringValue, "platform");
+            var os = envelope["client"]["os"].StringValue;
+            AssertX.True(os == "windows" || os == "macos" || os == "linux", "operating system family");
             AssertX.True(envelope["client"]["instanceId"].StringValue.Length == 26, "instance ulid");
             AssertX.True(envelope["frames"].ArrayValue.Count >= 1, "has frame");
             AssertX.Equal(1000, client.Config.Get("message.delayMs", 7), "applied config");

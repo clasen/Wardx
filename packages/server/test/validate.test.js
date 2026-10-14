@@ -25,7 +25,8 @@ test('validateEnvelope accepts the documented wire structures', () => {
       role: 'client',
       appVersion: '2.4.1',
       environment: 'production',
-      platform: 'node'
+      platform: 'node',
+      os: 'linux'
     },
     configVersion: 12,
     frames: [
@@ -149,6 +150,9 @@ test('validateEnvelope rejects malformed scalar and tuple fields', () => {
     ['empty environment', (body) => (body.client.environment = ''), /client\.environment/],
     ['missing platform', (body) => delete body.client.platform, /client\.platform/],
     ['oversized platform', (body) => (body.client.platform = 'p'.repeat(LIMITS.maxNameBytes + 1)), /UTF-8 bytes/],
+    ['empty os', (body) => (body.client.os = ''), /client\.os/],
+    ['non-string os', (body) => (body.client.os = 1), /client\.os/],
+    ['oversized os', (body) => (body.client.os = 'o'.repeat(LIMITS.maxNameBytes + 1)), /UTF-8 bytes/],
     ['negative config version', (body) => (body.configVersion = -1), /integer >= 0/],
     ['non-array frames', (body) => (body.frames = {}), /frames must be an array/],
     ['non-object frame', (body) => (body.frames[0] = []), /frames\[0\] must be an object/],

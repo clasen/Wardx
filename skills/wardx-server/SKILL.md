@@ -64,7 +64,8 @@ never decrements a version or rewrites the journal.
 Keys and experiments remain scoped by role. Knobs are adjustable config keys;
 ordered rules choose each visible key's base value using client metadata and
 application-defined attributes. Keep role separate from OS/build/channel;
-`platform` identifies the SDK runtime. Do not hardcode update or platform logic
+`platform` identifies the SDK runtime and `os` the detected operating system
+family, which also filters `get_aggregate_history`. Do not hardcode update or platform logic
 in Wardx. Read the tools reference before writing conditions.
 
 Inspect a knob's current rules before tuning it. `set_config_value` preserves

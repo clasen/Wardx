@@ -11,7 +11,7 @@ mutation also takes integer `expectedVersion >= 0` and non-empty `reason`.
 | `get_project_overview` | `project`, optional `limit`, exact `category` |
 | `get_config` | `project` |
 | `get_aggregates` | `project`; optional `names`, `from`, `to`, `role`, exact `category`; distinct rows return HLL estimate/precision |
-| `get_aggregate_history` | `project`, `tier: hour|day`, bounded `from`, `to`; optional `role`, `environment`, `appVersion`, `names`, exact `category` |
+| `get_aggregate_history` | `project`, `tier: hour|day`, bounded `from`, `to`; optional `role`, `environment`, `appVersion`, `os`, `names`, exact `category` |
 | `get_retention` | `project`, inclusive `from` and exclusive `to` as UTC `YYYY-MM-DD` cohort dates |
 | `get_recent_events` | `project`; optional exact `name`, `role`, listed scalar `attrs`, `limit`; newest timestamp first |
 | `get_recent_logs` | `project`; optional `level`, exact `message`, exact `attrs`, `role`, `limit` |
@@ -74,7 +74,7 @@ validated. A rejected mutation changes neither state, version, nor journal.
 Remote Config and experiment visibility remain scoped by `roles`. Optional
 `rules` choose a visible key's base value: the first rule whose `when` conditions
 all match wins. Conditions are `{ field, op, value }`, with fields `role`,
-`appVersion`, `environment`, `platform`, or `attributes.<literal name>`.
+`appVersion`, `environment`, `platform`, `os`, or `attributes.<literal name>`.
 `eq` and `in` use strict scalar equality; `gt`, `gte`, `lt`, `lte` compare finite
 numbers only. Missing fields or different types do not match. Rules stay on
 the server as `keyRules` and appear on overview knobs. Omitting `rules` preserves

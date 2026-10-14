@@ -530,7 +530,7 @@ The server first filters keys and experiments by role, then resolves any conditi
 
 SDK 0.9.0 requires `@wardx/server` 0.9.0 or newer. Upgrade the server first: older servers reject the new client fields even when attributes are empty.
 
-Pass an optional flat `attributes` object to `createWardx`, for example `attributes: { os: 'android', build: 119, channel: 'stable' }`. Names are application-defined; values must be strings, finite numbers, or booleans. Wardx's `platform` identifies the SDK runtime (`node`, `csharp`, or `unity`), so use a custom attribute for the operating system. Attributes are shared by the SDK instance, not set per `config.get` subject; do not use an instance's attributes to switch between concurrent users.
+Pass an optional flat `attributes` object to `createWardx`, for example `attributes: { build: 119, channel: 'stable' }`. Names are application-defined; values must be strings, finite numbers, or booleans. Wardx's `platform` identifies the SDK runtime (`node`, `csharp`, or `unity`); the SDK reports the operating system family itself as `os` (`macos`, `windows`, `linux`, …). Attributes are shared by the SDK instance, not set per `config.get` subject; do not use an instance's attributes to switch between concurrent users.
 
 `wardx.setAttributes({ os: 'android', build: 120 })` replaces the entire attribute map with a copy. Use `{}` to clear it. The next successful sync resolves the new context; `await wardx.flush()` requests a sync now. Reads remain local and use the last snapshot until then. Attributes travel as client metadata; send only non-secret values.
 

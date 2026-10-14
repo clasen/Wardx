@@ -59,6 +59,7 @@ test('conditional config refreshes attributes while preserving role-scoped exper
       assert.equal(events.filter((event) => event[1] === 'experiment.exposure').length, 1);
       assert.equal(events.filter((event) => event[1] === 'experiment.goal').length, 1);
       assert.deepEqual(envelopes.at(-1).client.attributes, { tier: 3 });
+      assert.ok(['macos', 'windows', 'linux'].includes(envelopes.at(-1).client.os));
       assert.match(envelopes.at(-1).configContext, /^[0-9a-f]{16}$/);
       wardx.setAttributes({});
       await wardx.flush();

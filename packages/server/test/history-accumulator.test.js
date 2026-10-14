@@ -26,6 +26,25 @@ test('HistoryAccumulator retains environment/app version and strips attrs and ex
   assert.deepEqual(accumulator.pending(), []);
 });
 
+test('HistoryAccumulator keeps operating systems as separate series and accepts envelopes without os', () => {
+  const accumulator = new HistoryAccumulator({
+    project: 'demo',
+    clockSkewAllowanceMs: 1000,
+    maxAppVersionsPerProjectRoleTier: 2
+  });
+  accumulator.ingest(sampleEnvelope({ client: { os: 'android' } }), []);
+  accumulator.ingest(sampleEnvelope({ client: { os: 'ios' } }), []);
+  accumulator.ingest(sampleEnvelope({ client: { os: 'ios' } }), []);
+  accumulator.ingest(sampleEnvelope(), []);
+  const counters = accumulator.pending(Date.now() + 120_000)[0].rows.filter((row) => row.kind === 'counter');
+  const byOs = (os) => counters.filter((row) => row.os === os);
+  assert.equal(byOs('android').length, byOs('ios').length);
+  assert.ok(byOs('android').length > 0);
+  for (const [index, row] of byOs('ios').entries()) assert.equal(row.value, 2 * byOs('android')[index].value);
+  assert.equal(byOs(undefined).length, byOs('android').length);
+  assert.ok(byOs(undefined).every((row) => !Object.hasOwn(row, 'os')));
+});
+
 test('HistoryAccumulator merges repeated minute data and rejects a new over-cap app version atomically', () => {
   const accumulator = new HistoryAccumulator({
     project: 'demo',

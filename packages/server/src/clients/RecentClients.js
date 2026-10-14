@@ -12,6 +12,7 @@ export class RecentClients {
       role: client.role,
       appVersion: client.appVersion,
       platform: client.platform,
+      os: client.os,
       environment: client.environment,
       lastSeen: Date.now()
     });

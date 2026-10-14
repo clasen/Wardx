@@ -234,7 +234,7 @@ export function validateEnvelope(body, limits) {
   if (!isObject(body.client)) return 'client is required';
   const invalidClientKey = unknownKey(
     body.client,
-    new Set(['instanceId', 'sessionId', 'role', 'appVersion', 'environment', 'platform', 'attributes']),
+    new Set(['instanceId', 'sessionId', 'role', 'appVersion', 'environment', 'platform', 'os', 'attributes']),
     'client'
   );
   if (invalidClientKey) return invalidClientKey;
@@ -247,6 +247,10 @@ export function validateEnvelope(body, limits) {
   if (body.client.role === '*') return 'client.role cannot be *';
   for (const key of ['appVersion', 'environment', 'platform']) {
     const invalid = validateNonEmptyString(body.client[key], `client.${key}`, limits.maxNameBytes);
+    if (invalid) return invalid;
+  }
+  if (body.client.os !== undefined) {
+    const invalid = validateNonEmptyString(body.client.os, 'client.os', limits.maxNameBytes);
     if (invalid) return invalid;
   }
   if (!Number.isInteger(body.configVersion) || body.configVersion < 0) {

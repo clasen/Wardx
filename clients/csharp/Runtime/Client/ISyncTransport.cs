@@ -28,5 +28,6 @@ namespace Wardx
         public string Name;
         public string Version;
         public string Platform;
+        public string Os;
     }
 }

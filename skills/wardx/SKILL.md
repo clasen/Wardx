@@ -108,7 +108,7 @@ Pass optional `attributes` to `createWardx`, or replace the whole map with
 and values are strings, finite numbers, or booleans. Attribute maps are copied
 and shared by the instance, not selected per experiment subject. Do not switch
 them between concurrent users. Keep role separate from OS/build/channel;
-`platform` means the SDK runtime. Read the package reference for sync semantics.
+`platform` means the SDK runtime and the SDK sends the detected `os` itself. Read the package reference for sync semantics.
 
 On a single-user instance, `identify(userId)` sets the default experiment subject;
 `identify(null)` clears it. On a multi-user backend, pass `{ subjectId }` per call

@@ -203,7 +203,10 @@ test('filtered history preserves row order, empty buckets, JSON values and match
       dimensions: { route: '/a?b="c"' }, count: 2, sum: 1.25, min: 0.25, max: 1,
       buckets: [[0.5, 1], [1, 2]]
     };
-    const source = [row, { ...row, role: 'worker' }, { ...row, name: 'other' }, { ...row, appVersion: '2' }];
+    const source = [
+      row, { ...row, role: 'worker' }, { ...row, name: 'other' }, { ...row, appVersion: '2' },
+      { ...row, os: 'android' }, { ...row, os: 'ios' }
+    ];
     store.saveBuckets('hour', [
       { project: 'demo', tier: 'hour', from: 0, to: 3_600_000, finalized: true, dropCount: 0, rows: source },
       { project: 'demo', tier: 'hour', from: 3_600_000, to: 7_200_000, finalized: true, dropCount: 0, rows: [] }
@@ -212,16 +215,18 @@ test('filtered history preserves row order, empty buckets, JSON values and match
     const all = store.queryHistory(args);
     for (const filter of [
       { names: [row.name] }, { role: 'api' }, { environment: 'missing' }, { appVersion: '2' },
-      { names: [] }, { names: [row.name], role: 'api', environment: 'prod', appVersion: '1' }
+      { names: [] }, { names: [row.name], role: 'api', environment: 'prod', appVersion: '1' },
+      { os: 'ios' }, { os: 'missing' }, { role: 'api', os: 'android' }
     ]) {
       const expected = all.map((bucket) => ({ ...bucket, rows: bucket.rows.filter((value) =>
         (filter.names === undefined || filter.names.includes(value.name)) &&
-        ['role', 'environment', 'appVersion'].every((field) => filter[field] === undefined || filter[field] === value[field])
+        ['role', 'environment', 'appVersion', 'os'].every((field) => filter[field] === undefined || filter[field] === value[field])
       ) }));
       assert.deepEqual(store.queryHistory({ ...args, ...filter }), expected);
     }
     assert.throws(() => store.queryHistory({ ...args, names: [row.name], limit: 2 }), /row limit/);
-    assert.deepEqual(store.queryHistory({ ...args, names: [row.name], role: 'api', appVersion: '1', limit: 1 })[0].rows, [row]);
+    assert.deepEqual(store.queryHistory({ ...args, names: [row.name], role: 'api', appVersion: '1', os: 'ios', limit: 1 })[0].rows,
+      [{ ...row, os: 'ios' }]);
   });
 });
 

@@ -28,7 +28,7 @@ namespace Wardx.Tests
         {
             var transport = new MemoryTransport();
             var client = new WardxClient(Fixtures.TestSettings(), transport, () => 0,
-                new SdkIdentity { Name = "wardx-csharp", Version = "test", Platform = "csharp" });
+                new SdkIdentity { Name = "wardx-csharp", Version = "test", Platform = "csharp", Os = "linux" });
             var dims = Dims.Of(Dimension.Mode, Mode.Ranked);
             client.Counter(Signal.Completed, dims).Inc();
             client.Counter("match.completed", Dims.Of("mode", "ranked")).Inc();

@@ -48,7 +48,7 @@ function dimensions(value, label) {
 function baseRow(row, label) {
   if (!row || typeof row !== 'object' || Array.isArray(row)) throw new Error(`${label} must be an object`);
   if (!KINDS.has(row.kind)) throw new Error(`${label}.kind is invalid`);
-  return {
+  const out = {
     kind: row.kind,
     name: nonEmptyString(row.name, `${label}.name`),
     role: nonEmptyString(row.role, `${label}.role`),
@@ -56,6 +56,8 @@ function baseRow(row, label) {
     appVersion: nonEmptyString(row.appVersion, `${label}.appVersion`),
     dimensions: dimensions(row.dimensions ?? null, `${label}.dimensions`)
   };
+  if (row.os !== undefined) out.os = nonEmptyString(row.os, `${label}.os`);
+  return out;
 }
 
 export function normalizeHistoricalRow(row, label = 'historical row') {
@@ -110,6 +112,7 @@ export function historicalSeriesKey(row) {
     row.role,
     row.environment,
     row.appVersion,
+    row.os ?? '',
     row.name,
     row.level ?? '',
     stableDimensions(row.dimensions)

@@ -126,8 +126,9 @@ that base. Knobs are the adjustable config keys.
 Use optional `WardxOptions.Attributes` or `wardx.SetAttributes(map)` with a flat
 `IReadOnlyDictionary<string, object>` of strings, finite numbers, or booleans.
 The client copies the map; the setter replaces it and an empty map clears it.
-These attributes belong to the instance, not the experiment subject. Keep OS,
-build, and channel separate from role; `platform` identifies the SDK runtime.
+These attributes belong to the instance, not the experiment subject. Keep build
+and channel separate from role; `platform` identifies the SDK runtime and the SDK
+sends the detected operating system family as `os`.
 Read the package reference for token and sync semantics.
 
 On a single-user instance, `Identify(userId)` sets the default experiment subject;

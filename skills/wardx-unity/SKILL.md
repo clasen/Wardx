@@ -130,8 +130,9 @@ Use optional `WardxOptions.Attributes` or `wardx.SetAttributes(map)` with a flat
 `IReadOnlyDictionary<string, object>` of strings, finite numbers, or booleans.
 The client copies the map; the setter replaces it and an empty map clears it.
 These attributes belong to the instance, not the experiment subject. The wire
-`platform` is `unity`, not Android or iOS: provide OS/build/channel as attributes
-when the app needs those conditions, without creating a role per platform.
+`platform` is `unity`; the SDK sends the operating system itself as `os`
+(`android`, `ios`, …). Provide build/channel as attributes when the app needs
+those conditions, without creating a role per platform.
 `WardxBehaviour` has no attribute inspector fields; use manual options when the
 bootstrap must include them. Read the package reference for sync semantics.
 

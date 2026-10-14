@@ -41,11 +41,11 @@ to both .NET and Unity.
 https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime
 ```
 
-Release `#v0.9.4` keeps each sync request within `MaxEnvelopeItems` rows and `MaxEnvelopeBytes`, sending pending frames across several requests when needed. `#v0.9.3` built snapshots and split frames on the thread pool on threaded runtimes, and moved sync accounting into `WardxCore` (`RecordSyncBytes`, `RecordSyncResult`, `RecordSyncError`, `RecordProcessRss`, `RecordConfigVersion`); wire format and metrics are unchanged. `#v0.9.2` added linear frame splitting, background envelope encoding on threaded runtimes, and coalesced pending flushes. In
+Release `#v0.9.5` sends `client.os`, the detected operating system family, and needs server 0.11.0 or newer. `#v0.9.4` keeps each sync request within `MaxEnvelopeItems` rows and `MaxEnvelopeBytes`, sending pending frames across several requests when needed. `#v0.9.3` built snapshots and split frames on the thread pool on threaded runtimes, and moved sync accounting into `WardxCore` (`RecordSyncBytes`, `RecordSyncResult`, `RecordSyncError`, `RecordProcessRss`, `RecordConfigVersion`); wire format and metrics are unchanged. `#v0.9.2` added linear frame splitting, background envelope encoding on threaded runtimes, and coalesced pending flushes. In
 `Packages/manifest.json`:
 
 ```json
-"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.9.4"
+"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.9.5"
 ```
 
 **Unity (this checkout).** Package Manager → Add package from disk → `clients/csharp/Runtime/package.json`.
@@ -157,7 +157,7 @@ await wardx.ShutdownAsync();
 
 In Unity you can also add `WardxBehaviour` to a GameObject and set the same fields in the Inspector. `AppVersion` uses `Application.version` when the field is empty.
 
-Unity sends `sdk.name = wardx-unity` and `client.platform = unity`. A plain C# process sends `wardx-csharp` / `csharp`.
+Unity sends `sdk.name = wardx-unity` and `client.platform = unity`. A plain C# process sends `wardx-csharp` / `csharp`. Both also send `client.os`, the detected operating system family: `android`, `ios`, `macos`, `windows`, `linux`, `webgl`, or the lowercase runtime platform name otherwise.
 
 Each `WardxClient.Create(...)` SDK instance creates its own `instanceId` and `sessionId`. They are not process-wide singletons or subject/journey keys.
 
@@ -415,7 +415,7 @@ the stored value to that type; incompatible conversions can throw.
 
 SDK 0.9.0 requires `@wardx/server` 0.9.0 or newer. Upgrade the server first: older servers reject the new client fields even when attributes are empty.
 
-The server filters keys and experiments by role, then resolves conditional base values against client metadata and optional `WardxOptions.Attributes`. Attributes are a flat `IReadOnlyDictionary<string, object>` of application-defined names with string, finite numeric, or boolean values. For example, use `Attributes = new Dictionary<string, object> { ["os"] = "android", ["build"] = 119 }`. The existing `platform` field identifies the SDK runtime (`unity` or `csharp`), not the operating system.
+The server filters keys and experiments by role, then resolves conditional base values against client metadata and optional `WardxOptions.Attributes`. Attributes are a flat `IReadOnlyDictionary<string, object>` of application-defined names with string, finite numeric, or boolean values. For example, use `Attributes = new Dictionary<string, object> { ["build"] = 119 }`. The existing `platform` field identifies the SDK runtime (`unity` or `csharp`); rules can match the operating system through the `os` field the SDK sends.
 
 `wardx.SetAttributes(new Dictionary<string, object> { ["os"] = "android", ["build"] = 120 })` replaces the complete map with a copy; an empty dictionary clears it. The next successful sync resolves the new context; `await wardx.FlushAsync()` requests a sync now. Attributes belong to the SDK instance, not the identified experiment subject, and must contain only non-secret values.
 

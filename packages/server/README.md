@@ -396,11 +396,14 @@ Use MCP `get_aggregate_history` with:
   "role": "unity",
   "environment": "production",
   "appVersion": "2.4.1",
+  "os": "android",
   "names": ["level.complete", "session.duration", "shot.traffic.hids"]
 }
 ```
 
-The range and returned rows are bounded by config. Results include bucket
+`os` keeps each operating system family as its own historical series; rows from
+SDKs that do not report `os` never match an `os` filter. The range and returned
+rows are bounded by config. Results include bucket
 finalization, drop counts, and the newest compacted source watermark. Source
 retention never runs ahead of a durable downstream bucket and watermark.
 
@@ -453,7 +456,7 @@ removes it. Constraints appear in MCP metadata and never in SDK config replies.
 
 Upgrade the server to 0.9.0 before adopting SDK 0.9.0: older servers reject the new client fields. Older clients can sync with this server, but receive a snapshot on every successful sync because they do not return `configContext`.
 
-Role routing still determines which keys and experiments a client receives. Optional ordered rules choose the base value of each visible key using `role`, `appVersion`, `environment`, `platform`, or an application-defined `attributes.<name>` field. `platform` identifies the SDK runtime; use attributes for operating system, build, region, channel, or other application concepts.
+Role routing still determines which keys and experiments a client receives. Optional ordered rules choose the base value of each visible key using `role`, `appVersion`, `environment`, `platform`, `os`, or an application-defined `attributes.<name>` field. `platform` identifies the SDK runtime and `os` the operating system family the SDK detected (`android`, `ios`, `macos`, …); use attributes for build, region, channel, or other application concepts.
 
 For example, MCP `set_config_value` can receive:
 

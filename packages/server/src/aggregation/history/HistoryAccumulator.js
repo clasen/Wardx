@@ -6,8 +6,8 @@ import {
 import { utcBucketStart } from './HistoricalCompactor.js';
 
 function historyRows(envelope, frame, persistLogs) {
-  const { role, environment, appVersion } = envelope.client;
-  const common = { role, environment, appVersion };
+  const { role, environment, appVersion, os } = envelope.client;
+  const common = os === undefined ? { role, environment, appVersion } : { role, environment, appVersion, os };
   const rows = [];
   for (const [name, dimensions, value] of frame.metrics.counters) {
     rows.push({ kind: 'counter', name, dimensions, value, ...common });

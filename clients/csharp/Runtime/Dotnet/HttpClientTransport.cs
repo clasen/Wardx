@@ -3,6 +3,7 @@ using System;
 using System.Diagnostics;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -70,6 +71,14 @@ namespace Wardx
 
     static class DotnetBootstrap
     {
+        public static string OsName()
+        {
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return "windows";
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX)) return "macos";
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux)) return "linux";
+            return RuntimeInformation.OSDescription.Split(' ')[0].ToLowerInvariant();
+        }
+
         public static WardxClient Start(Settings settings)
         {
             var transport = new HttpClientTransport(settings.Endpoint, settings.ProjectKey, settings.HttpTimeoutMs);
@@ -85,7 +94,8 @@ namespace Wardx
                 {
                     Name = "wardx-csharp",
                     Version = SdkDefaults.Version,
-                    Platform = "csharp"
+                    Platform = "csharp",
+                    Os = OsName()
                 }
             );
 

@@ -122,6 +122,8 @@ namespace Wardx.Tests
                 await Within(client.FlushAsync());
                 Require(capture.Json.Contains("\"name\":\"wardx-unity\""), "Unity SDK identity");
                 Require(capture.Json.Contains("\"platform\":\"unity\""), "Unity platform identity");
+                Require(capture.Json.Contains("\"os\":\"macos\"") || capture.Json.Contains("\"os\":\"windows\"") ||
+                    capture.Json.Contains("\"os\":\"linux\""), "Unity editor operating system");
                 Require(attributes.LastThreadId != mainThread, "envelope encoding runs off the Unity main thread");
                 Require(attributes.MainThreadReads == 0, "snapshot splitting also runs off the Unity main thread");
                 Require(capture.Json.Contains("thread.probe"), "background snapshot is sent before flush completes");

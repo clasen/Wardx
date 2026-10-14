@@ -34,7 +34,7 @@ test('rules use strict scalar comparisons, AND conditions, first match, and base
   assert.equal(resolveConfigRules(values, rules, { environment: 'test', attributes: { tier: 2 } }).knob, 'first');
   assert.equal(resolveConfigRules(values, rules, { environment: 'production', attributes: { tier: 2 } }).knob, 'second');
   assert.equal(resolveConfigRules(values, rules, { environment: 'test', attributes: { tier: '2' } }).knob, 'base');
-  for (const field of ['role', 'appVersion', 'platform']) {
+  for (const field of ['role', 'appVersion', 'platform', 'os']) {
     assert.equal(resolveConfigRules(values, { knob: [rule(field, 'eq', 'x', false)] }, { [field]: 'x' }).knob, false);
   }
   const objectValues = { knob: { title: 'base', dismissible: true }, toString: 'ordinary key' };

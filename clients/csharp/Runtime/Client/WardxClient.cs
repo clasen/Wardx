@@ -118,9 +118,9 @@ namespace Wardx
         static SdkIdentity DefaultIdentity()
         {
 #if UNITY_5_3_OR_NEWER
-            return new SdkIdentity { Name = "wardx-unity", Version = SdkDefaults.Version, Platform = "unity" };
+            return new SdkIdentity { Name = "wardx-unity", Version = SdkDefaults.Version, Platform = "unity", Os = UnityBootstrap.OsName() };
 #else
-            return new SdkIdentity { Name = "wardx-csharp", Version = SdkDefaults.Version, Platform = "csharp" };
+            return new SdkIdentity { Name = "wardx-csharp", Version = SdkDefaults.Version, Platform = "csharp", Os = DotnetBootstrap.OsName() };
 #endif
         }
 
@@ -568,6 +568,7 @@ namespace Wardx
                     ["appVersion"] = _settings.AppVersion,
                     ["environment"] = _settings.Environment,
                     ["platform"] = _sdk.Platform,
+                    ["os"] = _sdk.Os,
                     ["attributes"] = attributes
                 },
                 ["configVersion"] = configVersion,

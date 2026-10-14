@@ -58,7 +58,7 @@ The core does not send HTTP. A runtime (this Node package, or a future SDK) must
 string, finite number, or boolean attributes. `setAttributes(map)` replaces it;
 `setAttributes({})` clears it. Disabled clients ignore the setter. Attribute
 names are literal, not paths. They travel in `client.attributes`, separately
-from `role`, `appVersion`, `environment`, and the SDK runtime `platform`.
+from `role`, `appVersion`, `environment`, the SDK runtime `platform`, and the detected `os`.
 
 Every successful sync response includes opaque `configContext`. Return the
 token from the last applied snapshot alongside `configVersion`; do not compute

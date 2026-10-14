@@ -466,6 +466,7 @@ export const TOOL_DEFS = [
         role: ROLE,
         environment: { type: 'string', minLength: 1 },
         appVersion: { type: 'string', minLength: 1 },
+        os: { type: 'string', minLength: 1, description: 'Operating system family reported by the SDK, for example android or ios. Rows from SDKs that do not report os never match.' },
         names: { type: 'array', items: { type: 'string', minLength: 1 } },
         category: CATEGORY
       },
@@ -648,6 +649,7 @@ export function executeTool(control, name, args = {}) {
         role: args.role,
         environment: args.environment,
         appVersion: args.appVersion,
+        os: args.os,
         names: args.names,
         category: args.category
       });

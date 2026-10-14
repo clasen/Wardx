@@ -1,4 +1,4 @@
-const CLIENT_FIELDS = new Set(['role', 'appVersion', 'environment', 'platform']);
+const CLIENT_FIELDS = new Set(['role', 'appVersion', 'environment', 'platform', 'os']);
 const OPERATORS = new Set(['eq', 'in', 'gt', 'gte', 'lt', 'lte']);
 const SCALAR = { type: ['string', 'number', 'boolean'] };
 
@@ -13,7 +13,7 @@ export const CONFIG_RULES_SCHEMA = {
         items: {
           type: 'object',
           properties: {
-            field: { type: 'string', description: 'role, appVersion, environment, platform, or attributes.<literal attribute name>.' },
+            field: { type: 'string', description: 'role, appVersion, environment, platform, os, or attributes.<literal attribute name>.' },
             op: { type: 'string', enum: [...OPERATORS] },
             value: { anyOf: [SCALAR, { type: 'array', minItems: 1, items: SCALAR }] }
           },

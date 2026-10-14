@@ -17,6 +17,9 @@ const pkg = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8')
 );
 
+const OS_FAMILIES = { darwin: 'macos', win32: 'windows' };
+const OS = OS_FAMILIES[process.platform] ?? process.platform;
+
 function copyAttributes(attributes) {
   if (!attributes || typeof attributes !== 'object' || Array.isArray(attributes)) {
     throw new Error('attributes must be an object');
@@ -186,6 +189,7 @@ export class WardxNode {
         appVersion: this.settings.appVersion,
         environment: this.settings.environment,
         platform: PLATFORM,
+        os: OS,
         attributes: this._attributes
       }
     };

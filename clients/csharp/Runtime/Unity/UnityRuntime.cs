@@ -214,13 +214,31 @@ namespace Wardx
                 {
                     Name = "wardx-unity",
                     Version = SdkDefaults.Version,
-                    Platform = "unity"
+                    Platform = "unity",
+                    Os = OsName()
                 }
             );
             var host = hostBehaviour as WardxHost;
             if (host == null) host = hostBehaviour.gameObject.AddComponent<WardxHost>();
             host.Bind(client, settings);
             return client;
+        }
+
+        public static string OsName()
+        {
+            switch (Application.platform)
+            {
+                case RuntimePlatform.Android: return "android";
+                case RuntimePlatform.IPhonePlayer: return "ios";
+                case RuntimePlatform.OSXPlayer:
+                case RuntimePlatform.OSXEditor: return "macos";
+                case RuntimePlatform.WindowsPlayer:
+                case RuntimePlatform.WindowsEditor: return "windows";
+                case RuntimePlatform.LinuxPlayer:
+                case RuntimePlatform.LinuxEditor: return "linux";
+                case RuntimePlatform.WebGLPlayer: return "webgl";
+                default: return Application.platform.ToString().ToLowerInvariant();
+            }
         }
     }
 
