@@ -4,9 +4,9 @@
 
 | API | Ingest transport | MCP HTTP | Signals and shutdown |
 | --- | --- | --- | --- |
-| `await createWardxHandler(config)` | Returns `handler(req, res)`; no ingest server or listener. | Starts when enabled. | No process signals/exit; caller retains and awaits `stop()`. |
-| `createIngestServer(config, { server? })` | Returns a default or injected Node server without listening. | Does not start it. | Caller listens and handles signals; `server.wardx.stop()` closes the owned transport and runtime. |
-| `await startServer(config, { server? })` | Creates/attaches and listens. | Starts when enabled. | Installs SIGINT/SIGTERM handlers that stop Wardx and exit; explicit `server.wardx.stop()` is also available. |
+| `await createWardxHandler(config)` | Returns `handler(req, res)`; no ingest server or listener. | Served by `handler` at `mcpHttp.path` when enabled. | No process signals/exit; caller retains and awaits `stop()`. |
+| `createIngestServer(config, { server? })` | Returns a default or injected Node server without listening. | Served on that server at `mcpHttp.path` when enabled. | Caller listens and handles signals; `server.wardx.stop()` closes the owned transport and runtime. |
+| `await startServer(config, { server? })` | Creates/attaches and listens. | Served on the same listener when enabled. | Installs SIGINT/SIGTERM handlers that stop Wardx and exit; explicit `server.wardx.stop()` is also available. |
 
 An injected `options.server` must have no existing `request` listener. For a
 shared or framework-owned HTTPS server, use the handler API instead of starting
@@ -15,13 +15,13 @@ an extra HTTP server and forwarding requests through `emit('request')`.
 ```js
 import { createWardxHandler } from '@wardx/server';
 
-const { handler, stop, mcpAddress, config } = await createWardxHandler(serverConfig);
+const { handler, stop, config } = await createWardxHandler(serverConfig);
 // When the framework expects a factory rather than a request listener:
 const siteApp = () => handler;
 ```
 
-The result is `{ handler, stop, mcpAddress, config }`; MCP address is null when
-disabled. Pass `handler` directly to a Node HTTP/HTTPS transport or mount through
+The result is `{ handler, stop, config }`; `handler` also serves MCP HTTP at
+`mcpHttp.path` when enabled. Pass `handler` directly to a Node HTTP/HTTPS transport or mount through
 the framework. Keep `stop` accessible from the application's shutdown hook;
 exporting only `siteApp` is not a complete lifecycle integration.
 
@@ -31,10 +31,10 @@ work, flushes persistence, and closes SQLite. `/health` and `/ready` remain
 available for diagnostics. The external transport belongs to the application:
 it must stop accepting connections and drain/close that transport before exit.
 Its request timeouts also bound how long incomplete requests can hold shutdown.
-MCP startup failures release the initialized Wardx resources.
+A missing or short MCP bearer token fails before Wardx opens SQLite.
 
 All APIs require the complete validated config. Handler mode does not listen on
-ingest `host`/`port`; MCP still uses its configured host/port. MCP reads the token
+`host`/`port`; MCP shares the application's transport. MCP reads the token
 from `mcpHttp.bearerTokenEnvironmentVariable` during initialization. There is no
 public `mcpToken` argument; provide it through the deployment environment without
 printing it. A temporary `process.env` override is global, not per-instance.
@@ -61,13 +61,13 @@ npm availability from this checkout or silently substitute the forwarding bridge
 | `src/control/ControlService.js` | MCP reads/mutations, experiment gates, journal publish. |
 | `src/control/MutationJournal.js` | CAS, audit-safe reversible entry, rollback-as-new-version. |
 | `src/control/PersistenceCoordinator.js` | Coalesced minute writes, restart scans, compaction, retention, metrics. |
-| `src/mcp/` | Public schemas, bounded reads, stdio and loopback Streamable HTTP resources/tools. |
+| `src/mcp/` | Public schemas, bounded reads, stdio and Streamable HTTP resources/tools. |
 
 ## Contracts
 
 - No admin HTTP route and no multi-process/shared-SQLite mode.
-- Optional MCP HTTP binds only to loopback and requires one environment-sourced
-  Bearer token plus path, Host/Origin, body, and concurrency bounds.
+- Optional MCP HTTP shares the ingest port and requires one environment-sourced
+  Bearer token plus path, body, and concurrency bounds.
 - Operational configuration passed as an object or loaded from JSON owns
   settings/credentials and bootstraps an empty DB. SQLite owns project state
   thereafter. Do not add sidecar or compatibility fallback.

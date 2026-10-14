@@ -128,22 +128,27 @@ test('readiness checks sync and per-project history capacity and draining', asyn
   assert.equal(health.snapshot().ok, false);
 });
 
-test('readiness requires an available MCP HTTP listener when configured', async (t) => {
-  const { health, server } = await start(t, {
+test('readiness requires MCP HTTP request capacity when configured', async (t) => {
+  const name = 'WARDX_READINESS_TEST_TOKEN';
+  const previous = process.env[name];
+  process.env[name] = 'wardx-readiness-test-token-at-least-32-bytes';
+  t.after(() => {
+    if (previous === undefined) delete process.env[name];
+    else process.env[name] = previous;
+  });
+  const { health, mcpHttp } = await start(t, {
     mcpHttp: {
       enabled: true,
-      host: '127.0.0.1',
-      port: 0,
       path: '/mcp',
       bearerTokenEnvironmentVariable: 'WARDX_READINESS_TEST_TOKEN',
       maxRequestBytes: 65536,
-      maxConcurrentRequests: 2,
-      allowedHosts: ['127.0.0.1'],
-      allowedOrigins: ['http://127.0.0.1']
+      maxConcurrentRequests: 2
     }
   });
+  assert.equal(health.snapshot().checks.mcp, true);
+  const held = [mcpHttp.requestGate.enter(), mcpHttp.requestGate.enter()];
   assert.equal(health.snapshot().checks.mcp, false);
-  server.wardx.mcpHttp = { isReady: () => true };
+  for (const leave of held) leave();
   assert.equal(health.snapshot().checks.mcp, true);
 });
 

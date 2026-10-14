@@ -1,7 +1,7 @@
 # Wardx architecture
 
 Wardx is one bounded process with two application surfaces. SDKs use HTTP sync;
-agents use MCP over stdio or an optional loopback-only Streamable HTTP listener.
+agents use MCP over stdio or an optional Streamable HTTP route on the ingest port.
 There is no admin REST API and no supported multi-replica topology. See
 `CLUSTER_ROADMAP.md` for work deliberately outside this contract.
 
@@ -17,7 +17,7 @@ SDKs -- POST /v1/sync --+
                     |- experiment ledger, totals, terminal decisions
                         ^
 Local agent -- MCP stdio --------------------+
-Remote agent -- SSH tunnel -- MCP HTTP ------+
+Remote agent -- MCP HTTP on ingest port -----+
 ```
 
 `@wardx/core` runs inside the SDK. Measurement calls perform no network or
@@ -86,12 +86,10 @@ off the SDK wire.
 
 MCP client identity is recorded only when available; neither transport invents
 a verified identity. MCP reads have configured concurrent and pending bounds.
-The optional HTTP transport adds a single Bearer credential, strict path, Host
-and optional Origin allowlists, a body-size bound, and a concurrent-request
-bound. It can bind only to loopback and is intended to be reached through SSH.
+The optional HTTP transport adds a single Bearer credential, a strict path, a
+body-size bound, and a concurrent-request bound. It shares the ingest port and transport, so it must be served over HTTPS.
 Config changes remain administrative operations protected by stdio/filesystem
-access or by that bearer-plus-tunnel boundary; Wardx does not add RBAC or
-approval workflows.
+access or by that bearer token; Wardx does not add RBAC or approval workflows.
 
 ## Experiments
 

@@ -69,14 +69,10 @@ const REQUIRED_HISTORY = [
 const REQUIRED_CONTROL = ['journalCapacity', 'maxConcurrentMcpReads', 'maxPendingMcpReads'];
 const REQUIRED_MCP_HTTP = [
   'enabled',
-  'host',
-  'port',
   'path',
   'bearerTokenEnvironmentVariable',
   'maxRequestBytes',
-  'maxConcurrentRequests',
-  'allowedHosts',
-  'allowedOrigins'
+  'maxConcurrentRequests'
 ];
 const REQUIRED_CAPACITY = ['maxConcurrentSyncHandlers'];
 const REQUIRED_READINESS = ['probeIntervalMs', 'probeTimeoutMs', 'maxPersistenceLagMs'];
@@ -117,20 +113,6 @@ function validateCredentials(credentials, projects) {
   }
 }
 
-function validateStringArray(values, label) {
-  if (!Array.isArray(values) || values.length === 0) {
-    throw new Error(`${label} must be a non-empty array`);
-  }
-  const seen = new Set();
-  for (const value of values) {
-    if (typeof value !== 'string' || value.length === 0) {
-      throw new Error(`${label} entries must be non-empty strings`);
-    }
-    if (seen.has(value)) throw new Error(`${label} duplicate entry: ${value}`);
-    seen.add(value);
-  }
-}
-
 function validateMcpHttp(config) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) {
     throw new Error('server config.mcpHttp must be an object');
@@ -143,12 +125,6 @@ function validateMcpHttp(config) {
     return;
   }
   validateClosedObject(config, REQUIRED_MCP_HTTP, 'server config.mcpHttp');
-  if (!['127.0.0.1', '::1'].includes(config.host)) {
-    throw new Error('server config.mcpHttp.host must be a loopback address');
-  }
-  if (!Number.isInteger(config.port) || config.port < 0 || config.port > 65535) {
-    throw new Error('server config.mcpHttp.port must be an integer 0-65535');
-  }
   if (
     typeof config.path !== 'string' ||
     !config.path.startsWith('/') ||
@@ -156,6 +132,9 @@ function validateMcpHttp(config) {
     config.path.includes('#')
   ) {
     throw new Error('server config.mcpHttp.path must be an absolute URL path without query or fragment');
+  }
+  if (['/health', '/ready', '/v1/sync'].includes(config.path)) {
+    throw new Error('server config.mcpHttp.path must not overlap an ingest route');
   }
   if (
     typeof config.bearerTokenEnvironmentVariable !== 'string' ||
@@ -168,32 +147,6 @@ function validateMcpHttp(config) {
     ['maxRequestBytes', 'maxConcurrentRequests'],
     'server config.mcpHttp'
   );
-  validateStringArray(config.allowedHosts, 'server config.mcpHttp.allowedHosts');
-  validateStringArray(config.allowedOrigins, 'server config.mcpHttp.allowedOrigins');
-  const loopbackHosts = new Set(['127.0.0.1', 'localhost', '::1']);
-  for (const host of config.allowedHosts) {
-    if (!loopbackHosts.has(host)) {
-      throw new Error('server config.mcpHttp.allowedHosts entries must be loopback hostnames');
-    }
-  }
-  for (const origin of config.allowedOrigins) {
-    let parsed;
-    try {
-      parsed = new URL(origin);
-    } catch {
-      throw new Error('server config.mcpHttp.allowedOrigins entries must be HTTP loopback origins');
-    }
-    const hostname = parsed.hostname.startsWith('[') && parsed.hostname.endsWith(']')
-      ? parsed.hostname.slice(1, -1)
-      : parsed.hostname;
-    if (
-      parsed.protocol !== 'http:' ||
-      !loopbackHosts.has(hostname.toLowerCase()) ||
-      parsed.origin !== origin
-    ) {
-      throw new Error('server config.mcpHttp.allowedOrigins entries must be HTTP loopback origins');
-    }
-  }
 }
 
 function validateProjectSnapshot(snapshot, label) {

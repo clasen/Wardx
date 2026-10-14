@@ -4,7 +4,6 @@ import { test } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createWardxHandler, createIngestServer, startServer, listen } from '../src/index.js';
-import { SqliteStateStore } from '../src/storage/SqliteStateStore.js';
 import { sampleEnvelope, testServerConfig } from './helpers.js';
 
 function deferred() {
@@ -31,7 +30,6 @@ test('handler uses an external transport without ingest listen or process signal
   t.after(() => runtime.stop());
   external.on('request', runtime.handler);
   assert.equal(runtime.config, config);
-  assert.equal(runtime.mcpAddress, null);
   assert.deepEqual(['SIGINT', 'SIGTERM'].map((signal) => process.listeners(signal)), signals);
   const base = `http://127.0.0.1:${address.port}`;
   assert.equal((await fetch(`${base}/ready`)).status, 200);
@@ -90,12 +88,11 @@ test('handler stop drains an accepted streaming request and persists it before r
   assert.equal(buckets.flatMap((bucket) => bucket.rows).find((row) => row.name === 'match.completed').value, 4);
 });
 
-function mcpConfig(port = 0) {
+function mcpConfig() {
   return {
-    enabled: true, host: '127.0.0.1', port, path: '/mcp',
+    enabled: true, path: '/mcp',
     bearerTokenEnvironmentVariable: 'WARDX_HANDLER_TEST_TOKEN',
-    maxRequestBytes: 4096, maxConcurrentRequests: 4,
-    allowedHosts: ['127.0.0.1'], allowedOrigins: ['http://127.0.0.1']
+    maxRequestBytes: 4096, maxConcurrentRequests: 4
   };
 }
 
@@ -111,11 +108,14 @@ function setToken(t) {
   return token;
 }
 
-test('handler starts authenticated MCP and stops its listener idempotently', async (t) => {
+test('handler serves authenticated MCP on the external transport and stops idempotently', async (t) => {
   const token = setToken(t);
   const runtime = await createWardxHandler(testServerConfig({ mcpHttp: mcpConfig() }));
   t.after(() => runtime.stop());
-  const url = new URL(`http://127.0.0.1:${runtime.mcpAddress.port}/mcp`);
+  const external = http.createServer(runtime.handler);
+  const address = await listen(external, 0, '127.0.0.1');
+  t.after(() => close(external));
+  const url = new URL(`http://127.0.0.1:${address.port}/mcp`);
   assert.equal((await fetch(url, { method: 'POST', body: '{}' })).status, 401);
   const client = new Client({ name: 'handler-test', version: '1.0.0' });
   t.after(() => client.close());
@@ -128,26 +128,20 @@ test('handler starts authenticated MCP and stops its listener idempotently', asy
   const stopping = runtime.stop();
   assert.equal(runtime.stop(), stopping);
   await stopping;
-  await assert.rejects(fetch(url));
+  assert.equal((await fetch(url, { method: 'POST', body: '{}' })).status, 503);
 });
 
-test('handler releases state when MCP cannot listen and can be initialized again', async (t) => {
-  setToken(t);
-  const occupied = http.createServer();
-  const address = await listen(occupied, 0, '127.0.0.1');
-  t.after(() => close(occupied));
-  const config = testServerConfig({ mcpHttp: mcpConfig(address.port) });
-  const closedStores = [];
-  const originalClose = SqliteStateStore.prototype.close;
-  t.mock.method(SqliteStateStore.prototype, 'close', function (...args) {
-    originalClose.apply(this, args);
-    closedStores.push(this.database.open);
+test('handler rejects a missing MCP token before opening state and can be initialized again', async (t) => {
+  const config = testServerConfig({ mcpHttp: mcpConfig() });
+  const name = config.mcpHttp.bearerTokenEnvironmentVariable;
+  const previous = process.env[name];
+  delete process.env[name];
+  t.after(() => {
+    if (previous !== undefined) process.env[name] = previous;
   });
-  await assert.rejects(createWardxHandler(config), { code: 'EADDRINUSE' });
-  assert.deepEqual(closedStores, [false]);
-  await assert.rejects(startServer({ ...config, port: address.port }), { code: 'EADDRINUSE' });
-  assert.deepEqual(closedStores, [false, false]);
-  config.mcpHttp.port = 0;
+  await assert.rejects(createWardxHandler(config), /must contain at least 32 bytes/);
+  await assert.rejects(startServer(config), /must contain at least 32 bytes/);
+  setToken(t);
   const runtime = await createWardxHandler(config);
   await runtime.stop();
 });

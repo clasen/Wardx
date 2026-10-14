@@ -78,7 +78,7 @@ importers:
         specifier: 0.9.4
         version: link:../core
       '@wardx/server':
-        specifier: 0.9.3
+        specifier: 0.10.0
         version: link:../server
       wardx:
         specifier: 0.9.4

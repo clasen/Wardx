@@ -3,38 +3,31 @@ import { request } from 'node:http';
 import { test } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { createConfiguredMcpHttpServer, createMcpHttpServer } from '../src/mcp/http.js';
 import { createIngestServer, listen } from '../src/server.js';
 import { testServerConfig } from './helpers.js';
 
 const TOKEN = 'wardx-test-token-with-at-least-32-bytes';
+process.env.WARDX_TEST_MCP_TOKEN = TOKEN;
 
 function mcpHttpConfig(overrides = {}) {
   return {
     enabled: true,
-    host: '127.0.0.1',
-    port: 0,
     path: '/mcp',
     bearerTokenEnvironmentVariable: 'WARDX_TEST_MCP_TOKEN',
     maxRequestBytes: 1024,
     maxConcurrentRequests: 4,
-    allowedHosts: ['127.0.0.1', 'localhost'],
-    allowedOrigins: ['http://127.0.0.1'],
     ...overrides
   };
 }
 
 async function withMcpHttp(fn, overrides = {}) {
-  const wardx = createIngestServer(testServerConfig());
-  const config = mcpHttpConfig(overrides);
-  const server = createMcpHttpServer(wardx.wardx.control, config, TOKEN);
-  const address = await listen(server, config.port, config.host);
+  const server = createIngestServer(testServerConfig({ mcpHttp: mcpHttpConfig(overrides) }));
+  const address = await listen(server, 0, '127.0.0.1');
   const url = new URL(`http://127.0.0.1:${address.port}/mcp`);
   try {
-    return await fn({ server, url });
+    return await fn({ mcp: server.wardx.mcpHttp, url });
   } finally {
-    await server.wardxMcp.stop();
-    await wardx.wardx.stop();
+    await server.wardx.stop();
   }
 }
 
@@ -88,36 +81,67 @@ test('Streamable HTTP authenticates one bearer credential and exposes Wardx tool
   });
 });
 
-test('Streamable HTTP rejects unauthorized, hostile host/origin, and oversized requests before MCP', async () => {
+test('Streamable HTTP rejects unauthorized and oversized requests before MCP', async () => {
   await withMcpHttp(async ({ url }) => {
     const unauthorized = await post(url, { token: 'wrong', body: '{' });
     assert.equal(unauthorized.status, 401);
-
-    const hostileHost = await post(url, { host: 'attacker.example' });
-    assert.equal(hostileHost.status, 403);
-
-    const hostileOrigin = await post(url, { origin: 'https://attacker.example' });
-    assert.equal(hostileOrigin.status, 403);
 
     const oversized = await post(url, { body: JSON.stringify({ value: 'x'.repeat(2048) }) });
     assert.equal(oversized.status, 413);
   });
 });
 
-test('configured Streamable HTTP requires its bearer secret before listening', async () => {
-  const wardx = createIngestServer(testServerConfig());
-  try {
-    assert.throws(
-      () => createConfiguredMcpHttpServer(wardx.wardx.control, mcpHttpConfig(), {}),
-      /WARDX_TEST_MCP_TOKEN must contain at least 32 bytes/
-    );
-  } finally {
-    await wardx.wardx.stop();
-  }
+test('Streamable HTTP authorizes by bearer token regardless of Host or Origin', async () => {
+  const initialize = JSON.stringify({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'initialize',
+    params: {
+      protocolVersion: '2025-03-26',
+      capabilities: {},
+      clientInfo: { name: 'wardx-proxy-test', version: '1.0.0' }
+    }
+  });
+  await withMcpHttp(async ({ url }) => {
+    const authorized = await post(url, {
+      host: 'wardx.example',
+      origin: 'https://wardx.example',
+      body: initialize
+    });
+    assert.equal(authorized.status, 200);
+
+    const unauthorized = await post(url, {
+      host: 'wardx.example',
+      origin: 'https://wardx.example',
+      token: 'wrong',
+      body: initialize
+    });
+    assert.equal(unauthorized.status, 401);
+  });
+});
+
+test('Streamable HTTP shares the ingest port without changing ingest routes', async () => {
+  await withMcpHttp(async ({ url }) => {
+    const health = await fetch(new URL('/health', url));
+    assert.equal(health.status, 200);
+    assert.deepEqual(await health.json(), { ok: true });
+
+    const unauthorized = await post(url, { token: 'wrong' });
+    assert.equal(unauthorized.status, 401);
+  });
+});
+
+test('configured Streamable HTTP requires its bearer secret before opening state', () => {
+  assert.throws(
+    () => createIngestServer(testServerConfig({
+      mcpHttp: mcpHttpConfig({ bearerTokenEnvironmentVariable: 'WARDX_TEST_MISSING_MCP_TOKEN' })
+    })),
+    /WARDX_TEST_MISSING_MCP_TOKEN must contain at least 32 bytes/
+  );
 });
 
 test('Streamable HTTP rejects work above its concurrent request bound', async () => {
-  await withMcpHttp(async ({ server, url }) => {
+  await withMcpHttp(async ({ mcp, url }) => {
     const held = request(url, {
       method: 'POST',
       headers: {
@@ -128,13 +152,13 @@ test('Streamable HTTP rejects work above its concurrent request bound', async ()
     held.on('error', () => {});
     held.write('{');
     try {
-      await waitFor(() => server.wardxMcp.requestGate.snapshot().active === 1);
+      await waitFor(() => mcp.requestGate.snapshot().active === 1);
       const overloaded = await post(url);
       assert.equal(overloaded.status, 503);
-      assert.equal(server.wardxMcp.requestGate.snapshot().rejected, 1);
+      assert.equal(mcp.requestGate.snapshot().rejected, 1);
     } finally {
       held.destroy();
-      await waitFor(() => server.wardxMcp.requestGate.snapshot().active === 0);
+      await waitFor(() => mcp.requestGate.snapshot().active === 0);
     }
   }, { maxConcurrentRequests: 1 });
 });

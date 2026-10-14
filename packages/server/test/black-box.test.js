@@ -61,14 +61,10 @@ function serverConfig() {
     },
     mcpHttp: {
       enabled: true,
-      host: '127.0.0.1',
-      port: 0,
       path: '/mcp',
       bearerTokenEnvironmentVariable: 'WARDX_BLACK_BOX_MCP_TOKEN',
       maxRequestBytes: 65536,
-      maxConcurrentRequests: 8,
-      allowedHosts: ['127.0.0.1', 'localhost'],
-      allowedOrigins: ['http://127.0.0.1']
+      maxConcurrentRequests: 8
     },
     projects: {
       demo: {
@@ -115,22 +111,6 @@ function waitForPort(stderr) {
     stderr.on('data', (chunk) => {
       output += chunk.toString('utf8');
       const match = output.match(/wardx ingest listening on (\d+)/);
-      if (!match) return;
-      clearTimeout(timeout);
-      resolve(Number(match[1]));
-    });
-    stderr.on('error', reject);
-  });
-}
-
-function waitForMcpPort(stderr) {
-  return new Promise((resolve, reject) => {
-    let output = '';
-    const timeout = setTimeout(() => reject(new Error(`server did not report its MCP HTTP port: ${output}`)), 5000);
-    timeout.unref();
-    stderr.on('data', (chunk) => {
-      output += chunk.toString('utf8');
-      const match = output.match(/wardx MCP HTTP listening on (\d+)/);
       if (!match) return;
       clearTimeout(timeout);
       resolve(Number(match[1]));
@@ -209,16 +189,15 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
     serverStderr += chunk.toString('utf8');
   });
   const portPromise = waitForPort(transport.stderr);
-  const mcpPortPromise = waitForMcpPort(transport.stderr);
   const client = new Client({ name: 'wardx-black-box-test', version: '1.0.0' });
   const httpClient = new Client({ name: 'wardx-black-box-http-test', version: '1.0.0' });
   let frontend;
   let backend;
   try {
-    const [, port, mcpPort] = await Promise.all([client.connect(transport), portPromise, mcpPortPromise]);
+    const [, port] = await Promise.all([client.connect(transport), portPromise]);
     const endpoint = `http://127.0.0.1:${port}`;
     await httpClient.connect(new StreamableHTTPClientTransport(
-      new URL(`http://127.0.0.1:${mcpPort}/mcp`),
+      new URL(`${endpoint}/mcp`),
       { requestInit: { headers: { authorization: `Bearer ${MCP_HTTP_TOKEN}` } } }
     ));
 

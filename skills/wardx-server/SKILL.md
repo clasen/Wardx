@@ -6,8 +6,8 @@ description: Integrate, operate, or modify @wardx/server, including HTTP/HTTPS h
 # Wardx server
 
 Wardx has two application surfaces in one bounded process: clients use
-`POST /v1/sync`; agents use MCP over stdio or optional loopback-only Streamable
-HTTP. There is no admin REST API or supported multi-replica mode.
+`POST /v1/sync`; agents use MCP over stdio or optional Streamable HTTP on the
+ingest port. There is no admin REST API or supported multi-replica mode.
 
 Read only the reference relevant to the task:
 
@@ -43,10 +43,10 @@ Signal categories are optional exact open names such as `business`,
 `performance`, `reliability`, or `security`. They live in the catalog and are
 not metric dimensions. Use the overview's `categories` list before filtering.
 
-For remote MCP, keep `mcpHttp.host` on loopback, supply the named bearer token
-through the environment, and reach it through an SSH local-forward. Host,
-optional Origin, request size, and concurrency are strict configured bounds.
-Never expose the listener directly or store its token in JSON.
+For remote MCP, serve the ingest port over HTTPS and supply the named bearer
+token through the environment. Request size and concurrency are strict
+configured bounds. Never serve MCP over plain HTTP to a
+remote client or store its token in the server JSON.
 
 ## Mutations
 
@@ -146,9 +146,10 @@ hardware, settings, duration, commit, and local-SSD details.
 - empty history: check tier/range/finalization and current versus historical
   tool choice.
 - no tools: for local operation, configure the MCP client to spawn
-  `wardx-server <config.json>` on stdio. For remote operation, check the SSH
-  tunnel and configure Streamable HTTP at its local endpoint; do not substitute
-  an HTTP admin call.
+  `wardx-server <config.json>` on stdio. For remote operation, check that
+  `mcpHttp.enabled` is true, the client URL uses `mcpHttp.path` on the HTTPS
+  ingest origin, and it sends the bearer token; do not substitute an HTTP admin
+  call.
 
 ## Persistent retention
 

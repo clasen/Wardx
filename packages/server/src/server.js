@@ -15,7 +15,7 @@ import { SqliteStateStore } from './storage/SqliteStateStore.js';
 import { RetentionLedger } from './storage/RetentionLedger.js';
 import { ExperimentLedger } from './storage/ExperimentLedger.js';
 import { normalizeCatalog } from './control/catalog.js';
-import { createConfiguredMcpHttpServer } from './mcp/http.js';
+import { createMcpHttpHandler, readMcpBearerToken } from './mcp/http.js';
 import { OperationalHealth } from './OperationalHealth.js';
 
 function createSink(config) {
@@ -119,6 +119,7 @@ function hydrateHistoricalState(config, stateStore, registry) {
 
 function createIngestRuntime(configInput) {
   const config = validateServerConfig(configInput);
+  const mcpToken = config.mcpHttp.enabled ? readMcpBearerToken(config.mcpHttp) : null;
   const stateStore = createStateStore(config);
   let registry;
   try {
@@ -137,6 +138,7 @@ function createIngestRuntime(configInput) {
   const retentionLedger = new RetentionLedger({ store: stateStore, settings: config.retention });
   const sink = createSink(config);
   const control = new ControlService({ config, registry, persistence, diagnostics, stateStore, experimentLedger, retentionLedger });
+  const mcpHttp = mcpToken ? createMcpHttpHandler(control, config.mcpHttp, mcpToken) : null;
   const handleSync = createSyncHandler({
     config,
     registry,
@@ -176,6 +178,10 @@ function createIngestRuntime(configInput) {
         json(res, 503, { ok: false, error: 'server shutting down' });
         return;
       }
+      if (mcpHttp && url.pathname === config.mcpHttp.path) {
+        await mcpHttp.handle(req, res);
+        return;
+      }
       if (url.pathname === '/v1/sync' && req.method === 'POST') {
         const leave = syncGate.enter();
         if (!leave) {
@@ -204,6 +210,7 @@ function createIngestRuntime(configInput) {
     if (stopPromise) return stopPromise;
     health.stop();
     stopPromise = (async () => {
+      if (mcpHttp) await mcpHttp.stop();
       await Promise.all(activeRequests);
       await persistence.close();
       if (typeof sink.close === 'function') await sink.close();
@@ -224,6 +231,7 @@ function createIngestRuntime(configInput) {
     diagnostics,
     syncGate,
     health,
+    mcpHttp,
     stop
   };
   return { handler, wardx };
@@ -253,8 +261,7 @@ export function createIngestServer(configInput, options = {}) {
 
 export async function createWardxHandler(config) {
   const { handler, wardx } = createIngestRuntime(config);
-  const mcpAddress = await startMcpHttp(wardx);
-  return { handler, stop: wardx.stop, mcpAddress, config: wardx.config };
+  return { handler, stop: wardx.stop, config: wardx.config };
 }
 
 export function listen(server, port, host) {
@@ -268,35 +275,6 @@ export function listen(server, port, host) {
   });
 }
 
-async function startMcpHttp(wardx) {
-  let mcpAddress = null;
-  if (wardx.config.mcpHttp.enabled) {
-    let mcpServer;
-    try {
-      mcpServer = createConfiguredMcpHttpServer(wardx.control, wardx.config.mcpHttp);
-      mcpAddress = await listen(
-        mcpServer,
-        wardx.config.mcpHttp.port,
-        wardx.config.mcpHttp.host
-      );
-    } catch (error) {
-      await wardx.stop();
-      throw error;
-    }
-    const stopIngest = wardx.stop;
-    let stopPromise = null;
-    wardx.mcpHttp = mcpServer.wardxMcp;
-    wardx.stop = () => {
-      if (!stopPromise) {
-        wardx.health.stop();
-        stopPromise = mcpServer.wardxMcp.stop().finally(stopIngest);
-      }
-      return stopPromise;
-    };
-  }
-  return mcpAddress;
-}
-
 export async function startServer(config, options = {}) {
   const server = createIngestServer(config, options);
   let address;
@@ -306,7 +284,6 @@ export async function startServer(config, options = {}) {
     await server.wardx.stop();
     throw error;
   }
-  const mcpAddress = await startMcpHttp(server.wardx);
   const stop = async (code) => {
     try {
       await server.wardx.stop();
@@ -318,7 +295,7 @@ export async function startServer(config, options = {}) {
   };
   process.once('SIGINT', () => stop(130));
   process.once('SIGTERM', () => stop(143));
-  return { server, address, mcpAddress, config };
+  return { server, address, config };
 }
 
 export { loadServerConfig, validateServerConfig, ControlService };

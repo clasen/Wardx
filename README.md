@@ -11,7 +11,7 @@ The same channel that carries the data up carries the configuration back down, s
                   arisa.sh / Codex / Claude
                              │
              MCP stdio or Streamable HTTP
-                  over an SSH tunnel
+                 on the ingest port
                     tools + wardx://project/{name}
                              ▼
 ┌─────────────────────────────────────────────────────┐
@@ -45,8 +45,8 @@ The same channel that carries the data up carries the configuration back down, s
 ```
 
 HTTP sync is the client path. Control, analysis, and visualization use MCP on
-the same process, either over stdio or an optional loopback-only Streamable HTTP
-listener reached through an SSH tunnel. There is no admin REST API. The project
+the same process, either over stdio or an optional bearer-authenticated
+Streamable HTTP route on the ingest port. There is no admin REST API. The project
 key authenticates a project; client-selected roles only route and separate data
 inside it and are not an authorization boundary.
 
@@ -65,6 +65,20 @@ and [C# / Unity pattern](clients/csharp/README.md#recommended-keep-handles-as-fi
 | [`@wardx/core`](packages/core/README.md) | In-process engine. Use `wardx` unless you write a custom runtime. |
 
 Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Protocol: [docs/PROTOCOL.md](docs/PROTOCOL.md).
+
+## Connect an agent
+
+With `mcpHttp.enabled`, the server answers MCP at `/mcp` on the same HTTPS
+origin that receives `/v1/sync`. Point Codex at it with the bearer token:
+
+```toml
+[mcp_servers.wardx]
+url = "https://wardx.example.com/mcp"
+http_headers = { Authorization = "Bearer <token>" }
+```
+
+Server setup, Claude Code, and local stdio:
+[Connect an agent over MCP](packages/server/README.md#connect-an-agent-over-mcp).
 
 ## Verification
 

@@ -7,8 +7,8 @@ Wardx has two application surfaces:
 
 - SDKs call `POST /v1/sync` to upload bounded telemetry frames and download
   role-filtered config.
-- Agents use MCP over stdio, or optional loopback-only Streamable HTTP, to read
-  current/history aggregates and safely mutate config or experiments.
+- Agents use MCP over stdio, or optional Streamable HTTP on the ingest port, to
+  read current/history aggregates and safely mutate config or experiments.
 
 There is no admin REST API and no supported multi-replica deployment in this
 release. Streamable HTTP exposes the same MCP tools, not a second control API.
@@ -32,7 +32,7 @@ and credentials.
 import { startServer } from '@wardx/server';
 import config from './wardx.config.js';
 
-const { server, address, mcpAddress } = await startServer(config);
+const { server, address } = await startServer(config);
 
 // Call during application shutdown.
 async function stopWardx() {
@@ -40,43 +40,42 @@ async function stopWardx() {
 }
 ```
 
-The result is `{ server, address, mcpAddress, config }`. `address` is the bound
-ingest address; `mcpAddress` is null unless MCP HTTP is enabled. `startServer`
-opens the listeners and installs `SIGINT`/`SIGTERM` handlers that drain Wardx
-and exit the process.
+The result is `{ server, address, config }`. `address` is the bound address,
+which also serves MCP HTTP when it is enabled. `startServer` opens the listener
+and installs `SIGINT`/`SIGTERM` handlers that drain Wardx and exit the process.
 
 If your application owns signal handling, use `createIngestServer(config)` and
 `await listen(server, config.port, config.host)` instead, then call
 `await server.wardx.stop()` from its shutdown handler. `createIngestServer`
-returns the server directly; it does not listen, install signal handlers, or
-start MCP HTTP.
+returns the server directly; it does not listen or install signal handlers.
 
 ### Handler for an application-owned HTTP or HTTPS server
 
 Use `createWardxHandler` when your framework owns the transport and process
-lifecycle. It initializes Wardx and starts the configured MCP HTTP listener,
-but does not create or listen on an ingest server, install signal handlers, or
-exit the process. The MCP bearer token uses the same environment variable as
+lifecycle. It initializes Wardx, including the configured MCP HTTP route, but
+does not create or listen on a server, install signal handlers, or exit the
+process. The MCP bearer token uses the same environment variable as
 `startServer`.
 
 ```js
 import { createWardxHandler } from '@wardx/server';
 
 export async function createWardxSite({ credentials, server }) {
-  const { handler, stop, mcpAddress } = await createWardxHandler({
+  const { handler, stop } = await createWardxHandler({
     ...server,
     credentials
   });
-  return { siteApp: () => handler, stop, mcpAddress };
+  return { siteApp: () => handler, stop };
 }
 ```
 
-The result is `{ handler, stop, mcpAddress, config }`. `handler(req, res)` is a
+The result is `{ handler, stop, config }`. `handler(req, res)` is a
 Node request listener; pass it directly to `https.createServer(tls, handler)`
 or mount it through your framework. The factory `siteApp: () => handler` above
 is only needed when the framework expects a handler factory. The complete
-server configuration is still required, although ingest `host` and `port` do
-not open a listener in this mode. `mcpAddress` is null when MCP HTTP is disabled.
+server configuration is still required, although `host` and `port` do not open
+a listener in this mode. The handler also serves MCP HTTP at `mcpHttp.path`
+when it is enabled.
 
 Retain `stop` in your application's shutdown integration. Calling `stop()` marks
 readiness as unavailable, rejects new application requests with 503, closes MCP,
@@ -85,8 +84,8 @@ calls return the same promise. `/health` and `/ready` remain diagnostic endpoint
 Wardx does not close your external transport: the application must also stop
 accepting connections and drain/close its HTTP or HTTPS server before exiting.
 Configure request timeouts on that transport so incomplete requests cannot hold
-shutdown indefinitely. If MCP startup fails, Wardx releases its initialized
-resources before rejecting.
+shutdown indefinitely. A missing or short MCP bearer token fails startup before
+Wardx opens SQLite.
 
 ### HTTPS and custom transport
 
@@ -115,7 +114,7 @@ npx wardx-server /absolute/path/to/wardx-server.json
 ```
 
 The CLI also starts MCP over stdio when stdin is not a TTY. Programmatic
-`startServer` does not start stdio MCP; it starts the optional HTTP MCP listener
+`startServer` does not start stdio MCP; it serves MCP HTTP on the ingest port
 when `mcpHttp.enabled` is true.
 
 Repository commands:
@@ -156,7 +155,7 @@ Important groups:
 | `retention` | Persistent user capacity per project and maximum cohort query range. |
 | `history` | Late-data policy, hour/day retention, app-version and query bounds. |
 | `control` | Journal capacity and MCP read concurrency/pending bounds. |
-| `mcpHttp` | Optional loopback Streamable HTTP listener, bearer source, boundary allowlists, and request bounds. |
+| `mcpHttp` | Optional Streamable HTTP route on the ingest port, bearer source, and request bounds. |
 | `capacity` | Maximum concurrent HTTP sync handlers. |
 | `readiness` | SQLite probe interval/timeout and maximum persistence lag. |
 | `experiments` | Maximum active assignment-ledger rows. |
@@ -247,71 +246,78 @@ ingest frames or create additional series. `get_project_overview`,
 overview also returns the project's sorted `categories` list. When `names` and
 `category` are both supplied, Wardx returns their intersection.
 
-## Remote MCP through an SSH tunnel
+## Connect an agent over MCP
 
-Keep the MCP listener private on the Wardx host. Enable it with an explicit
-loopback-only configuration; startup fails if the named environment variable is
-missing or contains fewer than 32 bytes:
+Agents connect in one of two ways:
+
+- **Remote, over HTTPS.** Wardx serves MCP at `mcpHttp.path` on the same port
+  and transport as `POST /v1/sync`, for example
+  `https://wardx.example.com/mcp`. No separate port, proxy route, or tunnel is
+  needed.
+- **Local, over stdio.** The agent spawns the `wardx-server` CLI itself.
+
+### Remote: 1. Enable MCP HTTP on the server
+
+Generate a token with `openssl rand -hex 32` and set it as `WARDX_MCP_TOKEN` in
+the Wardx service environment. Startup fails if the variable is missing or
+shorter than 32 bytes. Then enable MCP in the server configuration:
 
 ```json
 {
   "mcpHttp": {
     "enabled": true,
-    "host": "127.0.0.1",
-    "port": 8788,
     "path": "/mcp",
     "bearerTokenEnvironmentVariable": "WARDX_MCP_TOKEN",
     "maxRequestBytes": 65536,
-    "maxConcurrentRequests": 8,
-    "allowedHosts": ["127.0.0.1", "localhost"],
-    "allowedOrigins": [
-      "http://127.0.0.1:8788",
-      "http://localhost:8788"
-    ]
+    "maxConcurrentRequests": 8
   }
 }
 ```
 
-Inject the same high-entropy `WARDX_MCP_TOKEN` into the Wardx service and Codex
-Desktop; do not write it into either JSON or the tunnel definition. From the Mac,
-the equivalent manual tunnel is:
+`path` cannot be `/health`, `/ready`, or `/v1/sync`.
 
-```bash
-ssh -NT \
-  -L 127.0.0.1:8788:127.0.0.1:8788 \
-  -o ExitOnForwardFailure=yes \
-  -o ServerAliveInterval=30 \
-  -o ServerAliveCountMax=3 \
-  user@wardx-server.example
-```
+Serve MCP only over HTTPS: the bearer token travels with every request. The
+token grants full administrative control over Remote Config and experiments, so
+keep it secret. To rotate it, change `WARDX_MCP_TOKEN` and restart Wardx.
 
-The native macOS lifecycle hook is the repository's
-[`ops/macos/com.wardx.mcp-tunnel.plist.example`](../../ops/macos/com.wardx.mcp-tunnel.plist.example).
-Copy it to `~/Library/LaunchAgents/com.wardx.mcp-tunnel.plist`, replace the SSH
-target, validate it with `plutil -lint`, and load it with:
+### Remote: 2. Connect the agent
 
-```bash
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.wardx.mcp-tunnel.plist
-```
+Paste the token value in place of `<token>`. The client configuration then
+holds the secret, so keep it out of version control.
 
-The SSH key must already work non-interactively and the host key must already be
-trusted. `launchd` starts the tunnel at login and restarts it if it exits. This is
-independent of Codex, so an MCP session cannot race tunnel startup or be expected
-to repair its own connection.
-
-Configure Codex Desktop to use the local end of the tunnel:
+Codex (`~/.codex/config.toml`):
 
 ```toml
 [mcp_servers.wardx]
-url = "http://127.0.0.1:8788/mcp"
-bearer_token_env_var = "WARDX_MCP_TOKEN"
-startup_timeout_sec = 10
-tool_timeout_sec = 60
+url = "https://wardx.example.com/mcp"
+http_headers = { Authorization = "Bearer <token>" }
 ```
 
-Requests are accepted only after the path, Host, optional Origin, Bearer token,
-body-size bound, and concurrent-request bound pass. The server never needs a
-public MCP port; the only public boundary is SSH.
+Claude Code:
+
+```bash
+claude mcp add --transport http --scope user wardx https://wardx.example.com/mcp --header "Authorization: Bearer <token>"
+```
+
+Requests are accepted only after the Bearer token, body-size bound, and
+concurrent-request bound pass.
+
+### Local: stdio
+
+The agent starts the whole server, including the ingest listener and SQLite, so
+run only one process per configuration. Codex:
+
+```toml
+[mcp_servers.wardx]
+command = "npx"
+args = ["wardx-server", "/absolute/path/to/wardx-server.json"]
+```
+
+Claude Code:
+
+```bash
+claude mcp add --scope user wardx -- npx wardx-server /absolute/path/to/wardx-server.json
+```
 
 ## HTTP sync
 
@@ -588,8 +594,8 @@ bounded SQLite busy timeout and restores the normal busy-timeout setting.
 The persistence check fails after a flush error until a successful drain, or
 when dirty state reaches `maxPersistenceLagMs`. Capacity checks cover concurrent
 sync handlers and each project's pending history limits. MCP readiness covers
-the configured HTTP listener and its request capacity; it does not exercise an
-external SSH tunnel or authenticate a remote MCP client. Shutdown fails readiness
+the configured HTTP route's request capacity; it does not authenticate a remote
+MCP client. Shutdown fails readiness
 before draining. SQLite success follows the configured durability mode and does
 not establish power-loss durability or guarantee space for future writes.
 
@@ -691,7 +697,7 @@ Do not edit the verified backup itself.
 | `createWardxHandler(config)` | Create a request handler and explicit lifecycle for an application-owned transport. |
 | `createIngestServer(config, { server? })` | Create Wardx on its HTTP server or a supplied Node server. |
 | `listen(server, port, host)` | Listen and return the bound address. |
-| `startServer(config, { server? })` | Create, listen, optionally start MCP HTTP, and install signal shutdown. |
+| `startServer(config, { server? })` | Create, listen, serve MCP HTTP on the same listener when enabled, and install signal shutdown. |
 | `loadServerConfig(path)` | Read and strictly validate operational JSON. |
 | `ControlService` | In-process MCP/control implementation. |
 | `executeTool` | MCP tool dispatcher used by stdio and tests. |
