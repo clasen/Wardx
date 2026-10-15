@@ -633,14 +633,16 @@ namespace Wardx.Tests
                 var to = frame["to"].NumberValue;
                 var eventTime = frame["events"].ArrayValue[0].ArrayValue[0].NumberValue;
                 AssertX.True(from <= eventTime && eventTime <= to, "shifted window still contains its events");
-                AssertX.True(to >= before - deviceAheadMs && to <= after - deviceAheadMs, "frame end is in server time");
+                // The offset comes from a request midpoint, so it can be off by half a round trip within [before, after].
+                var estimateError = (after - before + 1) / 2;
+                AssertX.True(to >= before - deviceAheadMs && to <= after - deviceAheadMs + estimateError, "frame end is in server time");
                 AssertX.True(transport.Jsons[1].Contains("before.alignment"), "data recorded before alignment is delivered");
 
                 client.Gauge("after.alignment").Set(1);
                 Wait(client.FlushAsync());
                 AssertX.Equal(3, transport.Jsons.Count, "aligned flush sends once");
                 var gauge = Json.Parse(transport.Jsons[2])["frames"].ArrayValue[0]["metrics"]["gauges"].ArrayValue[0];
-                AssertX.True(gauge.ArrayValue[3].NumberValue <= Clock.UnixMs() - deviceAheadMs, "gauge timestamp is in server time");
+                AssertX.True(gauge.ArrayValue[3].NumberValue <= Clock.UnixMs() - deviceAheadMs + estimateError, "gauge timestamp is in server time");
             }
             finally { Wait(client.ShutdownAsync()); }
         }

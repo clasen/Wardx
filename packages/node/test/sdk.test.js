@@ -694,13 +694,18 @@ test('frames follow the server clock when the device clock is ahead', async () =
     const [eventTime, eventName] = frame.events[0];
     assert.equal(eventName, 'before.alignment');
     assert.ok(frame.from <= eventTime && eventTime <= frame.to, 'shifted window still contains its events');
-    assert.ok(frame.to >= before - deviceAheadMs && frame.to <= after - deviceAheadMs, 'frame end is in server time');
+    // The offset comes from a request midpoint, so it can be off by half a round trip within [before, after].
+    const estimateError = Math.ceil((after - before) / 2);
+    assert.ok(
+      frame.to >= before - deviceAheadMs && frame.to <= after - deviceAheadMs + estimateError,
+      'frame end is in server time'
+    );
 
     wardx.gauge('after.alignment').set(1);
     await wardx.flush();
     assert.equal(envelopes.length, 3, 'aligned flush sends once');
     const gauge = envelopes[2].frames[0].metrics.gauges.find((row) => row[0] === 'after.alignment');
-    assert.ok(gauge[3] <= Date.now() - deviceAheadMs, 'gauge timestamp is in server time');
+    assert.ok(gauge[3] <= Date.now() - deviceAheadMs + estimateError, 'gauge timestamp is in server time');
   } finally {
     await wardx.shutdown();
   }
