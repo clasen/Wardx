@@ -13,7 +13,7 @@ namespace Wardx.Tests
     sealed class MemoryTransport : ISyncTransport
     {
         public string LastJson;
-        public string Response = "{\"ok\":true,\"serverTime\":1,\"configVersion\":13,\"config\":{\"values\":{\"message.delayMs\":1000},\"experiments\":[]}}";
+        public string Response = "{\"ok\":true,\"configVersion\":13,\"config\":{\"values\":{\"message.delayMs\":1000},\"experiments\":[]}}";
         public int PostCount;
         public int CloseCount;
 
@@ -21,7 +21,7 @@ namespace Wardx.Tests
         {
             PostCount++;
             LastJson = Encoding.UTF8.GetString(Gunzip(gzippedBody));
-            return Task.FromResult(new SyncResult(true, 200, Response));
+            return Task.FromResult(new SyncResult(true, 200, ServerResponses.Stamp(Response)));
         }
 
         public void Close() { CloseCount++; }
@@ -53,7 +53,7 @@ namespace Wardx.Tests
                 Jsons.Add(Encoding.UTF8.GetString(output.ToArray()));
             }
             if (Jsons.Count == FailAt) return Task.FromResult(new SyncResult(false, 503, null));
-            return Task.FromResult(new SyncResult(true, 200, "{\"ok\":true,\"serverTime\":1,\"configVersion\":0}"));
+            return Task.FromResult(new SyncResult(true, 200, ServerResponses.Stamp("{\"ok\":true,\"configVersion\":0}")));
         }
 
         public void Close() { }
@@ -83,7 +83,7 @@ namespace Wardx.Tests
                 gzip.CopyTo(output);
                 FinalJson = Encoding.UTF8.GetString(output.ToArray());
             }
-            return Task.FromResult(new SyncResult(true, 200, "{\"ok\":true,\"configVersion\":0}"));
+            return Task.FromResult(new SyncResult(true, 200, ServerResponses.Stamp("{\"ok\":true,\"configVersion\":0}")));
         }
 
         public void Close() { CloseCount++; }
@@ -131,12 +131,30 @@ namespace Wardx.Tests
                     Started.TrySetResult(true);
                     using (token.Register(() => Release.TrySetCanceled())) await Release.Task.ConfigureAwait(false);
                 }
-                return new SyncResult(!first, first ? 503 : 200, "{\"ok\":true,\"configVersion\":0}");
+                return new SyncResult(!first, first ? 503 : 200, ServerResponses.Stamp("{\"ok\":true,\"configVersion\":0}"));
             }
             finally { Interlocked.Decrement(ref _active); }
         }
 
         public void Close() { CloseCount++; }
+    }
+
+    sealed class SkewedServerTransport : ISyncTransport
+    {
+        public readonly List<string> Jsons = new List<string>();
+        public long ServerAheadMs;
+        public bool OmitServerTime;
+
+        public Task<SyncResult> PostAsync(byte[] gzippedBody, CancellationToken cancellationToken)
+        {
+            using (var input = new MemoryStream(gzippedBody))
+            using (var gzip = new GZipStream(input, CompressionMode.Decompress))
+            using (var reader = new StreamReader(gzip)) Jsons.Add(reader.ReadToEnd());
+            const string body = "{\"ok\":true,\"configVersion\":0}";
+            return Task.FromResult(new SyncResult(true, 200, OmitServerTime ? body : ServerResponses.Stamp(body, ServerAheadMs)));
+        }
+
+        public void Close() { }
     }
 
     static class SyncTests
@@ -252,6 +270,9 @@ namespace Wardx.Tests
             EnvelopesRespectServerLimits();
             CoalescedFlushes();
             SuspensionFlushesTheCutWindow();
+            FramesFollowTheServerClock();
+            FramesWaitForTheServerClock();
+            MissingServerTimeFailsTheSync();
             var transport = new MemoryTransport();
             var client = WardxClient.Create(new WardxOptions
             {
@@ -280,7 +301,7 @@ namespace Wardx.Tests
             client.Stop();
 
             var cancellationTransport = new CancellationThenSuccessTransport();
-            var cancellationClient = WardxClient.Create(Options(40), cancellationTransport);
+            var cancellationClient = Aligned(Options(40), cancellationTransport);
             cancellationClient.Counter("first").Inc();
             var inFlight = cancellationClient.FlushAsync();
             Wait(cancellationTransport.Started.Task);
@@ -303,7 +324,7 @@ namespace Wardx.Tests
             );
 
             var timeoutTransport = new TimeoutTransport();
-            var timeoutClient = WardxClient.Create(Options(30), timeoutTransport);
+            var timeoutClient = Aligned(Options(30), timeoutTransport);
             timeoutClient.Event("will-time-out");
             var started = System.Diagnostics.Stopwatch.StartNew();
             timeoutClient.ShutdownAsync().GetAwaiter().GetResult();
@@ -319,7 +340,7 @@ namespace Wardx.Tests
         {
             var callerThread = Thread.CurrentThread.ManagedThreadId;
             var transport = new MemoryTransport();
-            var client = WardxClient.Create(Options(5000), transport);
+            var client = Aligned(Options(5000), transport);
             var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             using (var release = new ManualResetEventSlim())
             {
@@ -376,7 +397,7 @@ namespace Wardx.Tests
         static void SnapshotFailureRecovers()
         {
             var transport = new MemoryTransport();
-            var client = WardxClient.Create(Options(5000), transport);
+            var client = Aligned(Options(5000), transport);
             try
             {
                 var attrs = new ObservedDimensions();
@@ -397,7 +418,7 @@ namespace Wardx.Tests
         {
             var callerThread = Thread.CurrentThread.ManagedThreadId;
             var transport = new MemoryTransport();
-            var client = WardxClient.Create(Options(5000), transport);
+            var client = Aligned(Options(5000), transport);
             var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             using (var release = new ManualResetEventSlim())
             {
@@ -435,7 +456,7 @@ namespace Wardx.Tests
         static void EncodingFailureDropsEveryFrame()
         {
             var transport = new MemoryTransport();
-            var client = WardxClient.Create(Options(5000), transport);
+            var client = Aligned(Options(5000), transport);
             try
             {
                 for (var i = 0; i < 3; i++)
@@ -527,7 +548,7 @@ namespace Wardx.Tests
         static void CoalescedFlushes()
         {
             var transport = new SlowTransport();
-            var client = WardxClient.Create(Options(5000), transport);
+            var client = Aligned(Options(5000), transport);
             try
             {
                 client.Counter("lost-on-failure").Inc();
@@ -567,7 +588,7 @@ namespace Wardx.Tests
         static void SuspensionFlushesTheCutWindow()
         {
             var transport = new RecordingTransport();
-            var client = WardxClient.Create(Options(5000), transport);
+            var client = Aligned(Options(5000), transport);
             try
             {
                 client.Counter("before.pause").Inc();
@@ -590,10 +611,84 @@ namespace Wardx.Tests
             finally { Wait(client.ShutdownAsync()); }
         }
 
+        static void FramesFollowTheServerClock()
+        {
+            const long deviceAheadMs = 600_000;
+            var transport = new SkewedServerTransport { ServerAheadMs = -deviceAheadMs };
+            var client = WardxClient.Create(Options(5000), transport);
+            try
+            {
+                client.Counter("before.alignment").Inc();
+                client.Event("before.alignment");
+                Wait(client.EnqueueSnapshot());
+                AssertX.Equal(0, client.Core.TakePendingFrames().Count, "no frame is captured before the server clock is known");
+
+                var before = Clock.UnixMs();
+                Wait(client.FlushAsync());
+                var after = Clock.UnixMs();
+                AssertX.Equal(2, transport.Jsons.Count, "unaligned flush learns the clock, then sends frames");
+                AssertX.Equal(0, Json.Parse(transport.Jsons[0])["frames"].ArrayValue.Count, "first envelope carries no frames");
+                var frame = Json.Parse(transport.Jsons[1])["frames"].ArrayValue[0];
+                var from = frame["from"].NumberValue;
+                var to = frame["to"].NumberValue;
+                var eventTime = frame["events"].ArrayValue[0].ArrayValue[0].NumberValue;
+                AssertX.True(from <= eventTime && eventTime <= to, "shifted window still contains its events");
+                AssertX.True(to >= before - deviceAheadMs && to <= after - deviceAheadMs, "frame end is in server time");
+                AssertX.True(transport.Jsons[1].Contains("before.alignment"), "data recorded before alignment is delivered");
+
+                client.Gauge("after.alignment").Set(1);
+                Wait(client.FlushAsync());
+                AssertX.Equal(3, transport.Jsons.Count, "aligned flush sends once");
+                var gauge = Json.Parse(transport.Jsons[2])["frames"].ArrayValue[0]["metrics"]["gauges"].ArrayValue[0];
+                AssertX.True(gauge.ArrayValue[3].NumberValue <= Clock.UnixMs() - deviceAheadMs, "gauge timestamp is in server time");
+            }
+            finally { Wait(client.ShutdownAsync()); }
+        }
+
+        static void FramesWaitForTheServerClock()
+        {
+            var transport = new SkewedServerTransport();
+            var client = WardxClient.Create(Options(5000), transport);
+            try
+            {
+                client.Counter("startup").Inc();
+                Wait(client.EnqueueSync(default));
+                AssertX.Equal(1, transport.Jsons.Count, "unaligned tick sends an envelope to learn the clock");
+                AssertX.Equal(0, Json.Parse(transport.Jsons[0])["frames"].ArrayValue.Count, "tick envelope carries no frames");
+                Wait(client.EnqueueSync(new SyncFlags { Bootstrap = true }));
+                AssertX.Equal(2, transport.Jsons.Count, "aligned bootstrap sends once");
+                AssertX.True(transport.Jsons[1].Contains("startup"), "startup data follows alignment");
+            }
+            finally { Wait(client.ShutdownAsync()); }
+        }
+
+        static void MissingServerTimeFailsTheSync()
+        {
+            var transport = new SkewedServerTransport { OmitServerTime = true };
+            var client = WardxClient.Create(Options(5000), transport);
+            try
+            {
+                client.Counter("never.aligned").Inc();
+                Wait(client.FlushAsync());
+                AssertX.Equal(1, transport.Jsons.Count, "no frames follow a response without serverTime");
+                AssertX.True(!client.Core.ClockAligned, "clock stays unaligned");
+                AssertX.True(client.Core.Internal.FramesFailed >= 1, "contract violation is counted");
+            }
+            finally { Wait(client.ShutdownAsync()); }
+        }
+
         static void Wait(Task task)
         {
             AssertX.True(Task.WhenAny(task, Task.Delay(5000)).GetAwaiter().GetResult() == task, "operation completes within test deadline");
             task.GetAwaiter().GetResult();
+        }
+
+        static WardxClient Aligned(WardxOptions options, ISyncTransport transport)
+        {
+            var client = WardxClient.Create(options, transport);
+            var now = Clock.UnixMs();
+            client.Core.AlignClock(now, now, now);
+            return client;
         }
 
         static WardxOptions Options(int httpTimeoutMs)
@@ -629,7 +724,7 @@ namespace Wardx.Tests
                     {
                         await context.Request.InputStream.CopyToAsync(body).ConfigureAwait(false);
                     }
-                    var response = Encoding.UTF8.GetBytes("{\"ok\":true,\"configVersion\":0}");
+                    var response = Encoding.UTF8.GetBytes(ServerResponses.Stamp("{\"ok\":true,\"configVersion\":0}"));
                     context.Response.StatusCode = 200;
                     context.Response.ContentType = "application/json";
                     context.Response.ContentLength64 = response.Length;

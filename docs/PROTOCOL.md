@@ -112,6 +112,8 @@ SDKs measure the serialized UTF-8 JSON and split a logical snapshot into physica
 
 ## Response
 
+Every successful response carries `serverTime`, the server's Unix time in milliseconds. SDKs estimate their clock offset from it, using the midpoint between sending the request and receiving the response, and add the latest offset to every timestamp of a frame when they capture it: `from`, `to`, gauge timestamps, events, and logs. Until a response has supplied `serverTime`, an SDK captures no frames: each sync sends an envelope without frames, and a flush or bootstrap that learns the offset then captures and sends the pending data. A successful response without `serverTime` fails the sync. This keeps devices whose clocks are wrong inside `maxClockSkewMs` and `history.maxAcceptedPastAgeMs`.
+
 Same config version and unchanged resolved context:
 
 ```json

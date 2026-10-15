@@ -446,6 +446,17 @@ namespace Wardx
 
         async Task SyncOnceInner(SyncFlags flags, CancellationToken transportToken)
         {
+            bool aligned;
+            lock (_gate) aligned = _core.ClockAligned;
+            var forced = flags.Flush || flags.Bootstrap;
+            if (!await SendPending(flags, !aligned || forced, transportToken).ConfigureAwait(false)) return;
+            if (aligned || !forced) return;
+            lock (_gate) aligned = _core.ClockAligned;
+            if (aligned) await SendPending(flags, false, transportToken).ConfigureAwait(false);
+        }
+
+        async Task<bool> SendPending(SyncFlags flags, bool sendEmpty, CancellationToken transportToken)
+        {
             if (flags.Flush || flags.Bootstrap) await EnqueueSnapshot().ConfigureAwait(false);
             else
             {
@@ -455,16 +466,17 @@ namespace Wardx
             }
             List<Frame> frames;
             lock (_gate) frames = _core.TakePendingFrames();
-            if (!flags.Bootstrap && !flags.Flush && frames.Count == 0) return;
+            if (!sendEmpty && frames.Count == 0) return true;
 
             var phase = flags.Bootstrap ? "bootstrap" : flags.Flush ? "flush" : "tick";
             var start = 0;
             do
             {
                 var sent = await PostEnvelope(phase, frames, start, transportToken).ConfigureAwait(false);
-                if (!sent.Ok) return;
+                if (!sent.Ok) return false;
                 start = sent.End;
             } while (start < frames.Count);
+            return true;
         }
 
         async Task<(bool Ok, int End)> PostEnvelope(string phase, List<Frame> frames, int start, CancellationToken transportToken)
@@ -501,10 +513,12 @@ namespace Wardx
                 lock (_gate) _core.RecordSyncBytes(bytesUncompressed, bytesCompressed);
                 transportToken.ThrowIfCancellationRequested();
                 started = Stopwatch.GetTimestamp();
+                var sentAt = Clock.UnixMs();
                 var result = await WithCancellation(
                     _transport.PostAsync(compressed, transportToken),
                     transportToken
                 ).ConfigureAwait(false);
+                var receivedAt = Clock.UnixMs();
                 var ms = (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
                 if (!result.Ok)
                 {
@@ -514,8 +528,8 @@ namespace Wardx
                 }
                 lock (_gate)
                 {
+                    ApplyResponse(result.Text, sentAt, receivedAt);
                     _core.RecordSyncResult(true, count, ms);
-                    ApplyResponse(result.Text);
                 }
                 var applied = false;
                 int? version = null;
@@ -595,7 +609,7 @@ namespace Wardx
             return envelope;
         }
 
-        void ApplyResponse(string text)
+        void ApplyResponse(string text, long sentAt, long receivedAt)
         {
             if (string.IsNullOrEmpty(text)) return;
             JsonNode json;
@@ -604,6 +618,12 @@ namespace Wardx
             if (json == null || !json.IsObject) return;
             var ok = json["ok"];
             if (ok == null || !ok.IsBool || !ok.BoolValue) return;
+            var serverTime = json["serverTime"];
+            if (serverTime == null || serverTime.Type != JsonNode.Kind.Number)
+            {
+                throw new InvalidOperationException("sync response is missing serverTime");
+            }
+            _core.AlignClock((long)serverTime.NumberValue, sentAt, receivedAt);
             var versionNode = json["configVersion"];
             if (versionNode != null && versionNode.Type == JsonNode.Kind.Number)
             {

@@ -7,6 +7,11 @@ import { FrameBuilder } from '@wardx/core';
 import { createIngestServer, listen } from '../../server/src/server.js';
 import { testServerConfig } from '../../server/test/helpers.js';
 
+function alignClock(wardx) {
+  const now = Date.now();
+  wardx._core._alignClock(now, now, now);
+}
+
 async function withServer(fn) {
   const config = testServerConfig();
   const server = createIngestServer(config);
@@ -252,6 +257,7 @@ test('flush storms share one pending sync behind a slow destination without losi
     aggregateIntervalMs: 60_000,
     syncIntervalMs: 60_000
   });
+  alignClock(wardx);
   wardx._transport = {
     post: async (body) => {
       active += 1;
@@ -262,7 +268,7 @@ test('flush storms share one pending sync behind a slow destination without losi
         await blocked;
       }
       active -= 1;
-      return { ok: true, status: 200, json: { ok: true, configVersion: 0 } };
+      return { ok: true, status: 200, json: { ok: true, serverTime: Date.now(), configVersion: 0 } };
     },
     close() {}
   };
@@ -340,7 +346,7 @@ test('envelopes respect maxEnvelopeBytes and a failed envelope discards the rest
       sizes.push(json.length);
       envelopes.push(JSON.parse(json.toString('utf8')));
       if (envelopes.length === failAt) return { ok: false, status: 503, json: null };
-      return { ok: true, status: 200, json: { ok: true, configVersion: 0 } };
+      return { ok: true, status: 200, json: { ok: true, serverTime: Date.now(), configVersion: 0 } };
     },
     close() {}
   };
@@ -383,10 +389,11 @@ async function capturedClient() {
     appVersion: '1.0.0', environment: 'test', privacySalt: 'test-salt',
     aggregateIntervalMs: 60_000, syncIntervalMs: 60_000
   });
+  alignClock(wardx);
   wardx._transport = {
     post: async (body) => {
       recorded.envelopes.push(JSON.parse(gunzipSync(body).toString('utf8')));
-      return { ok: true, status: 200, json: { ok: true, configVersion: 0 } };
+      return { ok: true, status: 200, json: { ok: true, serverTime: Date.now(), configVersion: 0 } };
     },
     close() { recorded.closes++; }
   };
@@ -502,11 +509,12 @@ test('concurrent shutdown callers share final flush and close once', async () =>
     aggregateIntervalMs: 60_000,
     syncIntervalMs: 60_000
   });
+  alignClock(wardx);
   wardx._transport = {
     post: async () => {
       posts += 1;
       if (posts === 1) await bootstrap;
-      return { ok: true, status: 200, json: { ok: true, configVersion: 0 } };
+      return { ok: true, status: 200, json: { ok: true, serverTime: Date.now(), configVersion: 0 } };
     },
     close: () => {
       closes += 1;
@@ -542,7 +550,7 @@ test('failed frames stay at-most-once and frames_failed is sent on the next flus
       posts += 1;
       envelopes.push(JSON.parse(gunzipSync(body).toString('utf8')));
       if (posts === 2) return { ok: false, status: 503, json: null };
-      return { ok: true, status: 200, json: { ok: true, configVersion: 0 } };
+      return { ok: true, status: 200, json: { ok: true, serverTime: Date.now(), configVersion: 0 } };
     },
     close() {}
   };
@@ -581,6 +589,7 @@ test('real connection failure is at-most-once and reports frames_failed after re
     syncIntervalMs: 60_000,
     httpTimeoutMs: 1000
   });
+  alignClock(wardx);
   await wardx._syncChain;
   wardx.counter('discarded-on-failure').inc();
   await wardx.flush();
@@ -648,5 +657,84 @@ test('only boolean false disables SDK validation', () => {
   }
   for (const enabled of [null, 0, 'false']) {
     assert.throws(() => createWardx({ enabled }), /enabled must be a boolean/);
+  }
+});
+
+function skewedClient(respond) {
+  const envelopes = [];
+  const wardx = createWardx({
+    endpoint: 'http://127.0.0.1:1', projectKey: 'test-key', project: 'demo', role: 'client',
+    appVersion: '1.0.0', environment: 'test', privacySalt: 'test-salt',
+    aggregateIntervalMs: 60_000, syncIntervalMs: 60_000
+  });
+  wardx._transport = {
+    post: async (body) => {
+      envelopes.push(JSON.parse(gunzipSync(body).toString('utf8')));
+      return respond(envelopes.length);
+    },
+    close() {}
+  };
+  return { wardx, envelopes };
+}
+
+test('frames follow the server clock when the device clock is ahead', async () => {
+  const deviceAheadMs = 600_000;
+  const { wardx, envelopes } = skewedClient(() => ({
+    ok: true, status: 200, json: { ok: true, serverTime: Date.now() - deviceAheadMs, configVersion: 0 }
+  }));
+  try {
+    wardx.counter('before.alignment').inc();
+    wardx.event('before.alignment');
+    const before = Date.now();
+    await wardx._syncChain;
+    const after = Date.now();
+    assert.equal(envelopes.length, 2, 'unaligned bootstrap learns the clock, then sends frames');
+    assert.equal(envelopes[0].frames.length, 0, 'first envelope carries no frames');
+    const [frame] = envelopes[1].frames;
+    const [eventTime, eventName] = frame.events[0];
+    assert.equal(eventName, 'before.alignment');
+    assert.ok(frame.from <= eventTime && eventTime <= frame.to, 'shifted window still contains its events');
+    assert.ok(frame.to >= before - deviceAheadMs && frame.to <= after - deviceAheadMs, 'frame end is in server time');
+
+    wardx.gauge('after.alignment').set(1);
+    await wardx.flush();
+    assert.equal(envelopes.length, 3, 'aligned flush sends once');
+    const gauge = envelopes[2].frames[0].metrics.gauges.find((row) => row[0] === 'after.alignment');
+    assert.ok(gauge[3] <= Date.now() - deviceAheadMs, 'gauge timestamp is in server time');
+  } finally {
+    await wardx.shutdown();
+  }
+});
+
+test('frames wait until a sync learns the server clock', async () => {
+  const { wardx, envelopes } = skewedClient((count) => (count === 1
+    ? { ok: false, status: 503, json: null }
+    : { ok: true, status: 200, json: { ok: true, serverTime: Date.now(), configVersion: 0 } }));
+  try {
+    await wardx._syncChain;
+    wardx.counter('startup').inc();
+    await wardx._enqueueSnapshot();
+    assert.equal(wardx._core.pendingFrames.length, 0, 'no frame is captured before the server clock is known');
+    await wardx._enqueueSync({});
+    assert.equal(envelopes.length, 2, 'unaligned tick sends an envelope to learn the clock');
+    assert.equal(envelopes[1].frames.length, 0, 'tick envelope carries no frames');
+    await wardx.flush();
+    assert.equal(envelopes.length, 3, 'aligned flush sends once');
+    assert.ok(envelopes[2].frames[0].metrics.counters.some((row) => row[0] === 'startup'), 'startup data follows alignment');
+  } finally {
+    await wardx.shutdown();
+  }
+});
+
+test('a sync response without serverTime fails the sync', async () => {
+  const { wardx, envelopes } = skewedClient(() => ({ ok: true, status: 200, json: { ok: true, configVersion: 0 } }));
+  try {
+    wardx.counter('never.aligned').inc();
+    await wardx._syncChain;
+    assert.equal(envelopes.length, 1, 'no frames follow a response without serverTime');
+    assert.equal(wardx._core._clockAligned, false);
+    assert.ok(wardx._core.internal.framesFailed >= 1, 'contract violation is counted');
+  } finally {
+    await wardx.shutdown();
   }
 });

@@ -18,6 +18,7 @@ namespace Wardx
         long? _suspendedAt;
         long? _resumedAt;
         bool _suspended;
+        long? _clockOffsetMs;
         string _subjectId;
 
         public readonly InternalMetrics Internal = new InternalMetrics();
@@ -229,7 +230,14 @@ namespace Wardx
             return batch;
         }
 
-        internal Frame CaptureFrameIfDirty() => HasActivity() ? CaptureFrame() : null;
+        internal Frame CaptureFrameIfDirty() => ClockAligned && HasActivity() ? CaptureFrame() : null;
+
+        internal bool ClockAligned => _clockOffsetMs.HasValue;
+
+        internal void AlignClock(long serverTime, long sentAt, long receivedAt)
+        {
+            _clockOffsetMs = serverTime - (sentAt + receivedAt) / 2;
+        }
 
         internal void Suspend()
         {
@@ -265,7 +273,9 @@ namespace Wardx
             var events = _events.Swap();
             var logs = _logs.Swap();
             var internalSnap = Internal.SnapshotAndReset();
-            return FrameBuilder.Build(_seq + 1, from, to, metrics, events, logs, internalSnap);
+            var frame = FrameBuilder.Build(_seq + 1, from, to, metrics, events, logs, internalSnap);
+            FrameBuilder.ShiftTime(frame, _clockOffsetMs ?? 0);
+            return frame;
         }
 
         internal void CommitSnapshot(FrameBatch batch)

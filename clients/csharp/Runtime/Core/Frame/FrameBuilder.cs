@@ -196,6 +196,28 @@ namespace Wardx
             return frame;
         }
 
+        internal static void ShiftTime(Frame frame, long offsetMs)
+        {
+            if (offsetMs == 0) return;
+            frame.From += offsetMs;
+            frame.To += offsetMs;
+            for (var i = 0; i < frame.Gauges.Count; i++)
+            {
+                var row = frame.Gauges[i];
+                frame.Gauges[i] = new GaugeSample(row.Name, row.Dims, row.Value, row.Timestamp + offsetMs);
+            }
+            for (var i = 0; i < frame.Events.Count; i++)
+            {
+                var row = frame.Events[i];
+                frame.Events[i] = new EventSample(row.Time + offsetMs, row.Name, row.Attrs);
+            }
+            for (var i = 0; i < frame.Logs.Count; i++)
+            {
+                var row = frame.Logs[i];
+                frame.Logs[i] = new LogSample(row.Time + offsetMs, row.Level, row.Message, row.Attrs);
+            }
+        }
+
         public static void MergeInternal(Frame frame, InternalSnapshot internalMetrics)
         {
             if (internalMetrics.EventsDropped != 0)

@@ -36,6 +36,16 @@ namespace Wardx.Tests
         }
     }
 
+    static class ServerResponses
+    {
+        public static string Stamp(string json, long serverAheadMs = 0)
+        {
+            const string ok = "{\"ok\":true";
+            if (!json.StartsWith(ok, StringComparison.Ordinal)) throw new ArgumentException("response must start with ok:true");
+            return ok + ",\"serverTime\":" + (Clock.UnixMs() + serverAheadMs) + json.Substring(ok.Length);
+        }
+    }
+
     sealed class ObservedDimensions : IReadOnlyDictionary<string, object>
     {
         readonly Dictionary<string, object> _values = new Dictionary<string, object> { ["lane"] = "東京" };

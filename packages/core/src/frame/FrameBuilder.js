@@ -48,6 +48,23 @@ export class FrameBuilder {
     };
   }
 
+  static shiftTime(frame, offsetMs) {
+    if (offsetMs === 0) return;
+    frame.from += offsetMs;
+    frame.to += offsetMs;
+    const gauges = frame.metrics.gauges;
+    for (let i = 0; i < gauges.length; i++) {
+      const [name, dims, value, timestamp] = gauges[i];
+      gauges[i] = [name, dims, value, timestamp + offsetMs];
+    }
+    for (const rows of [frame.events, frame.logs]) {
+      for (let i = 0; i < rows.length; i++) {
+        const [time, ...rest] = rows[i];
+        rows[i] = [time + offsetMs, ...rest];
+      }
+    }
+  }
+
   static mergeInternal(counters, gauges, internal) {
     if (internal.eventsDropped) counters.push([INTERNAL.eventsDropped, null, internal.eventsDropped]);
     if (internal.logsDropped) counters.push([INTERNAL.logsDropped, null, internal.logsDropped]);

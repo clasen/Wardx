@@ -47,6 +47,7 @@ export class WardxCore {
     this.pendingFrames = [];
     this._frameJsons = new WeakMap();
     this.windowStart = Date.now();
+    this._clockOffsetMs = null;
     this._subjectId = null;
     this.configContext = undefined;
     this.log = {
@@ -219,6 +220,14 @@ export class WardxCore {
     return result.value;
   }
 
+  get _clockAligned() {
+    return this._clockOffsetMs !== null;
+  }
+
+  _alignClock(serverTime, sentAt, receivedAt) {
+    this._clockOffsetMs = serverTime - Math.floor((sentAt + receivedAt) / 2);
+  }
+
   _captureFrame() {
     const to = Date.now();
     const from = this.windowStart;
@@ -229,7 +238,7 @@ export class WardxCore {
     const events = this.events.swap();
     const logs = this.logs.swap();
     const internal = this.internal.snapshotAndReset();
-    return FrameBuilder.build({
+    const frame = FrameBuilder.build({
       seq: this.seq + 1,
       from,
       to,
@@ -238,6 +247,8 @@ export class WardxCore {
       logs,
       internal
     });
+    FrameBuilder.shiftTime(frame, this._clockOffsetMs ?? 0);
+    return frame;
   }
 
   _acceptFrameBatch(batch) {

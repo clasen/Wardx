@@ -138,7 +138,7 @@ export class WardxNode {
       if (this._queuedSnapshot === queued) this._queuedSnapshot = null;
       try {
         this._core.recordProcessRss(readProcessRssBytes());
-        await this._core._snapshotIfDirtyAsync();
+        if (this._core._clockAligned) await this._core._snapshotIfDirtyAsync();
       } catch {
         this._core.recordSyncError();
       }
@@ -171,10 +171,18 @@ export class WardxNode {
   }
 
   async _syncOnceInner(flags) {
+    const aligned = this._core._clockAligned;
+    const forced = Boolean(flags.flush || flags.bootstrap);
+    if (!(await this._sendPending(flags, !aligned || forced))) return;
+    if (aligned || !forced || !this._core._clockAligned) return;
+    await this._sendPending(flags, false);
+  }
+
+  async _sendPending(flags, sendEmpty) {
     if (flags.flush || flags.bootstrap) await this._enqueueSnapshot();
     else await this._snapshotChain;
     const batch = this._core._takePendingBatch();
-    if (!flags.bootstrap && !flags.flush && batch.frames.length === 0) return;
+    if (!sendEmpty && batch.frames.length === 0) return true;
     const phase = flags.bootstrap ? 'bootstrap' : flags.flush ? 'flush' : 'tick';
     const metadata = {
       project: this.settings.project,
@@ -198,9 +206,10 @@ export class WardxNode {
       const envelope = this._core.syncEnvelope(metadata, []);
       const end = this._core._envelopeEnd(batch, start, Buffer.byteLength(JSON.stringify(envelope)));
       const unsentFrames = batch.frames.length - start;
-      if (!(await this._postEnvelope(phase, envelope, batch.jsons.slice(start, end), unsentFrames))) return;
+      if (!(await this._postEnvelope(phase, envelope, batch.jsons.slice(start, end), unsentFrames))) return false;
       start = end;
     } while (start < batch.frames.length);
+    return true;
   }
 
   async _postEnvelope(phase, envelope, jsons, unsentFrames) {
@@ -215,15 +224,21 @@ export class WardxNode {
       bytesCompressed = compressed.length;
       this._core.recordSyncBytes(bytesUncompressed, bytesCompressed);
       started = performance.now();
+      const sentAt = Date.now();
       const result = await this._transport.post(compressed);
+      const receivedAt = Date.now();
       const ms = performance.now() - started;
       if (!result.ok) {
         this._core.recordSyncResult({ ok: false, frames: unsentFrames, ms });
         this._traceSync({ ...trace(), ms, ok: false, status: result.status });
         return false;
       }
-      this._core.recordSyncResult({ ok: true, frames: jsons.length, ms });
+      if (result.json?.ok === true) {
+        if (!Number.isFinite(result.json.serverTime)) throw new Error('sync response is missing serverTime');
+        this._core._alignClock(result.json.serverTime, sentAt, receivedAt);
+      }
       this._core.applySyncResponse(result.json);
+      this._core.recordSyncResult({ ok: true, frames: jsons.length, ms });
       this._traceSync({
         ...trace(),
         ms,
