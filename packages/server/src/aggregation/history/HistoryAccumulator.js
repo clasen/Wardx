@@ -66,6 +66,7 @@ function emptyState(project, from) {
   return {
     rows: new Map(),
     rowBytes: new Map(),
+    sortedKeys: null,
     bytes: bucketBytes({
       project,
       tier: 'minute',
@@ -192,7 +193,10 @@ export class HistoryAccumulator {
         state = emptyState(this.project, update.from);
         this.states.set(update.from, state);
       }
-      for (const [key, row] of update.rows) state.rows.set(key, row);
+      for (const [key, row] of update.rows) {
+        if (!state.rows.has(key)) state.sortedKeys = null;
+        state.rows.set(key, row);
+      }
       for (const [key, bytes] of update.rowBytes) state.rowBytes.set(key, bytes);
       state.bytes = update.projectedBytes;
       this.dirty.add(update.from);
@@ -211,11 +215,15 @@ export class HistoryAccumulator {
           to: from + 60_000,
           finalized: now >= from + 60_000 + this.clockSkewAllowanceMs,
           dropCount: 0,
-          rows: [...state.rows.entries()]
-            .sort(([left], [right]) => left.localeCompare(right))
-            .map(([, row]) => structuredClone(row))
+          rows: this._sortedKeys(state).map((key) => state.rows.get(key))
         };
       });
+  }
+
+  // Committed rows are replaced, never mutated, so pending buckets share them without copying.
+  _sortedKeys(state) {
+    state.sortedKeys ??= [...state.rows.keys()].sort((left, right) => left.localeCompare(right));
+    return state.sortedKeys;
   }
 
   acknowledge(buckets) {

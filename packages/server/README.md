@@ -87,6 +87,14 @@ Configure request timeouts on that transport so incomplete requests cannot hold
 shutdown indefinitely. A missing or short MCP bearer token fails startup before
 Wardx opens SQLite.
 
+SDK clients sync every `syncIntervalMs` (15 seconds by default, with a jitter
+factor up to 1.15) and reuse a keep-alive connection when the server still has it
+open. Node closes idle keep-alive connections after `server.keepAliveTimeout`,
+which defaults to 5 seconds. With these defaults, every sync opens a new TCP and
+TLS connection. To reuse connections, set `keepAliveTimeout` on the transport you
+own above the largest sync delay, for example 20 seconds. Each active client then
+holds one idle socket between syncs.
+
 ### HTTPS and custom transport
 
 Both startup functions accept a dedicated Node HTTP-compatible server:

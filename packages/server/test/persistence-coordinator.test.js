@@ -271,6 +271,9 @@ test('PersistenceCoordinator schedules late updates and finalization without rec
 
     history.ingest(envelope, []);
     await flush();
+    assert.equal(store.readBucket('demo', 'hour', from).rows.find((row) => row.kind === 'counter').value, 4);
+    now += config.history.compactionIntervalMs;
+    await flush();
     assert.equal(store.readBucket('demo', 'hour', from).rows.find((row) => row.kind === 'counter').value, 8);
     assert.equal(coordinator.snapshotMetrics().historyCompactions, initial + 1);
 
@@ -344,6 +347,63 @@ test('SQLite optimization follows the maintenance timer and retries failed maint
     await coordinator.flush();
     assert.equal(store.snapshotMetrics().optimizations, initial + 2);
     assert.equal(coordinator.readiness(Date.now()).healthy, true);
+  } finally {
+    await coordinator.close();
+    store.close();
+  }
+});
+
+test('PersistenceCoordinator compacts a busy hour once instead of rescanning its minutes on every flush', async (t) => {
+  const hour = Date.UTC(2026, 7, 20, 12);
+  const hourEnd = hour + 3_600_000;
+  let now = hour;
+  t.mock.method(Date, 'now', () => now);
+  const config = testServerConfig();
+  const { clockSkewAllowanceMs, maxAcceptedPastAgeMs, compactionIntervalMs } = config.history;
+  const store = new SqliteStateStore({ path: config.sqlite.path, settings: sqliteSettings(config) });
+  const registry = new ProjectRegistry(config);
+  const history = registry.get('demo').history;
+  const coordinator = new PersistenceCoordinator({ config, registry, diagnostics, stateStore: store });
+  const ingest = (...starts) => {
+    const envelope = sampleEnvelope();
+    envelope.frames = starts.map((from, index) => ({ ...envelope.frames[0], seq: index + 1, from }));
+    history.ingest(envelope, []);
+  };
+  const flush = async () => {
+    coordinator.mark('history');
+    await coordinator.flush();
+  };
+  const counter = (tier, from) => store.readBucket('demo', tier, from).rows.find((row) => row.kind === 'counter').value;
+  try {
+    await flush();
+    const read = t.mock.method(store, 'readBuckets');
+    let flushes = 0;
+    for (; now < hourEnd; now += 15_000) {
+      ingest(now, Math.max(hour, now - 600_000));
+      await flush();
+      flushes += 1;
+    }
+    assert.equal(read.mock.callCount(), 0);
+    assert.equal(store.readBucket('demo', 'hour', hour), null);
+
+    now = hourEnd + clockSkewAllowanceMs;
+    await flush();
+    assert.equal(read.mock.callCount(), 1);
+    assert.equal(counter('hour', hour), flushes * 2 * 4);
+
+    const compactedAt = now;
+    for (let step = 1; step <= 8; step++) {
+      now = compactedAt + step * compactionIntervalMs / 4;
+      ingest(hour + 1_800_000);
+      await flush();
+    }
+    assert.equal(read.mock.callCount(), 3);
+    assert.equal(counter('hour', hour), (flushes * 2 + 8) * 4);
+
+    now = hourEnd + maxAcceptedPastAgeMs;
+    await flush();
+    assert.equal(store.readBucket('demo', 'hour', hour).finalized, true);
+    assert.equal(counter('day', Date.UTC(2026, 7, 20)), (flushes * 2 + 8) * 4);
   } finally {
     await coordinator.close();
     store.close();

@@ -181,7 +181,7 @@ export class PersistenceCoordinator {
         this.stateStore.saveBuckets('minute', pending.slice(index, index + this.config.sqlite.maxWriteBatchRows));
       }
       for (const bucket of pending) {
-        this._scheduleCompaction(project, 'minute', 'hour', bucket.from);
+        this._scheduleCompaction(project, 'minute', 'hour', bucket);
       }
       history.acknowledge(pending);
       history.prunePersisted(now - this.config.history.maxAcceptedPastAgeMs);
@@ -205,23 +205,41 @@ export class PersistenceCoordinator {
     if (!this.compactionCandidates.has(key)) {
       const candidates = new Map();
       for (const from of this.stateStore.compactionStarts(project, sourceTier, destinationTier)) {
-        candidates.set(from, 0);
+        candidates.set(from, { dueAt: 0, compactedAt: null });
       }
       this.compactionCandidates.set(key, candidates);
     }
     return this.compactionCandidates.get(key);
   }
 
-  _scheduleCompaction(project, sourceTier, destinationTier, sourceFrom) {
-    this._candidates(project, sourceTier, destinationTier)
-      .set(utcBucketStart(sourceFrom, destinationTier), 0);
+  _sourceAllowance(sourceTier) {
+    return sourceTier === 'minute'
+      ? this.config.history.clockSkewAllowanceMs
+      : this.config.history.maxAcceptedPastAgeMs;
+  }
+
+  // A destination waiting on open sources is due when its last known source closes. A compacted
+  // destination that receives late source data recompacts at most once per compaction interval.
+  _scheduleCompaction(project, sourceTier, destinationTier, source) {
+    const candidates = this._candidates(project, sourceTier, destinationTier);
+    const destinationFrom = utcBucketStart(source.from, destinationTier);
+    const closesAt = source.to + this._sourceAllowance(sourceTier);
+    const candidate = candidates.get(destinationFrom);
+    if (!candidate) {
+      candidates.set(destinationFrom, { dueAt: closesAt, compactedAt: null });
+    } else if (candidate.compactedAt === null) {
+      candidate.dueAt = Math.max(candidate.dueAt, closesAt);
+    } else {
+      candidate.dueAt = Math.max(closesAt, candidate.compactedAt + this.config.history.compactionIntervalMs);
+      candidate.compactedAt = null;
+    }
   }
 
   _scanCompaction(project, sourceTier, destinationTier, now) {
     const destinationWidth = destinationTier === 'hour' ? 3_600_000 : 86_400_000;
     const candidates = this._candidates(project, sourceTier, destinationTier);
-    for (const [destinationFrom, nextAt] of candidates) {
-      if (now < nextAt) continue;
+    for (const [destinationFrom, candidate] of candidates) {
+      if (now < candidate.dueAt) continue;
       const source = this.stateStore.readBuckets({
         project,
         tier: sourceTier,
@@ -234,10 +252,9 @@ export class PersistenceCoordinator {
       }
       const open = source.filter((bucket) => !bucket.finalized);
       if (open.length > 0) {
-        const allowance = sourceTier === 'minute'
-          ? this.config.history.clockSkewAllowanceMs
-          : this.config.history.maxAcceptedPastAgeMs;
-        candidates.set(destinationFrom, Math.max(...open.map((bucket) => bucket.to + allowance)));
+        const allowance = this._sourceAllowance(sourceTier);
+        candidate.dueAt = Math.max(...open.map((bucket) => bucket.to + allowance));
+        candidate.compactedAt = null;
         continue;
       }
       const finalizesAt = destinationFrom + destinationWidth + this.config.history.maxAcceptedPastAgeMs;
@@ -245,9 +262,14 @@ export class PersistenceCoordinator {
       this.compactor.compact({
         project, sourceTier, destinationTier, destinationFrom, finalized, sourceBuckets: source
       });
-      if (destinationTier === 'hour') this._scheduleCompaction(project, 'hour', 'day', destinationFrom);
+      if (destinationTier === 'hour') {
+        this._scheduleCompaction(project, 'hour', 'day', {
+          from: destinationFrom,
+          to: destinationFrom + destinationWidth
+        });
+      }
       if (finalized) candidates.delete(destinationFrom);
-      else candidates.set(destinationFrom, finalizesAt);
+      else candidates.set(destinationFrom, { dueAt: finalizesAt, compactedAt: now });
       this.metrics.historyCompactions += 1;
     }
   }

@@ -56,7 +56,7 @@ test('HistoryAccumulator merges repeated minute data and rejects a new over-cap 
   accumulator.ingest(first, []);
   const counter = accumulator.pending()[0].rows.find((row) => row.kind === 'counter');
   assert.equal(counter.value, 8);
-  const before = accumulator.pending();
+  const before = structuredClone(accumulator.pending());
   const overCap = sampleEnvelope({ client: { appVersion: '2.0.0' } });
   assert.throws(() => accumulator.ingest(overCap, []), /app-version cap exceeded/);
   assert.deepEqual(accumulator.pending(), before);
@@ -90,6 +90,24 @@ test('HistoryAccumulator prepares only touched series while projecting the compl
   const bucket = accumulator.pending()[0];
   assert.equal(bucket.rows.length, 1000);
   assert.equal(bucket.rows.find((row) => row.name === 'metric.500').value, 3);
+});
+
+test('HistoryAccumulator pending shares unchanged rows and keeps series order when a series is added', () => {
+  const accumulator = new HistoryAccumulator({
+    project: 'demo', clockSkewAllowanceMs: 1000, maxAppVersionsPerProjectRoleTier: 1
+  });
+  const envelope = sampleEnvelope();
+  envelope.frames[0].metrics = { counters: [['b', null, 1], ['d', null, 1]], gauges: [], histograms: [] };
+  envelope.frames[0].events = [];
+  envelope.frames[0].logs = [];
+  accumulator.ingest(envelope, []);
+  const [first] = accumulator.pending();
+  envelope.frames[0].metrics.counters = [['c', null, 1], ['d', null, 1]];
+  accumulator.ingest(envelope, []);
+  const [second] = accumulator.pending();
+  assert.deepEqual(second.rows.map((row) => [row.name, row.value]), [['b', 1], ['c', 1], ['d', 2]]);
+  assert.equal(second.rows[0], first.rows[0]);
+  assert.deepEqual(first.rows.map((row) => [row.name, row.value]), [['b', 1], ['d', 1]]);
 });
 
 test('HistoryAccumulator prunes only persisted minutes outside the late-arrival window', () => {
