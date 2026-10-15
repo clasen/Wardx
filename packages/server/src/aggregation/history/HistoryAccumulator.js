@@ -1,6 +1,8 @@
 import {
   historicalSeriesKey,
   mergeHistoricalRow,
+  mergedRowBytes,
+  normalizeHistoricalRow,
   normalizeHistoryBucket
 } from './HistoryBucket.js';
 import { utcBucketStart } from './HistoricalCompactor.js';
@@ -144,27 +146,20 @@ export class HistoryAccumulator {
     const updates = new Map();
     for (const frame of envelope.frames) {
       const from = utcBucketStart(frame.from, 'minute');
-      const incoming = normalizeHistoryBucket({
-        project: this.project,
-        tier: 'minute',
-        from,
-        to: from + 60_000,
-        finalized: false,
-        dropCount: 0,
-        rows: historyRows(envelope, frame, persistLogs)
-      });
+      const rows = historyRows(envelope, frame, persistLogs);
       const base = this.states.get(from) || emptyState(this.project, from);
       let update = updates.get(from);
       if (!update) {
         update = { from, rows: new Map(), rowBytes: new Map(), projectedBytes: base.bytes, added: 0 };
         updates.set(from, update);
       }
-      for (const row of incoming.rows) {
+      for (let index = 0; index < rows.length; index++) {
+        const row = normalizeHistoricalRow(rows[index], `history bucket.rows[${index}]`);
         const key = historicalSeriesKey(row);
         const current = update.rows.get(key) || base.rows.get(key);
-        const merged = current ? mergeHistoricalRow(current, row) : structuredClone(row);
+        const merged = current ? mergeHistoricalRow(current, row) : row;
         const previousBytes = update.rowBytes.get(key) ?? base.rowBytes.get(key);
-        const nextBytes = rowBytes(merged);
+        const nextBytes = previousBytes === undefined ? rowBytes(merged) : mergedRowBytes(previousBytes, current, merged);
         if (previousBytes === undefined) {
           if (base.rows.size + update.added > 0) update.projectedBytes += 1;
           update.added += 1;

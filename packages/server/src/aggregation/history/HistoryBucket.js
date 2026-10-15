@@ -107,16 +107,7 @@ function stableDimensions(value) {
 }
 
 export function historicalSeriesKey(row) {
-  return [
-    row.kind,
-    row.role,
-    row.environment,
-    row.appVersion,
-    row.os ?? '',
-    row.name,
-    row.level ?? '',
-    stableDimensions(row.dimensions)
-  ].join('\0');
+  return `${row.kind}\0${row.role}\0${row.environment}\0${row.appVersion}\0${row.os ?? ''}\0${row.name}\0${row.level ?? ''}\0${stableDimensions(row.dimensions)}`;
 }
 
 function compatibleBounds(left, right) {
@@ -161,13 +152,43 @@ function mergeRow(existing, incoming) {
   }
 }
 
+function copyHistoricalRow(row) {
+  const copy = { ...row, dimensions: row.dimensions === null ? null : { ...row.dimensions } };
+  if (row.kind === 'histogram') copy.buckets = row.buckets.map(([bound, count]) => [bound, count]);
+  return copy;
+}
+
+// Both rows must belong to the same series; callers pair them by historicalSeriesKey.
 export function mergeHistoricalRow(existing, incoming) {
-  if (historicalSeriesKey(existing) !== historicalSeriesKey(incoming)) {
-    throw new Error('cannot merge different historical series');
-  }
-  const merged = structuredClone(existing);
+  const merged = copyHistoricalRow(existing);
   mergeRow(merged, incoming);
   return merged;
+}
+
+function numberBytes(value) {
+  return String(value).length;
+}
+
+// JSON byte length of the fields mergeRow can change.
+function mergeableBytes(row) {
+  if (row.kind === 'counter') return numberBytes(row.value);
+  if (row.kind === 'event' || row.kind === 'log' || row.kind === 'drop') return numberBytes(row.count);
+  if (row.kind === 'gauge') {
+    return numberBytes(row.lastValue) + numberBytes(row.lastTimestamp) + numberBytes(row.min) +
+      numberBytes(row.max) + numberBytes(row.sampleCount);
+  }
+  if (row.kind === 'histogram') {
+    let bytes = numberBytes(row.count) + numberBytes(row.sum) + numberBytes(row.min) + numberBytes(row.max);
+    for (const [, count] of row.buckets) bytes += numberBytes(count);
+    return bytes;
+  }
+  if (row.kind === 'distinct') return numberBytes(row.precision) + row.registers.length + numberBytes(row.estimate);
+  throw new Error(`unknown historical row kind: ${row.kind}`);
+}
+
+// JSON byte length of a row produced by mergeHistoricalRow(existing, ...), given existing's JSON byte length.
+export function mergedRowBytes(existingBytes, existing, merged) {
+  return existingBytes + mergeableBytes(merged) - mergeableBytes(existing);
 }
 
 function expectedWidth(tier) {

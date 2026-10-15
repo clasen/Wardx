@@ -114,3 +114,30 @@ test('HistoryAccumulator prunes only persisted minutes outside the late-arrival 
   accumulator.prunePersisted(from + 60_000);
   assert.equal(accumulator.states.size, 0);
 });
+
+test('HistoryAccumulator tracks merged bucket bytes exactly as their JSON encoding', () => {
+  const accumulator = new HistoryAccumulator({
+    project: 'demo', clockSkewAllowanceMs: 300_000, maxAppVersionsPerProjectRoleTier: 1
+  });
+  const hll = (step) => {
+    const registers = Buffer.alloc(512);
+    for (let index = 0; index <= step * 37; index++) registers[index % 512] = 1 + (index % 7);
+    return { precision: 9, registers: registers.toString('base64') };
+  };
+  for (let step = 0; step < 12; step++) {
+    const envelope = sampleEnvelope();
+    const frame = envelope.frames[0];
+    frame.metrics = {
+      counters: [['grows', null, 9], ['grows', null, 0.1], ['signed', { mode: 'ranked' }, -7 * step]],
+      gauges: [['temperature', null, step % 2 ? -0.3 * step : 1e21 * step, frame.to - step]],
+      histograms: [['latency', null, { count: step + 1, sum: 0.1 * step, min: -1, max: 99.5, buckets: [[10, step], [100, 1]] }]],
+      distincts: [['players', null, hll(step)]]
+    };
+    frame.events = Array.from({ length: 9 }, () => [frame.from + 1, 'purchase', {}]);
+    frame.logs = [[frame.from + 2, 'error', 'payment_failed', {}]];
+    accumulator.ingest(envelope, ['payment_failed']);
+    const [bucket] = accumulator.pending();
+    assert.equal(bucket.finalized, false);
+    assert.equal(accumulator.projectedPending({ updates: [] }).bytes, Buffer.byteLength(JSON.stringify(bucket)));
+  }
+});
