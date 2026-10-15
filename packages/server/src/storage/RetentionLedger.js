@@ -3,7 +3,6 @@ const RETURN_DAYS = [1, 7, 30];
 const HASH = /^[0-9a-f]{16}$/;
 
 export class RetentionInputError extends Error {}
-export class RetentionCapacityError extends Error {}
 
 function dateDay(value) {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
@@ -44,10 +43,13 @@ export class RetentionLedger {
     `);
   }
 
+  // Returns how many activities from unknown subjects were dropped because the
+  // project reached maxUsersPerProject; known subjects keep updating.
   ingestBatch(project, events) {
-    if (events.length === 0) return;
+    if (events.length === 0) return 0;
     return this.store.transaction(() => {
       let state = this.project.get(project);
+      let dropped = 0;
       for (const { timestamp, subject, salt } of events) {
         if (!HASH.test(subject) || !HASH.test(salt) || !Number.isSafeInteger(timestamp) || timestamp < 0) {
           throw new RetentionInputError('invalid retention activity');
@@ -74,13 +76,15 @@ export class RetentionLedger {
           if (cohort === current.cohort_day && activity === current.activity_days) continue;
         } else {
           if (state.user_count >= this.settings.maxUsersPerProject) {
-            throw new RetentionCapacityError('retention user capacity reached');
+            dropped += 1;
+            continue;
           }
           this.incrementUsers.run(project);
           state.user_count += 1;
         }
         this.putUser.run(project, hash, cohort, activity);
       }
+      return dropped;
     });
   }
 

@@ -1,9 +1,10 @@
 export class OperationalHealth {
-  constructor({ config, stateStore, persistence, syncGate, mcpReady }) {
+  constructor({ config, stateStore, persistence, syncGate, ingestMetrics, mcpReady }) {
     this.config = config;
     this.stateStore = stateStore;
     this.persistence = persistence;
     this.syncGate = syncGate;
+    this.ingestMetrics = ingestMetrics;
     this.mcpReady = mcpReady;
     this.stopping = false;
     this.sqliteReady = false;
@@ -32,7 +33,11 @@ export class OperationalHealth {
       capacity: persistence.withinCapacity && capacity.active < capacity.limit,
       mcp: this.mcpReady()
     };
-    return { ok: Object.values(checks).every(Boolean), checks };
+    return {
+      ok: Object.values(checks).every(Boolean),
+      checks,
+      counters: { retentionActivityDropped: this.ingestMetrics.retentionActivityDropped }
+    };
   }
 
   stop() {

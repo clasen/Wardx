@@ -79,17 +79,15 @@ test('out-of-order activity produces the same cohort and exact returns as chrono
   }
 });
 
-test('capacity, identity salt and query limits reject without partial writes or cohort eviction', () => {
+test('capacity drops only new subjects; identity salt and query limits reject without cohort eviction', () => {
   const store = openStore(testServerConfig().sqlite.path);
   try {
     const ledger = new RetentionLedger({ store, settings: { maxUsersPerProject: 1, maxQueryDays: 31 } });
-    assert.throws(() => ledger.ingestBatch('demo', [activity('a', 0), activity('b', 0)]), /capacity/);
-    assert.equal(ledger.query('demo', RANGE).cohorts.length, 0);
-    ledger.ingestBatch('demo', [activity('a', 0)]);
+    assert.equal(ledger.ingestBatch('demo', [activity('a', 0), activity('b', 0)]), 1);
+    assert.equal(ledger.query('demo', RANGE).cohorts[0].users, 1);
     assert.throws(() => ledger.ingestBatch('demo', [activity('a', 7), activity('a', 0, 'changed')]), /PrivacySalt/);
     assert.equal(ledger.query('demo', RANGE, START + 40 * DAY).cohorts[0].returns[1].users, 0);
-    assert.throws(() => ledger.ingestBatch('demo', [activity('b', 100)]), /capacity/);
-    ledger.ingestBatch('demo', [activity('a', 30)]);
+    assert.equal(ledger.ingestBatch('demo', [activity('b', 30), activity('a', 30)]), 1);
     assert.equal(ledger.query('demo', RANGE, START + 40 * DAY).cohorts[0].returns[2].users, 1);
     for (const range of [
       { from: '2026-02-30', to: '2026-03-02' }, { from: 'bad', to: '2026-01-02' },
@@ -130,19 +128,29 @@ test('Node public SDK, ingest validation and MCP retention query work across ser
       });
       assert.equal(response.status, 400);
     }
-    for (const [entry, status, message] of [
-      [activity('sdk-user', 0, 'different-salt'), 400, /PrivacySalt/],
-      [activity('second-user', 0), 503, /capacity/]
-    ]) {
-      const envelope = sampleEnvelope();
-      envelope.frames[0].events = [[Date.now(), 'retention.activity', { subject: entry.subject, salt: entry.salt }]];
-      const response = await fetch(`${endpoint}/v1/sync`, {
-        method: 'POST', headers: { 'x-wardx-key': 'test-key' }, body: JSON.stringify(envelope)
-      });
-      assert.equal(response.status, status);
-      assert.match((await response.json()).error, message);
-      assert.deepEqual(executeTool(server.wardx.control, 'get_retention', args), result);
-    }
+    const salted = activity('sdk-user', 0, 'different-salt');
+    const mismatch = sampleEnvelope();
+    mismatch.frames[0].events = [[Date.now(), 'retention.activity', { subject: salted.subject, salt: salted.salt }]];
+    let response = await fetch(`${endpoint}/v1/sync`, {
+      method: 'POST', headers: { 'x-wardx-key': 'test-key' }, body: JSON.stringify(mismatch)
+    });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /PrivacySalt/);
+    assert.deepEqual(executeTool(server.wardx.control, 'get_retention', args), result);
+
+    const newUser = activity('second-user', 0);
+    const atCapacity = sampleEnvelope();
+    atCapacity.frames[0].events.push([Date.now(), 'retention.activity', { subject: newUser.subject, salt: newUser.salt }]);
+    const accepted = server.wardx.sink.envelopes.length;
+    response = await fetch(`${endpoint}/v1/sync`, {
+      method: 'POST', headers: { 'x-wardx-key': 'test-key' }, body: JSON.stringify(atCapacity)
+    });
+    assert.equal(response.status, 200);
+    assert.equal(server.wardx.sink.envelopes.length, accepted + 1);
+    assert.deepEqual(executeTool(server.wardx.control, 'get_retention', args), result);
+    const readiness = await (await fetch(`${endpoint}/ready`)).json();
+    assert.equal(readiness.ok, true);
+    assert.deepEqual(readiness.counters, { retentionActivityDropped: 1 });
     await server.wardx.stop();
     server = createIngestServer(config);
     assert.deepEqual(executeTool(server.wardx.control, 'get_retention', args), result);

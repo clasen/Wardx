@@ -23,7 +23,8 @@ test('readiness probes SQLite write capability and recovers without changing app
   assert.equal(response.headers.get('cache-control'), 'no-store');
   assert.deepEqual(await response.json(), {
     ok: true,
-    checks: { running: true, sqlite: true, persistence: true, capacity: true, mcp: true }
+    checks: { running: true, sqlite: true, persistence: true, capacity: true, mcp: true },
+    counters: { retentionActivityDropped: 0 }
   });
 
   stateStore.database.pragma('query_only = ON');

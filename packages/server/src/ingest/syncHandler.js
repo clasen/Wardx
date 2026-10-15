@@ -22,9 +22,12 @@ export function createSyncHandler({
   experimentLedger,
   retentionLedger,
   stateStore,
-  diagnostics
+  diagnostics,
+  ingestMetrics
 }) {
-  const ingest = createIngestPipeline({ sink, persistence, experimentLedger, retentionLedger, stateStore, diagnostics });
+  const ingest = createIngestPipeline({
+    sink, persistence, experimentLedger, retentionLedger, stateStore, diagnostics, ingestMetrics
+  });
   return async function handleSync(req, res) {
     const key = req.headers['x-wardx-key'];
     let credential;

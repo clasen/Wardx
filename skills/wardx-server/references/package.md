@@ -119,9 +119,10 @@ a cache keyed by arbitrary client attributes. See `docs/PROTOCOL.md` for the wir
 contract and the tools reference for condition syntax.
 
 Retention config requires `maxUsersPerProject` and `maxQueryDays`. User state
-does not expire; capacity rejects new users rather than reenrolling existing
-ones. Salt fingerprints are pinned per project and changes are rejected.
-SQLite uses schema v3. Startup accepts that schema or initializes an empty
+does not expire; capacity drops new users' activity rather than reenrolling
+existing ones, accepts the rest of the envelope, and counts drops in `/ready`
+`counters.retentionActivityDropped`. Salt fingerprints are pinned per project
+and changes are rejected. SQLite uses schema v3. Startup accepts that schema or initializes an empty
 database; it rejects older schemas because the XXHash64 identity change requires
 fresh telemetry history. There is no automatic legacy-schema migration.
 Conditional Remote Config rules are optional project-state JSON and do not

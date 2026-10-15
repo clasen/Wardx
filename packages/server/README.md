@@ -130,8 +130,10 @@ or MCP readiness.
 
 `GET /ready` returns HTTP 200 when all operational checks pass, or 503 while
 degraded or draining. Its body is `{ "ok": true, "checks": { "running": true,
-"sqlite": true, "persistence": true, "capacity": true, "mcp": true } }`, with
-failed checks set to false. It exposes no project names, values, paths, or errors.
+"sqlite": true, "persistence": true, "capacity": true, "mcp": true },
+"counters": { "retentionActivityDropped": 0 } }`, with failed checks set to
+false. Counters are process-wide since startup and do not affect `ok`. It
+exposes no project names, values, paths, or errors.
 
 ## Required configuration
 
@@ -793,9 +795,11 @@ does not double-count users. Queries expose no subject hashes. Counts can be
 revised by delayed accepted activity even after a target day is mature.
 
 User rows and salt fingerprints do not expire: forgetting an old user would
-incorrectly enroll them again. Capacity is bounded by `maxUsersPerProject`;
-a batch that would exceed it is rejected atomically with HTTP 503 instead of
-evicting old users. Existing users can still report activity at capacity.
+incorrectly enroll them again. Capacity is bounded by `maxUsersPerProject`.
+At capacity, activity from new users is dropped instead of evicting old users;
+existing users keep reporting activity and the rest of the envelope is accepted.
+Each drop emits an `ingest.retention_capacity` diagnostic with the project and
+count and increments `retentionActivityDropped` in `/ready`.
 `maxQueryDays` bounds the query date span, and the user capacity bounds the
 population scanned. Hashes are pseudonymous per-user state; account for this
 in the deployment's data-retention policy. This feature adds no user-history

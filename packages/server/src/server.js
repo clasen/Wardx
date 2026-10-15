@@ -133,6 +133,7 @@ function createIngestRuntime(configInput) {
   const credentials = new CredentialRegistry(config.credentials);
   const syncGate = new ConcurrencyGate(config.capacity.maxConcurrentSyncHandlers);
   const diagnostics = createDiagnostics(config);
+  const ingestMetrics = { retentionActivityDropped: 0 };
   const persistence = new PersistenceCoordinator({ config, registry, diagnostics, stateStore });
   const experimentLedger = new ExperimentLedger({ store: stateStore, maxRows: config.experiments.ledgerMaxRows });
   const retentionLedger = new RetentionLedger({ store: stateStore, settings: config.retention });
@@ -148,13 +149,15 @@ function createIngestRuntime(configInput) {
     experimentLedger,
     retentionLedger,
     stateStore,
-    diagnostics
+    diagnostics,
+    ingestMetrics
   });
   const health = new OperationalHealth({
     config: config.readiness,
     stateStore,
     persistence,
     syncGate,
+    ingestMetrics,
     mcpReady: () => !config.mcpHttp.enabled || Boolean(wardx.mcpHttp?.isReady())
   });
 

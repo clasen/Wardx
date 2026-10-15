@@ -1,5 +1,5 @@
 import { validateExperimentEvents } from './validate.js';
-import { RetentionInputError, RetentionCapacityError } from '../storage/RetentionLedger.js';
+import { RetentionInputError } from '../storage/RetentionLedger.js';
 
 function experimentEvents(envelope) {
   const events = [];
@@ -43,9 +43,12 @@ function rejected(status, error) {
 
 // Accepts an authenticated, schema-valid envelope into a project. Experiment
 // events, history, persistence capacity and ledger evidence are all checked
-// before the sink or any in-memory view sees the envelope. Returns the status
-// and body of the sync response.
-export function createIngestPipeline({ sink, persistence, experimentLedger, retentionLedger, stateStore, diagnostics }) {
+// before the sink or any in-memory view sees the envelope. Retention activity
+// from new subjects is dropped, not rejected, once the project's user capacity
+// is reached. Returns the status and body of the sync response.
+export function createIngestPipeline({
+  sink, persistence, experimentLedger, retentionLedger, stateStore, diagnostics, ingestMetrics
+}) {
   return function ingest(project, envelope, source) {
     const name = project.name;
     const invalidExperiments = validateExperimentEvents(envelope, project.configRepo.experiments);
@@ -71,6 +74,7 @@ export function createIngestPipeline({ sink, persistence, experimentLedger, rete
     }
     const activity = retentionActivity(envelope);
     let rejectedEvidence;
+    let droppedActivity = 0;
     try {
       const ingestEvidence = () => {
         const evidence = experimentLedger.ingestBatch(name, experimentEvents(envelope), source);
@@ -78,14 +82,21 @@ export function createIngestPipeline({ sink, persistence, experimentLedger, rete
           (result) => result.status === 'variant_conflict' || result.status === 'missing_exposure'
         );
         if (rejectedEvidence) return;
-        retentionLedger.ingestBatch(name, activity);
+        droppedActivity = retentionLedger.ingestBatch(name, activity);
       };
       if (activity.length > 0) stateStore.transaction(ingestEvidence);
       else ingestEvidence();
     } catch (error) {
-      if (!(error instanceof RetentionInputError) && !(error instanceof RetentionCapacityError)) throw error;
+      if (!(error instanceof RetentionInputError)) throw error;
       diagnostics.report('ingest.retention_rejected', error, { project: name });
-      return rejected(error instanceof RetentionCapacityError ? 503 : 400, error.message);
+      return rejected(400, error.message);
+    }
+    if (droppedActivity > 0) {
+      ingestMetrics.retentionActivityDropped += droppedActivity;
+      diagnostics.report('ingest.retention_capacity', new Error('retention user capacity reached'), {
+        project: name,
+        droppedActivity
+      });
     }
     if (rejectedEvidence) {
       diagnostics.report('ingest.experiment_rejected', new Error(rejectedEvidence.status), {

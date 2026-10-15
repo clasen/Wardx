@@ -240,9 +240,10 @@ name and closed attrs:
 `salt` is `subjectHash(privacySalt, "wardx.retention.identity")`, a project
 identity-salt fingerprint. Neither the raw user ID nor salt is sent. Missing,
 non-hash or extra attrs are rejected. The first accepted fingerprint is pinned
-per project; a mismatch is HTTP 400. An exhausted user capacity is HTTP 503.
-Both failures roll back the retention batch and any accepted experiment
-evidence from the same envelope.
+per project; a mismatch is HTTP 400 and rolls back the retention batch and
+any accepted experiment evidence from the same envelope. Once the project's user
+capacity is exhausted, activity from new subjects is dropped while known
+subjects and the rest of the envelope are still accepted.
 
 The event timestamp supplies the UTC activity day under existing timestamp and
 late-data validation. SQLite preserves the earliest received activity day and
