@@ -285,6 +285,23 @@ namespace Wardx
             }
         }
 
+        internal void Suspend()
+        {
+            if (!_enabled) return;
+            lock (_gate) _core.Suspend();
+            lock (_lifecycleGate)
+            {
+                if (_stopped) return;
+                _ = EnqueueSync(new SyncFlags { Flush = true });
+            }
+        }
+
+        internal void Resume()
+        {
+            if (!_enabled) return;
+            lock (_gate) _core.Resume();
+        }
+
         internal Task EnqueueSnapshot()
         {
             if (!_enabled) return Task.CompletedTask;

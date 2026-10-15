@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Text;
+using System.Threading;
 
 namespace Wardx.Tests
 {
@@ -38,6 +39,7 @@ namespace Wardx.Tests
         {
             LinearSerialization();
             Utf8Boundaries();
+            SuspendedWindows();
             var bounded = new WardxCore(Fixtures.TestSettings(o => o.MaxPendingFrames = 3));
             for (var i = 0; i < 100; i++)
             {
@@ -228,6 +230,47 @@ namespace Wardx.Tests
             AssertX.Equal(1023, Encoding.UTF8.GetByteCount(shared.Jsons[0]), "shared fixture bytes 1");
             AssertX.Equal(997, Encoding.UTF8.GetByteCount(shared.Jsons[1]), "shared fixture bytes 2");
             AssertX.Equal(141, Encoding.UTF8.GetByteCount(shared.Jsons[2]), "shared fixture bytes 3");
+        }
+
+        static void SuspendedWindows()
+        {
+            var core = new WardxCore(Fixtures.TestSettings());
+
+            core.Counter("before.pause").Inc();
+            var pausing = Clock.UnixMs();
+            core.Suspend();
+            var paused = Clock.UnixMs();
+            Thread.Sleep(30);
+            var resuming = Clock.UnixMs();
+            core.Resume();
+            var cut = core.SnapshotIfDirty().Frames[0];
+            AssertX.True(cut.To >= pausing && cut.To <= paused, "cut captured after resume ends at the pause");
+            core.Counter("after.resume").Inc();
+            AssertX.True(core.SnapshotIfDirty().Frames[0].From >= resuming, "window after resume starts at the resume");
+
+            core.Counter("before.pause").Inc();
+            core.Suspend();
+            paused = Clock.UnixMs();
+            AssertX.True(core.SnapshotIfDirty().Frames[0].To <= paused, "cut captured while suspended ends at the pause");
+            Thread.Sleep(30);
+            resuming = Clock.UnixMs();
+            core.Resume();
+            core.Counter("after.resume").Inc();
+            AssertX.True(core.SnapshotIfDirty().Frames[0].From >= resuming, "window after a captured cut starts at the resume");
+
+            core.Suspend();
+            Thread.Sleep(30);
+            resuming = Clock.UnixMs();
+            core.Resume();
+            core.Counter("after.idle.pause").Inc();
+            AssertX.True(core.SnapshotIfDirty().Frames[0].From >= resuming, "idle suspension does not stretch the window");
+
+            core.Counter("not.suspended").Inc();
+            Thread.Sleep(5);
+            var before = Clock.UnixMs();
+            core.Resume();
+            var frame = core.SnapshotIfDirty().Frames[0];
+            AssertX.True(frame.From < before && frame.To >= before, "resume without suspension keeps the window");
         }
 
         static void LinearSerialization()

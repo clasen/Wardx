@@ -178,6 +178,13 @@ namespace Wardx
             }
         }
 
+        void OnApplicationPause(bool paused)
+        {
+            if (_stopping || _client == null) return;
+            if (paused) _client.Suspend();
+            else _client.Resume();
+        }
+
         void OnApplicationQuit()
         {
             if (_client == null) return;

@@ -15,6 +15,9 @@ namespace Wardx
         int _seq;
         List<Frame> _pendingFrames = new List<Frame>();
         long _windowStart;
+        long? _suspendedAt;
+        long? _resumedAt;
+        bool _suspended;
         string _subjectId;
 
         public readonly InternalMetrics Internal = new InternalMetrics();
@@ -228,11 +231,34 @@ namespace Wardx
 
         internal Frame CaptureFrameIfDirty() => HasActivity() ? CaptureFrame() : null;
 
+        internal void Suspend()
+        {
+            if (_suspended) return;
+            _suspended = true;
+            _suspendedAt = Clock.UnixMs();
+        }
+
+        internal void Resume()
+        {
+            if (!_suspended) return;
+            _suspended = false;
+            var now = Clock.UnixMs();
+            if (_suspendedAt.HasValue && HasActivity())
+            {
+                _resumedAt = now;
+                return;
+            }
+            _suspendedAt = null;
+            _windowStart = now;
+        }
+
         Frame CaptureFrame()
         {
-            var to = Clock.UnixMs();
+            var to = _suspendedAt ?? Clock.UnixMs();
             var from = _windowStart;
-            _windowStart = to;
+            _windowStart = _resumedAt ?? to;
+            _suspendedAt = null;
+            _resumedAt = null;
             Internal.EventsBuffered = _events.Length;
             Internal.LogsBuffered = _logs.Length;
             var metrics = _metrics.SnapshotAndReset();

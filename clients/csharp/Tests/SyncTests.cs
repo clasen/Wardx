@@ -251,6 +251,7 @@ namespace Wardx.Tests
             EncodingFailureDropsEveryFrame();
             EnvelopesRespectServerLimits();
             CoalescedFlushes();
+            SuspensionFlushesTheCutWindow();
             var transport = new MemoryTransport();
             var client = WardxClient.Create(new WardxOptions
             {
@@ -561,6 +562,32 @@ namespace Wardx.Tests
                 transport.Release.TrySetResult(true);
                 Wait(client.ShutdownAsync());
             }
+        }
+
+        static void SuspensionFlushesTheCutWindow()
+        {
+            var transport = new RecordingTransport();
+            var client = WardxClient.Create(Options(5000), transport);
+            try
+            {
+                client.Counter("before.pause").Inc();
+                client.Suspend();
+                var paused = Clock.UnixMs();
+                Wait(client.EnqueueSync(default));
+                AssertX.Equal(1, transport.Jsons.Count, "suspension flushes");
+                AssertX.True(transport.Jsons[0].Contains("before.pause"), "flush carries pre-pause data");
+                var cut = Json.Parse(transport.Jsons[0])["frames"].ArrayValue[0];
+                AssertX.True(cut["to"].NumberValue <= paused, "flushed window ends at the pause");
+
+                Thread.Sleep(30);
+                var resuming = Clock.UnixMs();
+                client.Resume();
+                client.Counter("after.resume").Inc();
+                Wait(client.FlushAsync());
+                var resumed = Json.Parse(transport.Jsons[1])["frames"].ArrayValue[0];
+                AssertX.True(resumed["from"].NumberValue >= resuming, "window after resume starts at the resume");
+            }
+            finally { Wait(client.ShutdownAsync()); }
         }
 
         static void Wait(Task task)
