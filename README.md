@@ -69,15 +69,19 @@ Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Protocol: [docs/PROT
 ## Connect an agent
 
 With `mcpHttp.enabled`, the server answers MCP at `/mcp` on the same HTTPS
-origin that receives `/v1/sync`. Point Codex at it with the bearer token:
+origin that receives `/v1/sync`. Claude Code:
 
-```toml
-[mcp_servers.wardx]
-url = "https://wardx.example.com/mcp"
-http_headers = { Authorization = "Bearer <token>" }
+```bash
+claude mcp add --transport http --scope user wardx https://wardx.example.com/mcp --header "Authorization: Bearer <token>"
 ```
 
-Server setup, Claude Code, and local stdio:
+Codex, with the token exported as `WARDX_MCP_TOKEN`:
+
+```bash
+codex mcp add wardx --url https://wardx.example.com/mcp --bearer-token-env-var WARDX_MCP_TOKEN
+```
+
+Server setup, manual configuration, and local stdio:
 [Connect an agent over MCP](packages/server/README.md#connect-an-agent-over-mcp).
 
 ## Verification

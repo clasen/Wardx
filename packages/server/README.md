@@ -293,21 +293,27 @@ keep it secret. To rotate it, change `WARDX_MCP_TOKEN` and restart Wardx.
 
 ### Remote: 2. Connect the agent
 
-Paste the token value in place of `<token>`. The client configuration then
-holds the secret, so keep it out of version control.
+Claude Code stores the header in its configuration, so paste the token value
+in place of `<token>` and keep that configuration out of version control:
 
-Codex (`~/.codex/config.toml`):
+```bash
+claude mcp add --transport http --scope user wardx https://wardx.example.com/mcp --header "Authorization: Bearer <token>"
+```
+
+Codex reads the token from an environment variable at connect time, so export
+`WARDX_MCP_TOKEN` in the shell that starts Codex:
+
+```bash
+codex mcp add wardx --url https://wardx.example.com/mcp --bearer-token-env-var WARDX_MCP_TOKEN
+```
+
+That command writes the equivalent entry to `~/.codex/config.toml`, which you
+can also edit by hand:
 
 ```toml
 [mcp_servers.wardx]
 url = "https://wardx.example.com/mcp"
-http_headers = { Authorization = "Bearer <token>" }
-```
-
-Claude Code:
-
-```bash
-claude mcp add --transport http --scope user wardx https://wardx.example.com/mcp --header "Authorization: Bearer <token>"
+bearer_token_env_var = "WARDX_MCP_TOKEN"
 ```
 
 Requests are accepted only after the Bearer token, body-size bound, and
@@ -316,18 +322,16 @@ concurrent-request bound pass.
 ### Local: stdio
 
 The agent starts the whole server, including the ingest listener and SQLite, so
-run only one process per configuration. Codex:
-
-```toml
-[mcp_servers.wardx]
-command = "npx"
-args = ["wardx-server", "/absolute/path/to/wardx-server.json"]
-```
-
-Claude Code:
+run only one process per configuration. Claude Code:
 
 ```bash
 claude mcp add --scope user wardx -- npx wardx-server /absolute/path/to/wardx-server.json
+```
+
+Codex:
+
+```bash
+codex mcp add wardx -- npx wardx-server /absolute/path/to/wardx-server.json
 ```
 
 ## HTTP sync
