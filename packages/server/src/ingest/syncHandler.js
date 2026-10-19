@@ -1,5 +1,5 @@
 import { gunzipSync } from 'node:zlib';
-import { PayloadTooLargeError, readBody } from './readBody.js';
+import { BodyTimeoutError, PayloadTooLargeError, readBody } from './readBody.js';
 import { validateEnvelope } from './validate.js';
 import { CredentialAuthorizationError } from '../auth/CredentialRegistry.js';
 import { createIngestPipeline } from './IngestPipeline.js';
@@ -50,6 +50,7 @@ export function createSyncHandler({
       return;
     }
     let raw;
+    const bodyTimer = setTimeout(() => req.destroy(new BodyTimeoutError()), config.capacity.syncBodyTimeoutMs);
     try {
       raw = await readBody(req, config.maxRequestBytes);
     } catch (err) {
@@ -57,7 +58,13 @@ export function createSyncHandler({
         json(res, 413, { ok: false, error: 'payload too large' });
         return;
       }
+      if (err instanceof BodyTimeoutError) {
+        diagnostics.report('ingest.body_timeout', err, { project });
+        return;
+      }
       throw err;
+    } finally {
+      clearTimeout(bodyTimer);
     }
     let decoded = raw;
     if (encoding === 'gzip') {

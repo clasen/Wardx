@@ -85,7 +85,8 @@ test('validateServerConfig requires explicit bounded MCP HTTP configuration', ()
     path: '/mcp',
     bearerTokenEnvironmentVariable: 'WARDX_MCP_TOKEN',
     maxRequestBytes: 65536,
-    maxConcurrentRequests: 8
+    maxConcurrentRequests: 8,
+    bodyTimeoutMs: 30000
   };
   assert.doesNotThrow(() => validateServerConfig(testServerConfig({ mcpHttp: enabled })));
 

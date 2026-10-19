@@ -6,6 +6,13 @@ export class PayloadTooLargeError extends Error {
   }
 }
 
+export class BodyTimeoutError extends Error {
+  constructor() {
+    super('request body timed out');
+    this.name = 'BodyTimeoutError';
+  }
+}
+
 export async function readBody(req, maxRequestBytes) {
   const chunks = [];
   let size = 0;

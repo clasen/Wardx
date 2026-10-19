@@ -72,9 +72,10 @@ const REQUIRED_MCP_HTTP = [
   'path',
   'bearerTokenEnvironmentVariable',
   'maxRequestBytes',
-  'maxConcurrentRequests'
+  'maxConcurrentRequests',
+  'bodyTimeoutMs'
 ];
-const REQUIRED_CAPACITY = ['maxConcurrentSyncHandlers'];
+const REQUIRED_CAPACITY = ['maxConcurrentSyncHandlers', 'syncBodyTimeoutMs'];
 const REQUIRED_READINESS = ['probeIntervalMs', 'probeTimeoutMs', 'maxPersistenceLagMs'];
 const REQUIRED_RETENTION = ['maxUsersPerProject', 'maxQueryDays'];
 const REQUIRED_EXPERIMENTS = ['ledgerMaxRows'];
@@ -144,7 +145,7 @@ function validateMcpHttp(config) {
   }
   validatePositiveIntegers(
     config,
-    ['maxRequestBytes', 'maxConcurrentRequests'],
+    ['maxRequestBytes', 'maxConcurrentRequests', 'bodyTimeoutMs'],
     'server config.mcpHttp'
   );
 }

@@ -113,7 +113,7 @@ test('readiness reflects persistence failure, recovery, and overdue dirty state'
 });
 
 test('readiness checks sync and per-project history capacity and draining', async (t) => {
-  const { health, syncGate, registry, config } = await start(t, { capacity: { maxConcurrentSyncHandlers: 1 } });
+  const { health, syncGate, registry, config } = await start(t, { capacity: { maxConcurrentSyncHandlers: 1, syncBodyTimeoutMs: 30000 } });
   const leave = syncGate.enter();
   assert.equal(health.snapshot().checks.capacity, false);
   leave();
@@ -143,7 +143,8 @@ test('readiness requires MCP HTTP request capacity when configured', async (t) =
       path: '/mcp',
       bearerTokenEnvironmentVariable: 'WARDX_READINESS_TEST_TOKEN',
       maxRequestBytes: 65536,
-      maxConcurrentRequests: 2
+      maxConcurrentRequests: 2,
+      bodyTimeoutMs: 30000
     }
   });
   assert.equal(health.snapshot().checks.mcp, true);

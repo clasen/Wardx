@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import net from 'node:net';
 import { test } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -88,11 +89,37 @@ test('handler stop drains an accepted streaming request and persists it before r
   assert.equal(buckets.flatMap((bucket) => bucket.rows).find((row) => row.name === 'match.completed').value, 4);
 });
 
+test('handler releases the sync slot held by a stalled request body', async (t) => {
+  const runtime = await createWardxHandler(testServerConfig({
+    capacity: { maxConcurrentSyncHandlers: 1, syncBodyTimeoutMs: 100 }
+  }));
+  const external = http.createServer(runtime.handler);
+  const address = await listen(external, 0, '127.0.0.1');
+  t.after(async () => { external.closeAllConnections(); await close(external); await runtime.stop(); });
+  const stalled = net.connect(address.port, '127.0.0.1');
+  stalled.on('error', () => {});
+  t.after(() => stalled.destroy());
+  const closed = new Promise((resolve) => stalled.once('close', resolve));
+  stalled.write([
+    'POST /v1/sync HTTP/1.1', 'Host: 127.0.0.1', 'x-wardx-key: test-key',
+    'content-type: application/json', 'content-length: 100', '', '{"protocol":'
+  ].join('\r\n'));
+  const sync = () => fetch(`http://127.0.0.1:${address.port}/v1/sync`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-wardx-key': 'test-key' },
+    body: JSON.stringify(sampleEnvelope())
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal((await sync()).status, 503);
+  await closed;
+  assert.equal((await sync()).status, 200);
+});
+
 function mcpConfig() {
   return {
     enabled: true, path: '/mcp',
     bearerTokenEnvironmentVariable: 'WARDX_HANDLER_TEST_TOKEN',
-    maxRequestBytes: 4096, maxConcurrentRequests: 4
+    maxRequestBytes: 4096, maxConcurrentRequests: 4, bodyTimeoutMs: 30000
   };
 }
 

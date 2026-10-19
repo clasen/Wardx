@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ConcurrencyGate } from '../capacity/ConcurrencyGate.js';
-import { PayloadTooLargeError, readBody } from '../ingest/readBody.js';
+import { BodyTimeoutError, PayloadTooLargeError, readBody } from '../ingest/readBody.js';
 import { createMcpServer } from './stdio.js';
 
 function jsonRpcError(res, status, message, headers = {}) {
@@ -67,6 +67,7 @@ export function createMcpHttpHandler(control, config, token) {
           return;
         }
         let raw;
+        const bodyTimer = setTimeout(() => req.destroy(new BodyTimeoutError()), config.bodyTimeoutMs);
         try {
           raw = await readBody(req, config.maxRequestBytes);
         } catch (error) {
@@ -74,7 +75,13 @@ export function createMcpHttpHandler(control, config, token) {
             jsonRpcError(res, 413, 'Payload too large');
             return;
           }
+          if (error instanceof BodyTimeoutError) {
+            control.diagnostics.report('mcp.http_body_timeout', error, { method: req.method });
+            return;
+          }
           throw error;
+        } finally {
+          clearTimeout(bodyTimer);
         }
         try {
           parsedBody = JSON.parse(raw.toString('utf8'));

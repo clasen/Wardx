@@ -64,7 +64,8 @@ function serverConfig() {
       path: '/mcp',
       bearerTokenEnvironmentVariable: 'WARDX_BLACK_BOX_MCP_TOKEN',
       maxRequestBytes: 65536,
-      maxConcurrentRequests: 8
+      maxConcurrentRequests: 8,
+      bodyTimeoutMs: 30000
     },
     projects: {
       demo: {

@@ -166,7 +166,7 @@ Important groups:
 | `history` | Late-data policy, hour/day retention, app-version and query bounds. |
 | `control` | Journal capacity and MCP read concurrency/pending bounds. |
 | `mcpHttp` | Optional Streamable HTTP route on the ingest port, bearer source, and request bounds. |
-| `capacity` | Maximum concurrent HTTP sync handlers. |
+| `capacity` | Maximum concurrent HTTP sync handlers and how long one may wait for its request body. |
 | `readiness` | SQLite probe interval/timeout and maximum persistence lag. |
 | `experiments` | Maximum active assignment-ledger rows. |
 | `projects` | Initial Remote Config, role routing, experiments, and optional MCP catalog with categorized signals and `inspectEvents`. |
@@ -279,7 +279,8 @@ shorter than 32 bytes. Then enable MCP in the server configuration:
     "path": "/mcp",
     "bearerTokenEnvironmentVariable": "WARDX_MCP_TOKEN",
     "maxRequestBytes": 65536,
-    "maxConcurrentRequests": 8
+    "maxConcurrentRequests": 8,
+    "bodyTimeoutMs": 30000
   }
 }
 ```
@@ -579,7 +580,9 @@ Mutation tools include catalog setters, `set_config_value`,
 `delete_config_value`, `upsert_experiment`, `set_experiment_enabled`,
 `ship_experiment`, and `rollback_config_change`. MCP reads are bounded by
 `control.maxConcurrentMcpReads` and `control.maxPendingMcpReads`. Streamable HTTP
-also enforces `mcpHttp.maxConcurrentRequests` and `mcpHttp.maxRequestBytes`.
+also enforces `mcpHttp.maxConcurrentRequests`, `mcpHttp.maxRequestBytes`, and
+`mcpHttp.bodyTimeoutMs`, which drops a request whose body has not finished
+arriving in time so it releases its concurrency slot.
 
 `set_inspect_event` and `delete_inspect_event` update
 `catalog.inspectEvents` for an existing project. Removing a name immediately

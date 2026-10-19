@@ -16,6 +16,7 @@ function mcpHttpConfig(overrides = {}) {
     bearerTokenEnvironmentVariable: 'WARDX_TEST_MCP_TOKEN',
     maxRequestBytes: 1024,
     maxConcurrentRequests: 4,
+    bodyTimeoutMs: 30000,
     ...overrides
   };
 }
@@ -161,4 +162,25 @@ test('Streamable HTTP rejects work above its concurrent request bound', async ()
       await waitFor(() => mcp.requestGate.snapshot().active === 0);
     }
   }, { maxConcurrentRequests: 1 });
+});
+
+test('Streamable HTTP releases the slot held by a stalled request body', async () => {
+  await withMcpHttp(async ({ mcp, url }) => {
+    const stalled = request(url, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        'content-type': 'application/json'
+      }
+    });
+    stalled.on('error', () => {});
+    stalled.write('{');
+    try {
+      await waitFor(() => mcp.requestGate.snapshot().active === 1);
+      await waitFor(() => mcp.requestGate.snapshot().active === 0);
+      assert.notEqual((await post(url)).status, 503);
+    } finally {
+      stalled.destroy();
+    }
+  }, { maxConcurrentRequests: 1, bodyTimeoutMs: 100 });
 });
