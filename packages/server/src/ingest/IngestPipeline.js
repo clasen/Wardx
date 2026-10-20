@@ -31,10 +31,10 @@ function experimentEvents(envelope) {
   return events;
 }
 
-function retentionActivity(envelope) {
+function retentionEvents(envelope) {
   return envelope.frames.flatMap((frame) => frame.events
-    .filter((row) => row[1] === 'retention.activity')
-    .map(([timestamp, , attrs]) => ({ timestamp, subject: attrs.subject, salt: attrs.salt })));
+    .filter((row) => row[1] === 'retention.activity' || row[1] === 'retention.conversion')
+    .map(([timestamp, , { subject, salt, channel, goal }]) => ({ timestamp, subject, salt, channel, goal })));
 }
 
 function rejected(status, error) {
@@ -44,8 +44,10 @@ function rejected(status, error) {
 // Accepts an authenticated, schema-valid envelope into a project. Experiment
 // events, history, persistence capacity and ledger evidence are all checked
 // before the sink or any in-memory view sees the envelope. Retention activity
-// from new subjects is dropped, not rejected, once the project's user capacity
-// is reached. Returns the status and body of the sync response.
+// and conversions from new subjects are dropped, not rejected, once the
+// project's user capacity is reached; so are conversions naming a goal and
+// first touches naming a channel beyond the project's label caps. Returns the
+// status and body of the sync response.
 export function createIngestPipeline({
   sink, persistence, experimentLedger, retentionLedger, stateStore, diagnostics, ingestMetrics
 }) {
@@ -72,9 +74,9 @@ export function createIngestPipeline({
       });
       return rejected(503, 'overloaded');
     }
-    const activity = retentionActivity(envelope);
+    const retention = retentionEvents(envelope);
     let rejectedEvidence;
-    let droppedActivity = 0;
+    let dropped;
     try {
       const ingestEvidence = () => {
         const evidence = experimentLedger.ingestBatch(name, experimentEvents(envelope), source);
@@ -82,20 +84,29 @@ export function createIngestPipeline({
           (result) => result.status === 'variant_conflict' || result.status === 'missing_exposure'
         );
         if (rejectedEvidence) return;
-        droppedActivity = retentionLedger.ingestBatch(name, activity);
+        dropped = retentionLedger.ingestBatch(name, retention);
       };
-      if (activity.length > 0) stateStore.transaction(ingestEvidence);
+      if (retention.length > 0) stateStore.transaction(ingestEvidence);
       else ingestEvidence();
     } catch (error) {
       if (!(error instanceof RetentionInputError)) throw error;
       diagnostics.report('ingest.retention_rejected', error, { project: name });
       return rejected(400, error.message);
     }
-    if (droppedActivity > 0) {
-      ingestMetrics.retentionActivityDropped += droppedActivity;
-      diagnostics.report('ingest.retention_capacity', new Error('retention user capacity reached'), {
+    if (dropped?.activity > 0 || dropped?.conversions > 0) {
+      ingestMetrics.retentionActivityDropped += dropped.activity;
+      ingestMetrics.retentionConversionsDropped += dropped.conversions;
+      diagnostics.report('ingest.retention_capacity', new Error('retention user or goal capacity reached'), {
         project: name,
-        droppedActivity
+        droppedActivity: dropped.activity,
+        droppedConversions: dropped.conversions
+      });
+    }
+    if (dropped?.channels > 0) {
+      ingestMetrics.retentionChannelsDropped += dropped.channels;
+      diagnostics.report('ingest.retention_channel_capacity', new Error('retention channel capacity reached'), {
+        project: name,
+        droppedChannels: dropped.channels
       });
     }
     if (rejectedEvidence) {

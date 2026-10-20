@@ -71,6 +71,8 @@ at creation.
 | Discrete fact | `event(name, attrs)` |
 | Diagnostic detail | `log.error(message, attrs)` or another log level |
 | Explicit user activity for retention | `retentionActivity(userId)` |
+| Acquisition channel of that user | `retentionActivity(userId, { channel })` |
+| User reached a goal (cohort conversion) | `conversion(userId, goal)` |
 
 Counters are window deltas; gauges are absent in windows without a `set`.
 Reuse series handles in loops. Prefer counters for high-volume totals; add events
@@ -139,6 +141,13 @@ an explicit nonblank stable ID; `identify` does not supply it. Use the same acti
 definition and stable project salt across devices. The server stores UTC cohorts
 and received-user returns on D1/D7/D30. Lost batches can bias counts; delayed
 activity can revise cohorts. Query semantics belong to the server skill.
+
+Pass `{ channel }` where the acquisition channel is known, for example the
+`utm_source` of the landing or an install-attribution callback; the earliest
+channel-bearing activity fixes it. Call `conversion(userId, 'purchase')` where
+the goal happens, including server-side payment webhooks. Channels and goals
+are lowercase low-cardinality labels (`^[a-z0-9][a-z0-9._-]{0,63}$`), never
+campaign IDs per ad or user-specific values. A conversion is not a return.
 
 ## Lifecycle and diagnosis
 

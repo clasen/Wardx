@@ -224,6 +224,8 @@ namespace Wardx.Tests
                 client.Event("event");
                 client.Identify(null);
                 client.RetentionActivity(null);
+                client.RetentionActivity(null, "Invalid Channel");
+                client.Conversion(null, null);
                 client.Log.Debug("debug");
                 client.Log.Info("info");
                 client.Log.Warn("warn");

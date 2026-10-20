@@ -111,6 +111,25 @@ namespace Wardx.Tests
             AssertX.Equal(Hash.SubjectHash("test-salt", "private-user"), (string)activity[0].Attrs["subject"]);
             AssertX.Equal(Hash.SubjectHash("test-salt", "wardx.retention.identity"), (string)activity[0].Attrs["salt"]);
             AssertX.Equal((string)activity[0].Attrs["subject"], (string)activity[1].Attrs["subject"]);
+            AssertX.True(!activity[0].Attrs.ContainsKey("channel"), "activity without channel");
+
+            var attributed = new WardxCore(Fixtures.TestSettings());
+            attributed.RetentionActivity("private-user", "google-ads");
+            attributed.Conversion("private-user", "purchase");
+            foreach (var invalid in new string[] { "", "TikTok", "has space", "-lead", new string('x', 65) })
+            {
+                AssertX.Throws(() => attributed.RetentionActivity("private-user", invalid), "channel must match");
+                AssertX.Throws(() => attributed.Conversion("private-user", invalid), "goal must match");
+            }
+            AssertX.Throws(() => attributed.Conversion(null, "purchase"), "conversion requires a non-empty userId");
+            AssertX.Throws(() => attributed.Conversion("private-user", null), "goal must match");
+            var labelled = AllEvents(attributed.SnapshotFrame());
+            AssertX.Equal(2, labelled.Count, "attributed retention event count");
+            AssertX.Equal("retention.activity", labelled[0].Name);
+            AssertX.Equal("google-ads", (string)labelled[0].Attrs["channel"]);
+            AssertX.Equal("retention.conversion", labelled[1].Name);
+            AssertX.Equal("purchase", (string)labelled[1].Attrs["goal"]);
+            AssertX.Equal(Hash.SubjectHash("test-salt", "private-user"), (string)labelled[1].Attrs["subject"]);
 
             var core2 = new WardxCore(Fixtures.TestSettings(o => o.MaxBufferedEvents = 1));
             core2.Event("keep");

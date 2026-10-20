@@ -228,31 +228,49 @@ How the SDK HTTP sync and the MCP agent share that process: [ARCHITECTURE.md](AR
 
 ## Retention activity
 
-SDK methods `retentionActivity(userId)` / `RetentionActivity(userId)` require
-an explicit nonblank user ID and emit an ordinary event tuple with a reserved
-name and closed attrs:
+SDK methods `retentionActivity(userId, { channel })` / `RetentionActivity(userId, channel)`
+require an explicit nonblank user ID and emit an ordinary event tuple with a
+reserved name and closed attrs. `channel` is optional:
 
 ```text
-[timestampMs, "retention.activity", { "subject": "<64 lowercase hex>", "salt": "<64 lowercase hex>" }]
+[timestampMs, "retention.activity", { "subject": "<16 lowercase hex>", "salt": "<16 lowercase hex>", "channel": "tiktok" }]
+```
+
+`conversion(userId, goal)` / `Conversion(userId, goal)` emit the same identity
+with a required goal:
+
+```text
+[timestampMs, "retention.conversion", { "subject": "<16 lowercase hex>", "salt": "<16 lowercase hex>", "goal": "purchase" }]
 ```
 
 `subject` uses the existing `subjectHash(privacySalt, userId)` algorithm.
 `salt` is `subjectHash(privacySalt, "wardx.retention.identity")`, a project
-identity-salt fingerprint. Neither the raw user ID nor salt is sent. Missing,
-non-hash or extra attrs are rejected. The first accepted fingerprint is pinned
+identity-salt fingerprint. Neither the raw user ID nor salt is sent. `channel`
+and `goal` match `^[a-z0-9][a-z0-9._-]{0,63}$`. Missing, non-hash, non-label
+or extra attrs are rejected. The first accepted fingerprint is pinned
 per project; a mismatch is HTTP 400 and rolls back the retention batch and
 any accepted experiment evidence from the same envelope. Once the project's user
-capacity is exhausted, activity from new subjects is dropped while known
-subjects and the rest of the envelope are still accepted.
+capacity is exhausted, activity and conversions from new subjects are dropped
+while known subjects and the rest of the envelope are still accepted. A
+first touch naming a channel beyond `maxChannelsPerProject`, or a conversion
+naming a goal beyond `maxGoalsPerProject`, is dropped the same way; the
+activity itself still counts.
 
 The event timestamp supplies the UTC activity day under existing timestamp and
 late-data validation. SQLite preserves the earliest received activity day and
 activity days 0–30. Reordering or resending activity is idempotent for retention;
 earlier delayed activity may revise the cohort. This is independent of role,
-environment, instance ID and session ID within a project.
+environment, instance ID and session ID within a project. The first-touch
+channel is the channel of the earliest received activity that carries one, with
+equal timestamps resolved to the lowest label; per goal, the earliest received
+conversion day is kept. Both are idempotent under reordering and resending. A
+conversion does not count as activity.
 
 MCP `get_retention` selects cohort dates, `from` inclusive and `to` exclusive.
 It reports exact received-user counts and rates for activity **on** D1/D7/D30.
-A target UTC day must fully elapse before its count/rate stops being null.
+With `goal`, it also reports users whose first conversion falls **on or
+before** D1/D7/D30 (cumulative). `byChannel` or `channel` split cohorts by
+first-touch channel. A target UTC day must fully elapse before its count/rate
+stops being null.
 Maturity does not certify delivery completeness or freeze late corrections.
 The SDK's existing at-most-once transport remains unchanged.

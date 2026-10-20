@@ -2,6 +2,7 @@ import { roleSees } from '../roles.js';
 import { decodeHllBody } from '../aggregation/HyperLogLog.js';
 
 const LOG_LEVELS = new Set(['debug', 'info', 'warn', 'error']);
+const RETENTION_LABEL = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 function isObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -171,6 +172,25 @@ function validateDistinct(row, label, limits) {
   return null;
 }
 
+// Reserved retention events carry only salted hashes and closed, low-cardinality labels.
+function validateRetention(attrs, label, requiredLabels, optionalLabels) {
+  if (!isObject(attrs)) return `${label} retention event requires subject and salt hashes`;
+  const invalidKey = unknownKey(attrs, new Set(['subject', 'salt', ...requiredLabels, ...optionalLabels]), label);
+  if (invalidKey) return invalidKey;
+  for (const key of ['subject', 'salt']) {
+    if (typeof attrs[key] !== 'string' || !/^[0-9a-f]{16}$/.test(attrs[key])) {
+      return `${label}.${key} must be a 64-bit lowercase hex hash`;
+    }
+  }
+  for (const key of [...requiredLabels, ...optionalLabels]) {
+    if (attrs[key] === undefined && optionalLabels.includes(key)) continue;
+    if (typeof attrs[key] !== 'string' || !RETENTION_LABEL.test(attrs[key])) {
+      return `${label}.${key} must match ${RETENTION_LABEL}`;
+    }
+  }
+  return null;
+}
+
 function validateEvent(row, label, limits, earliestTimestamp, latestTimestamp) {
   if (!Array.isArray(row) || row.length !== 3) return `${label} must be a 3-item tuple`;
   const invalidTimestamp = validateTimestamp(row[0], `${label}[0]`, earliestTimestamp, latestTimestamp);
@@ -179,17 +199,8 @@ function validateEvent(row, label, limits, earliestTimestamp, latestTimestamp) {
   if (invalidName) return invalidName;
   const invalidAttrs = validateAttrs(row[2], `${label}[2]`, limits);
   if (invalidAttrs) return invalidAttrs;
-  if (row[1] === 'retention.activity') {
-    const attrs = row[2];
-    if (!isObject(attrs)) return `${label} retention activity requires subject and salt hashes`;
-    const invalidKey = unknownKey(attrs, new Set(['subject', 'salt']), label);
-    if (invalidKey) return invalidKey;
-    for (const key of ['subject', 'salt']) {
-      if (typeof attrs[key] !== 'string' || !/^[0-9a-f]{16}$/.test(attrs[key])) {
-        return `${label}.${key} must be a 64-bit lowercase hex hash`;
-      }
-    }
-  }
+  if (row[1] === 'retention.activity') return validateRetention(row[2], label, [], ['channel']);
+  if (row[1] === 'retention.conversion') return validateRetention(row[2], label, ['goal'], []);
   return null;
 }
 

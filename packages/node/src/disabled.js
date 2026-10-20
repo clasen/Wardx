@@ -12,6 +12,7 @@ export const disabledCore = Object.freeze({
   timer: () => noop,
   event: noop,
   retentionActivity: noop,
+  conversion: noop,
   identify: noop,
   log: Object.freeze({ debug: noop, info: noop, warn: noop, error: noop }),
   configGet: (key, fallback) => fallback,

@@ -21,6 +21,7 @@ import type {
   LogTraceRecord,
   MeasureTraceRecord,
   ResolvedSettings,
+  RetentionActivityOptions,
   SdkDefaults,
   StopTimer,
   SubjectContext,
@@ -51,6 +52,7 @@ export type {
   LogTraceRecord,
   MeasureTraceRecord,
   ResolvedSettings,
+  RetentionActivityOptions,
   SdkDefaults,
   StopTimer,
   SubjectContext,
@@ -78,7 +80,8 @@ export class WardxNode {
   config: ConfigApi;
   experiment: ExperimentApi;
   constructor(settings: ResolvedSettings | DisabledWardxOptions);
-  retentionActivity(userId: string): void;
+  retentionActivity(userId: string, options?: RetentionActivityOptions): void;
+  conversion(userId: string, goal: string): void;
   identify(subjectId: string | null | undefined): void;
   setAttributes(attributes: Record<string, string | number | boolean>): void;
   counter(name: string, dims?: Dimensions | null): CounterHandle;

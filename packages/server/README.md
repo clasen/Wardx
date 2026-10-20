@@ -139,7 +139,8 @@ or MCP readiness.
 `GET /ready` returns HTTP 200 when all operational checks pass, or 503 while
 degraded or draining. Its body is `{ "ok": true, "checks": { "running": true,
 "sqlite": true, "persistence": true, "capacity": true, "mcp": true },
-"counters": { "retentionActivityDropped": 0 } }`, with failed checks set to
+"counters": { "retentionActivityDropped": 0, "retentionConversionsDropped": 0,
+"retentionChannelsDropped": 0 } }`, with failed checks set to
 false. Counters are process-wide since startup and do not affect `ok`. It
 exposes no project names, values, paths, or errors.
 
@@ -769,8 +770,8 @@ preserves counters, gauges, histograms, event/log counts, bucket boundaries,
 finalization, drop counts, and compaction watermarks. Empty buckets remain in
 place. The result additionally reports `removedDistincts`, the number of sketch
 rows removed across all history tiers. `removedRows` counts deleted SQLite rows
-in the reset tables. Both modes preserve definitions and upgrade schemas 1/2 to
-3 atomically; malformed historical JSON aborts the filtered reset with rollback.
+in the reset tables. Both modes preserve definitions and upgrade schemas 1/2/3 to
+4 atomically; malformed historical JSON aborts the filtered reset with rollback.
 
 Without `--hash-data-only`, the full reset behaves as follows.
 
@@ -782,7 +783,7 @@ versions, and the configuration mutation journal. Enabled experiments keep
 their definitions and analysis dates; review their plans before collecting a
 new sample.
 
-The command accepts SQLite schemas 1, 2, and 3 and recreates the empty telemetry
+The command accepts SQLite schemas 1, 2, 3, and 4 and recreates the empty telemetry
 tables using the current XXHash64 schema in one transaction. Pass the database path used by the running application (`config.server.sqlite.path`
 for a `createWardxSite` wrapper). It does not load configuration or credentials;
 CJS, ESM, JSON, and programmatic setups use the same command. Relative paths
@@ -803,10 +804,23 @@ Node `retentionActivity(userId)` and C#/Unity `RetentionActivity(userId)` emit
 explicit activity for D1/D7/D30 retention. Ordinary events, `identify`, session
 IDs and HLL distinct metrics do not establish retention cohorts.
 
+Node `retentionActivity(userId, { channel })` and C#/Unity
+`RetentionActivity(userId, channel)` also name an acquisition channel. Node
+`conversion(userId, goal)` and C#/Unity `Conversion(userId, goal)` record that
+the user reached a goal such as `purchase`. Channels and goals are lowercase
+labels matching `^[a-z0-9][a-z0-9._-]{0,63}$`; anything else is rejected with
+HTTP 400. A conversion is not activity: an automatic renewal does not count as
+a return.
+
 Required centralized configuration:
 
 ```json
-"retention": { "maxUsersPerProject": 1000000, "maxQueryDays": 366 }
+"retention": {
+  "maxUsersPerProject": 1000000,
+  "maxChannelsPerProject": 64,
+  "maxGoalsPerProject": 16,
+  "maxQueryDays": 366
+}
 ```
 
 `get_retention({ project, from, to })` reads cohorts in the half-open UTC date
@@ -817,6 +831,46 @@ until its UTC midnight end, with null users/rate; empty cohorts are omitted.
 `exact: true` describes counting accuracy and `basis: "received_activity"`
 limits the claim to received activity, not delivery completeness.
 
+### Acquisition channels and cohort conversion
+
+Add `goal` to measure "of the users who arrived on day X, how many converted
+within N days". Each cohort then carries `conversions` for D1/D7/D30 with the
+same `day`, `status`, `users` and `rate` fields as `returns`, and the result
+reports `conversionMode: "by_day"`. A conversion counts when the user's first
+received conversion to that goal falls on or before cohort day + N, so the
+series is cumulative, unlike `returns`. A conversion received before the user's
+first activity counts from D0. Users who never report activity have no cohort
+and do not appear. Conversion D_N is `pending` until the same UTC midnight as
+the return for D_N.
+
+Add `byChannel: true` to split each cohort by first-touch channel, or
+`channel: "tiktok"` to keep one channel. Rows then carry `channel` and the
+result reports `attribution: "first_touch"`. A user's channel is taken from
+the earliest received activity that carries one; a later activity never
+replaces it, and activity without a channel never clears it. Equal timestamps
+resolve to the lowest label, so arrival order does not matter. `channel: null`
+groups users with no channel-bearing activity yet. A user who receives a
+channel later, for example from an attribution callback, moves to that channel.
+
+```json
+{ "project": "shop", "from": "2026-10-01", "to": "2026-10-15", "goal": "purchase", "byChannel": true }
+```
+
+This compares a new campaign with an old one by the conversion of its
+cohorts, which a per-period `purchase` counter cannot do: a channel that
+started last week has few sales in the period even when its cohorts convert
+well.
+
+Channel and goal labels are pinned per project and do not expire. Once a
+project holds `maxChannelsPerProject` channels, a first touch that names a new
+channel is ignored: the activity still counts, the user keeps their previous
+channel or none, and `retentionChannelsDropped` in `/ready` increments with an
+`ingest.retention_channel_capacity` diagnostic. Once it holds
+`maxGoalsPerProject` goals, conversions to a new goal are dropped and
+`retentionConversionsDropped` increments with an `ingest.retention_capacity`
+diagnostic. A subject first seen through a conversion counts toward
+`maxUsersPerProject`; at capacity, its conversion is dropped the same way.
+
 Each project's first activity pins a fingerprint of the client's privacy salt.
 All clients must keep that salt and user identity stable. A mismatched salt
 returns HTTP 400. Roles and environments share the project's population; use
@@ -825,7 +879,8 @@ what counts as activity by where it calls the SDK method. Do not mix app-open
 and gameplay definitions within the same project.
 
 SQLite stores one salted subject hash, earliest activity UTC day and a 31-bit
-activity mask per user. The mask also preserves intermediate days so that an
+activity mask per user, plus the first-touch channel and its timestamp, and the
+earliest conversion UTC day per user and goal. The mask also preserves intermediate days so that an
 earlier delayed activity can correct the cohort without losing D1/D7/D30
 returns. Processing duplicates, different arrival orders and process restarts
 does not double-count users. Queries expose no subject hashes. Counts can be
@@ -843,12 +898,16 @@ in the deployment's data-retention policy. This feature adds no user-history
 or per-user query API. Raw diagnostic sinks/allowlisted recent event inspection
 can retain the hashed activity payload under their existing policies.
 
-The SQLite schema is now version 3 and stores XXHash64 identities as 8-byte
-values. Versions 1 and 2 are rejected: this change requires fresh telemetry
+The SQLite schema is now version 4 and stores XXHash64 identities as 8-byte
+values. On startup the server migrates a version 3 database in place, in one
+transaction, by adding the channel, goal and conversion tables; existing users,
+cohorts and every other table are kept. Backups of version 3 remain verifiable
+and restorable. Versions 1 and 2 are rejected: they require fresh telemetry
 history and a coordinated server and SDK upgrade. Use the offline `reset-data` command above to preserve configuration and
 catalog definitions while discarding old telemetry, or create a fresh database.
-No automatic migration or deletion is performed at server startup. External configuration files must include the
-required `retention` object before startup.
+No other migration or deletion is performed at server startup. External configuration files must include the
+required `retention` object, including `maxChannelsPerProject` and
+`maxGoalsPerProject`, before startup.
 
 Accepted retention and experiment evidence commit in one SQLite transaction
 before sync success. General telemetry persistence retains its existing

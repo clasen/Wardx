@@ -204,10 +204,16 @@ namespace Wardx
             lock (_gate) _core.Event(name, attrs);
         }
 
-        public void RetentionActivity(string userId)
+        public void RetentionActivity(string userId, string channel = null)
         {
             if (!_enabled) return;
-            lock (_gate) _core.RetentionActivity(userId);
+            lock (_gate) _core.RetentionActivity(userId, channel);
+        }
+
+        public void Conversion(string userId, string goal)
+        {
+            if (!_enabled) return;
+            lock (_gate) _core.Conversion(userId, goal);
         }
 
         public void Identify(string subjectId)

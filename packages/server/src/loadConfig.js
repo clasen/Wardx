@@ -77,7 +77,7 @@ const REQUIRED_MCP_HTTP = [
 ];
 const REQUIRED_CAPACITY = ['maxConcurrentSyncHandlers', 'syncBodyTimeoutMs'];
 const REQUIRED_READINESS = ['probeIntervalMs', 'probeTimeoutMs', 'maxPersistenceLagMs'];
-const REQUIRED_RETENTION = ['maxUsersPerProject', 'maxQueryDays'];
+const REQUIRED_RETENTION = ['maxUsersPerProject', 'maxChannelsPerProject', 'maxGoalsPerProject', 'maxQueryDays'];
 const REQUIRED_EXPERIMENTS = ['ledgerMaxRows'];
 
 function validateClosedObject(value, required, label) {

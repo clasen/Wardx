@@ -25,7 +25,9 @@ async function createDestination(path) {
 }
 
 function validateDatabase(database, config) {
-  validateSqliteSchema(database);
+  // A backup from a migratable older schema stays restorable; the server migrates it on open.
+  const version = database.pragma('user_version', { simple: true });
+  validateSqliteSchema(database, SqliteStateStore.MIGRATABLE_VERSIONS.includes(version) ? version : SqliteStateStore.SCHEMA_VERSION);
   const integrity = database.pragma('integrity_check');
   if (integrity.length !== 1 || integrity[0].integrity_check !== 'ok') {
     throw new Error('SQLite integrity check failed');
@@ -195,7 +197,7 @@ export async function resetData(sqlitePath, { hashDataOnly = false } = {}) {
     database = new Database(source, { fileMustExist: true, timeout: 0 });
     return database.transaction(() => {
       const version = database.pragma('user_version', { simple: true });
-      if (![1, 2, SqliteStateStore.SCHEMA_VERSION].includes(version)) {
+      if (![1, 2, 3, SqliteStateStore.SCHEMA_VERSION].includes(version)) {
         throw new Error(`unsupported SQLite schema version ${version}`);
       }
       validateSqliteSchema(database, version);
@@ -223,9 +225,11 @@ export async function resetData(sqlitePath, { hashDataOnly = false } = {}) {
         }
       }
       const tables = schema.filter((row) => row.type === 'table');
+      const existing = new Set(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => row.name));
       let removedRows = 0;
       for (const { name } of tables) {
-        if (version === 1 && name.startsWith('retention_')) continue;
+        // Older schemas lack tables that later versions added; they are created below.
+        if (!existing.has(name)) continue;
         removedRows += database.prepare(`SELECT COUNT(*) AS count FROM "${name}"`).get().count;
         database.exec(`DROP TABLE "${name}"`);
       }

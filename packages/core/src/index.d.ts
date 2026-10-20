@@ -18,6 +18,15 @@ export const INTERNAL: {
   readonly frameRowsDropped: 'wardx.internal.frame_rows_dropped';
 };
 
+/** Lowercase low-cardinality retention channel or conversion goal label. */
+export const RETENTION_LABEL: RegExp;
+export function isRetentionLabel(value: unknown): value is string;
+
+export interface RetentionActivityOptions {
+  /** First-touch acquisition channel, fixed by the user's earliest channel-bearing activity. */
+  channel?: string;
+}
+
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 export type DimensionValue = string | number | boolean;
 export interface Dimensions {
@@ -449,7 +458,8 @@ export class WardxCore {
   distinct(name: string, dims?: Dimensions | null): DistinctHandle;
   timer(name: string, dims?: Dimensions | null): StopTimer;
   event(name: string, attrs?: Attrs | null): void;
-  retentionActivity(userId: string): void;
+  retentionActivity(userId: string, options?: RetentionActivityOptions): void;
+  conversion(userId: string, goal: string): void;
   identify(subjectId: string | null | undefined): void;
   configGet<T>(key: string, fallback: T, context?: SubjectContext): T;
   experimentGoal(name: string, context?: ExperimentGoalContext): void;

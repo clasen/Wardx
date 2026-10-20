@@ -64,8 +64,12 @@ export class WardxNode {
     this._enqueueSync({ bootstrap: true });
   }
 
-  retentionActivity(userId) {
-    this._core.retentionActivity(userId);
+  retentionActivity(userId, options) {
+    this._core.retentionActivity(userId, options);
+  }
+
+  conversion(userId, goal) {
+    this._core.conversion(userId, goal);
   }
 
   identify(subjectId) {

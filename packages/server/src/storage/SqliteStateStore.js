@@ -1,7 +1,9 @@
 import Database from 'better-sqlite3';
 import { assertHistoryBoundary } from '../aggregation/history/HistoryBucket.js';
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
+// Older versions that open by migrating in place, without losing stored state.
+const MIGRATABLE_VERSIONS = [3];
 const RETENTION_SCHEMA = `
   CREATE TABLE retention_projects (
     project TEXT PRIMARY KEY,
@@ -16,6 +18,30 @@ const RETENTION_SCHEMA = `
     PRIMARY KEY(project, subject_hash)
   ) STRICT;
   CREATE INDEX retention_cohorts ON retention_users(project, cohort_day);
+`;
+// Version 4 adds first-touch channels and conversions beside the version 3
+// retention tables, so a version 3 database migrates by creating these alone.
+const RETENTION_ATTRIBUTION_SCHEMA = `
+  CREATE TABLE retention_labels (
+    project TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('channel', 'goal')),
+    label TEXT NOT NULL CHECK (length(label) BETWEEN 1 AND 64),
+    PRIMARY KEY(project, kind, label)
+  ) STRICT;
+  CREATE TABLE retention_user_channels (
+    project TEXT NOT NULL,
+    subject_hash BLOB NOT NULL CHECK (length(subject_hash) = 8),
+    channel TEXT NOT NULL CHECK (length(channel) BETWEEN 1 AND 64),
+    touched_at INTEGER NOT NULL CHECK (touched_at >= 0),
+    PRIMARY KEY(project, subject_hash)
+  ) STRICT;
+  CREATE TABLE retention_conversions (
+    project TEXT NOT NULL,
+    subject_hash BLOB NOT NULL CHECK (length(subject_hash) = 8),
+    goal TEXT NOT NULL CHECK (length(goal) BETWEEN 1 AND 64),
+    conversion_day INTEGER NOT NULL CHECK (conversion_day >= 0),
+    PRIMARY KEY(project, subject_hash, goal)
+  ) STRICT;
 `;
 const TIERS = new Set(['minute', 'hour', 'day']);
 const TABLE_BY_TIER = Object.freeze({
@@ -46,10 +72,20 @@ const REQUIRED_TABLES = [
   'minute_aggregates',
   'mutation_journal',
   'project_state',
+  'retention_conversions',
+  'retention_labels',
   'retention_projects',
+  'retention_user_channels',
   'retention_users',
   'schema_metadata'
 ];
+const ATTRIBUTION_TABLES = new Set(['retention_conversions', 'retention_labels', 'retention_user_channels']);
+
+function requiredTables(version) {
+  if (version === 1) return REQUIRED_TABLES.filter((name) => !name.startsWith('retention_'));
+  if (version < 4) return REQUIRED_TABLES.filter((name) => !ATTRIBUTION_TABLES.has(name));
+  return REQUIRED_TABLES;
+}
 
 function requireNonEmptyString(value, label) {
   if (typeof value !== 'string' || value.length === 0) throw new Error(`${label} must be a non-empty string`);
@@ -140,10 +176,7 @@ export function validateSqliteSchema(database, expectedVersion = SCHEMA_VERSION)
   if (version !== expectedVersion) {
     throw new Error(`incompatible SQLite schema version ${version}; expected ${expectedVersion}`);
   }
-  const requiredTables = expectedVersion === 1
-    ? REQUIRED_TABLES.filter((name) => !name.startsWith('retention_'))
-    : REQUIRED_TABLES;
-  if (JSON.stringify(tableNames(database)) !== JSON.stringify(requiredTables)) {
+  if (JSON.stringify(tableNames(database)) !== JSON.stringify(requiredTables(expectedVersion))) {
     throw new Error(`incompatible SQLite schema tables for version ${expectedVersion}`);
   }
   const metadata = database.prepare('SELECT version FROM schema_metadata WHERE singleton = 1').get();
@@ -154,6 +187,7 @@ export function validateSqliteSchema(database, expectedVersion = SCHEMA_VERSION)
 
 export class SqliteStateStore {
   static SCHEMA_VERSION = SCHEMA_VERSION;
+  static MIGRATABLE_VERSIONS = MIGRATABLE_VERSIONS;
 
   constructor({ path, settings }) {
     requireNonEmptyString(path, 'SQLite path');
@@ -195,6 +229,10 @@ export class SqliteStateStore {
 
   static initializeSchema(database) {
     const version = database.pragma('user_version', { simple: true });
+    if (MIGRATABLE_VERSIONS.includes(version)) {
+      SqliteStateStore.migrateSchema(database, version);
+      return;
+    }
     if (version !== 0 && version !== SCHEMA_VERSION) {
       throw new Error(`incompatible SQLite schema version ${version}; expected ${SCHEMA_VERSION}; XXHash64 requires a fresh database`);
     }
@@ -299,6 +337,23 @@ export class SqliteStateStore {
         ) STRICT;
 
         ${RETENTION_SCHEMA}
+        ${RETENTION_ATTRIBUTION_SCHEMA}
+        PRAGMA user_version = ${SCHEMA_VERSION};
+      `);
+      database.exec('COMMIT');
+    } catch (error) {
+      database.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  static migrateSchema(database, version) {
+    database.exec('BEGIN IMMEDIATE');
+    try {
+      validateSqliteSchema(database, version);
+      database.exec(`
+        ${RETENTION_ATTRIBUTION_SCHEMA}
+        UPDATE schema_metadata SET version = ${SCHEMA_VERSION} WHERE singleton = 1;
         PRAGMA user_version = ${SCHEMA_VERSION};
       `);
       database.exec('COMMIT');

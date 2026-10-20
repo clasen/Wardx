@@ -12,7 +12,7 @@ mutation also takes integer `expectedVersion >= 0` and non-empty `reason`.
 | `get_config` | `project` |
 | `get_aggregates` | `project`; optional `names`, `from`, `to`, `role`, exact `category`; distinct rows return HLL estimate/precision |
 | `get_aggregate_history` | `project`, `tier: hour|day`, bounded `from`, `to`; optional `role`, `environment`, `appVersion`, `os`, `names`, exact `category` |
-| `get_retention` | `project`, inclusive `from` and exclusive `to` as UTC `YYYY-MM-DD` cohort dates |
+| `get_retention` | `project`, inclusive `from` and exclusive `to` as UTC `YYYY-MM-DD` cohort dates; optional `goal`, `byChannel`, `channel` |
 | `get_recent_events` | `project`; optional exact `name`, `role`, listed scalar `attrs`, `limit`; newest timestamp first |
 | `get_recent_logs` | `project`; optional `level`, exact `message`, exact `attrs`, `role`, `limit` |
 | `list_experiments` | `project` |
@@ -40,6 +40,15 @@ null values until their UTC end. Maturity does not guarantee complete delivery,
 and delayed earlier activity can correct cohorts and returns. Counts span all
 project roles/environments. No subject hashes are returned; ordinary events and
 HLL metrics cannot backfill cohorts.
+
+With `goal`, each cohort adds D1/D7/D30 `conversions`: users whose first
+conversion to that goal falls **on or before** that day, so the series is
+cumulative, unlike `returns`. With `byChannel: true`, or `channel` for one
+channel, rows split by first-touch channel: the earliest received activity that
+carried a channel. `channel: null` rows have none yet; late attribution can
+move users into a channel. A new channel's cohorts are comparable to an old
+channel's at the same age; per-period sales are not, because a recent channel
+has had less time to convert.
 
 ## Mutate
 

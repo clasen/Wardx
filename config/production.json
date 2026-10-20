@@ -62,7 +62,7 @@
   },
   "mcpHttp": { "enabled": false },
   "capacity": { "maxConcurrentSyncHandlers": 256, "syncBodyTimeoutMs": 30000 },
-  "retention": { "maxUsersPerProject": 1000000, "maxQueryDays": 366 },
+  "retention": { "maxUsersPerProject": 1000000, "maxChannelsPerProject": 64, "maxGoalsPerProject": 16, "maxQueryDays": 366 },
   "experiments": { "ledgerMaxRows": 1000000 },
   "projects": {
     "demo": {

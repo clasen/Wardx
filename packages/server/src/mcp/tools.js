@@ -28,6 +28,8 @@ const EXPECTED_VERSION = {
   description: 'Current project config version required for optimistic concurrency.'
 };
 
+const RETENTION_LABEL_PATTERN = '^[a-z0-9][a-z0-9._-]{0,63}$';
+
 const REASON = { type: 'string', minLength: 1, description: 'Non-empty reason retained in the mutation journal.' };
 const CATEGORY = {
   type: 'string',
@@ -440,13 +442,16 @@ export const TOOL_DEFS = [
   {
     name: 'get_retention',
     annotations: { readOnlyHint: true },
-    description: 'Exact D1/D7/D30 retention for received explicit user activity. Cohorts use the earliest received activity timestamp in UTC; return means active ON that day. Pending days return null. Date range selects cohorts, not return events. Late activity can revise cohorts and counts. No user identifiers are returned.',
+    description: 'Exact D1/D7/D30 retention and conversion for received explicit user activity. Cohorts use the earliest received activity timestamp in UTC; return means active ON that day. With goal, conversions count cohort users whose first received conversion to that goal falls on or before that day (cumulative). With byChannel or channel, rows split by first-touch acquisition channel; channel null means no channel-bearing activity was received. Pending days return null. Date range selects cohorts, not return or conversion events. Late activity and conversions can revise cohorts and counts. No user identifiers are returned.',
     inputSchema: {
       type: 'object',
       properties: {
         project: PROJECT,
         from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'Inclusive cohort date, YYYY-MM-DD UTC.' },
-        to: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'Exclusive cohort date, YYYY-MM-DD UTC.' }
+        to: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'Exclusive cohort date, YYYY-MM-DD UTC.' },
+        goal: { type: 'string', pattern: RETENTION_LABEL_PATTERN, description: 'Conversion goal to report D1/D7/D30 conversion for, for example purchase.' },
+        byChannel: { type: 'boolean', description: 'Split each cohort by first-touch acquisition channel.' },
+        channel: { type: 'string', pattern: RETENTION_LABEL_PATTERN, description: 'Only cohort users whose first-touch channel is this one.' }
       },
       required: ['project', 'from', 'to'],
       additionalProperties: false
@@ -640,7 +645,13 @@ export function executeTool(control, name, args = {}) {
         })
       };
     case 'get_retention':
-      return control.retention(args.project, { from: args.from, to: args.to });
+      return control.retention(args.project, {
+        from: args.from,
+        to: args.to,
+        goal: args.goal,
+        byChannel: args.byChannel,
+        channel: args.channel
+      });
     case 'get_aggregate_history':
       return control.aggregateHistory(args.project, {
         tier: args.tier,

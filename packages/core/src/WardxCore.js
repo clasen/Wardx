@@ -13,7 +13,7 @@ import { NOOP_HISTOGRAM } from './metrics/Histogram.js';
 import { NOOP_DISTINCT } from './metrics/HyperLogLog.js';
 import { startTimer } from './metrics/Timer.js';
 import { emit } from './trace/emit.js';
-import { PROTOCOL_VERSION } from './protocol.js';
+import { PROTOCOL_VERSION, RETENTION_LABEL, isRetentionLabel } from './protocol.js';
 import { wrapCounter, wrapDistinct, wrapGauge, wrapHistogram } from './trace/wrap.js';
 
 export class WardxCore {
@@ -112,18 +112,40 @@ export class WardxCore {
     return wrapped;
   }
 
-  retentionActivity(userId) {
+  retentionActivity(userId, options) {
+    const attrs = this._retentionIdentity('retentionActivity', userId);
+    if (options !== undefined && (options === null || typeof options !== 'object' || Array.isArray(options))) {
+      throw new Error('retentionActivity options must be an object');
+    }
+    for (const key of Object.keys(options ?? {})) {
+      if (key !== 'channel') throw new Error(`retentionActivity unknown option: ${key}`);
+    }
+    const channel = options?.channel;
+    if (channel !== undefined) {
+      if (!isRetentionLabel(channel)) throw new Error(`retentionActivity channel must match ${RETENTION_LABEL}`);
+      attrs.channel = channel;
+    }
+    this.event('retention.activity', attrs);
+  }
+
+  conversion(userId, goal) {
+    const attrs = this._retentionIdentity('conversion', userId);
+    if (!isRetentionLabel(goal)) throw new Error(`conversion goal must match ${RETENTION_LABEL}`);
+    this.event('retention.conversion', { ...attrs, goal });
+  }
+
+  _retentionIdentity(method, userId) {
     if (typeof userId !== 'string' || userId.trim().length === 0) {
-      throw new Error('retentionActivity requires a non-empty userId');
+      throw new Error(`${method} requires a non-empty userId`);
     }
     const salt = this.settings.privacySalt;
     if (typeof salt !== 'string' || salt.trim().length === 0) {
-      throw new Error('retentionActivity requires a non-empty privacySalt');
+      throw new Error(`${method} requires a non-empty privacySalt`);
     }
-    this.event('retention.activity', {
+    return {
       subject: subjectHash(salt, userId),
       salt: subjectHash(salt, 'wardx.retention.identity')
-    });
+    };
   }
 
   identify(subjectId) {

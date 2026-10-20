@@ -18,6 +18,13 @@ export const INTERNAL = {
   frameRowsDropped: 'wardx.internal.frame_rows_dropped'
 };
 
+// Retention channels and conversion goals are low-cardinality labels.
+export const RETENTION_LABEL = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+export function isRetentionLabel(value) {
+  return typeof value === 'string' && RETENTION_LABEL.test(value);
+}
+
 export const LOG_LEVELS = ['debug', 'info', 'warn', 'error'];
 
 export const LOG_RANK = {

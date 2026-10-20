@@ -1,4 +1,4 @@
-export { PROTOCOL_VERSION, SDK_NAME, PLATFORM, INTERNAL } from './protocol.js';
+export { PROTOCOL_VERSION, SDK_NAME, PLATFORM, INTERNAL, RETENTION_LABEL, isRetentionLabel } from './protocol.js';
 export { fnv1a32, assignmentHash, hashToUnitInterval, subjectHash } from './config/hash.js';
 export { assignVariant, ExperimentResolver } from './config/ExperimentResolver.js';
 export { ConfigStore } from './config/ConfigStore.js';

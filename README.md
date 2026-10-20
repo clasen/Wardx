@@ -116,6 +116,9 @@ Use `wardx.retentionActivity(userId)` in Node or
 return. A stable explicit user ID and project privacy salt are required.
 Wardx persists UTC first-activity cohorts and exact received-user D1/D7/D30
 counts; MCP `get_retention` queries cohort dates and marks unfinished days as
-pending. Delivery remains at-most-once, so lost activity can bias results.
+pending. Pass a first-touch acquisition channel with the activity
+(`retentionActivity(userId, { channel: 'tiktok' })`) and record goals with
+`conversion(userId, 'purchase')`; `get_retention` then reports D1/D7/D30
+conversion per cohort and channel. Delivery remains at-most-once, so lost activity can bias results.
 See the [server retention contract](packages/server/README.md#persistent-user-retention)
 for required configuration, limits and the SQLite schema upgrade.

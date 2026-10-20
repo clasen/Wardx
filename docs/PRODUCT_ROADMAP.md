@@ -33,8 +33,9 @@ This roadmap does not add:
 
 - durable raw event history or a general event warehouse (the explicitly
   allowlisted, bounded process-local recent-event ring is ephemeral);
-- user journeys or per-account queries; explicit D1/D7/D30 cohort retention is
-  supported separately through `retentionActivity` and `get_retention`;
+- user journeys or per-account queries; explicit D1/D7/D30 cohort retention and
+  conversion, split by first-touch channel, are supported separately through
+  `retentionActivity`, `conversion` and `get_retention`;
 - a billing ledger or authoritative game-economy store;
 - arbitrary SQL through MCP;
 - an HTTP admin API, dashboard, or approval UI;

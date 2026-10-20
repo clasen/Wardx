@@ -155,7 +155,10 @@ hardware, settings, duration, commit, and local-SSD details.
 ## Persistent retention
 
 Use `get_retention` for explicit activity cohorts and exact received-user
-D1/D7/D30 counts; events and HLL metrics cannot backfill cohorts. Read its UTC
+D1/D7/D30 counts; events and HLL metrics cannot backfill cohorts. Add `goal`
+for cumulative cohort conversion and `byChannel` or `channel` for first-touch
+acquisition channels. Judge a new channel by its cohorts' D7 conversion, not by
+period sales of a `purchase` counter. Read its UTC
 range, pending-day, and late-arrival semantics in the tools reference before
 interpreting results. Retention is project-wide, not filtered by role or
 environment. Check storage/configuration constraints in the package reference

@@ -315,8 +315,12 @@ The wire contract is protocol version 1. A runtime sends `POST /v1/sync` with JS
 
 ## Retention activity
 
-`WardxCore.retentionActivity(userId)` requires an explicit nonblank user ID and
-emits salted `retention.activity` evidence into the existing event buffer. The
+`WardxCore.retentionActivity(userId, { channel })` requires an explicit
+nonblank user ID and emits salted `retention.activity` evidence into the
+existing event buffer; the optional `channel` names the first-touch
+acquisition channel. `WardxCore.conversion(userId, goal)` emits
+`retention.conversion` for cohort conversion. Channels and goals must match
+`RETENTION_LABEL` (`^[a-z0-9][a-z0-9._-]{0,63}$`). The
 server persists UTC cohorts and exact received-user D1/D7/D30 returns; the core
 does not infer activity or keep a durable client identity/outbox. Use the same
 user ID and privacy salt across sessions and clients. See the

@@ -11,6 +11,9 @@ import { loadServerConfig } from '../src/loadConfig.js';
 import { createIngestServer, listen } from '../src/server.js';
 import { testServerConfig } from './helpers.js';
 
+// Schema 4 added these beside the schema 2 and 3 retention tables.
+const DROP_ATTRIBUTION_TABLES = 'DROP TABLE retention_conversions; DROP TABLE retention_labels; DROP TABLE retention_user_channels';
+
 async function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'wardx-recovery-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -174,7 +177,28 @@ test('restore redirects NDJSON output into the new directory and CLI reports no 
   }
 });
 
-for (const version of [1, 2, 3]) {
+test('a schema 3 backup verifies, restores and migrates in place on server start', async (t) => {
+  const { directory, configPath, server, backupPath } = await fixture(t);
+  server.wardx.retentionLedger.ingestBatch('demo', [{ timestamp: 0, subject: 'ab'.repeat(8), salt: 'cd'.repeat(8) }]);
+  await server.wardx.stop();
+  await backup(configPath, backupPath);
+  const snapshot = new Database(join(backupPath, 'state.sqlite'));
+  snapshot.exec(`${DROP_ATTRIBUTION_TABLES}; UPDATE schema_metadata SET version = 3; PRAGMA user_version = 3`);
+  snapshot.close();
+  rehash(backupPath, 'state.sqlite');
+  assert.deepEqual(await verify(backupPath), { ok: true, projects: 1 });
+  const { configPath: restoredPath } = await restore(backupPath, join(directory, 'restored'));
+  const restarted = createIngestServer(loadServerConfig(restoredPath));
+  try {
+    assert.equal(restarted.wardx.stateStore.schemaVersion(), 4);
+    const cohorts = restarted.wardx.retentionLedger.query('demo', { from: '1970-01-01', to: '1970-01-02' }).cohorts;
+    assert.deepEqual(cohorts.map(({ cohort, users }) => [cohort, users]), [['1970-01-01', 1]]);
+  } finally {
+    await restarted.wardx.stop();
+  }
+});
+
+for (const version of [1, 2, 3, 4]) {
   test(`reset-data clears telemetry from schema ${version} and preserves descriptions and configuration`, async (t) => {
     const { directory, configPath, server } = await fixture(t);
     server.wardx.control.setSignal('demo', 'message.sent', { description: 'Messages sent by players' }, {
@@ -195,6 +219,7 @@ for (const version of [1, 2, 3]) {
     source.exec("INSERT INTO compaction_watermarks VALUES ('demo', 'minute', 'hour', 0, 0)");
     source.exec("INSERT INTO experiment_totals VALUES ('demo', 'exp', 'control', 'client', 'trusted', '{}')");
     source.exec("INSERT INTO experiment_terminal_decisions VALUES ('demo', 'exp', 0, '{}')");
+    if (version < 4) source.exec(DROP_ATTRIBUTION_TABLES);
     for (const [table, column] of [['experiment_assignment_ledger', 'assignment_hash'], ['retention_users', 'subject_hash']]) {
       if (version < 3) {
         const sql = source.prepare("SELECT sql FROM sqlite_master WHERE name = ?").get(table).sql;
@@ -218,7 +243,7 @@ for (const version of [1, 2, 3]) {
       resolve('packages/server/src/ops/recovery-cli.js'), 'reset-data', join(directory, 'live.sqlite')
     ], { encoding: 'utf8' }));
     assert.equal(result.ok, true);
-    assert.equal(result.schemaVersion, 3);
+    assert.equal(result.schemaVersion, 4);
     assert.equal(result.removedRows, version === 1 ? 7 : 9);
     assert.deepEqual(readFileSync(configPath), originalConfig);
     const restarted = createIngestServer(loadServerConfig(configPath));
@@ -268,7 +293,7 @@ test('reset-data rolls back all deletions when schema recreation fails', async (
   const after = new Database(join(directory, 'live.sqlite'));
   try {
     assert.deepEqual(after.prepare('SELECT * FROM minute_aggregates').all(), before);
-    assert.equal(after.pragma('user_version', { simple: true }), 3);
+    assert.equal(after.pragma('user_version', { simple: true }), 4);
     assert.equal(after.prepare("SELECT tbl_name FROM sqlite_master WHERE name = 'retention_cohorts'").get().tbl_name, 'project_state');
   } finally {
     after.close();
@@ -293,7 +318,7 @@ test('reset-data refuses a missing database and a database with an active writer
   assert.equal(loadServerConfig(configPath).sqlite.path, './live.sqlite');
 });
 
-for (const version of [1, 2, 3]) {
+for (const version of [1, 2, 3, 4]) {
   test(`hash-data-only preserves numeric history and watermarks from schema ${version}`, async (t) => {
     const { directory, server } = await fixture(t);
     await server.wardx.stop();
@@ -316,6 +341,7 @@ for (const version of [1, 2, 3]) {
     const watermarks = db.prepare('SELECT * FROM compaction_watermarks').all();
     db.exec("INSERT INTO experiment_totals VALUES ('demo', 'exp', 'control', 'client', 'trusted', '{}')");
     db.exec("INSERT INTO experiment_terminal_decisions VALUES ('demo', 'exp', 0, '{}')");
+    if (version < 4) db.exec(DROP_ATTRIBUTION_TABLES);
     if (version === 1) db.exec('DROP TABLE retention_users; DROP TABLE retention_projects');
     else {
       db.exec("INSERT INTO retention_projects VALUES ('demo', 'old-salt', 1)");
@@ -345,9 +371,9 @@ for (const version of [1, 2, 3]) {
       for (const table of ['retention_users', 'retention_projects', 'experiment_assignment_ledger', 'experiment_totals', 'experiment_terminal_decisions']) {
         assert.equal(fresh.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0);
       }
-      assert.equal(fresh.pragma('user_version', { simple: true }), 3);
+      assert.equal(fresh.pragma('user_version', { simple: true }), 4);
     } finally { fresh.close(); }
-    assert.deepEqual(await resetData(path, { hashDataOnly: true }), { ok: true, removedRows: 0, removedDistincts: 0, schemaVersion: 3 });
+    assert.deepEqual(await resetData(path, { hashDataOnly: true }), { ok: true, removedRows: 0, removedDistincts: 0, schemaVersion: 4 });
   });
 }
 

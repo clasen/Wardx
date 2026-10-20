@@ -129,17 +129,53 @@ namespace Wardx
             TracerEmit.Log(_tracer, new LogRecord { Level = level, Message = message, Attrs = attrs, Dropped = dropped });
         }
 
-        public void RetentionActivity(string userId)
+        // Retention channels and conversion goals are low-cardinality labels.
+        public const string RetentionLabelPattern = "^[a-z0-9][a-z0-9._-]{0,63}$";
+
+        public void RetentionActivity(string userId, string channel = null)
+        {
+            var attrs = RetentionIdentity("retentionActivity", userId);
+            if (channel != null)
+            {
+                if (!IsRetentionLabel(channel))
+                    throw new ArgumentException("retentionActivity channel must match " + RetentionLabelPattern);
+                attrs["channel"] = channel;
+            }
+            Event("retention.activity", attrs);
+        }
+
+        public void Conversion(string userId, string goal)
+        {
+            var attrs = RetentionIdentity("conversion", userId);
+            if (!IsRetentionLabel(goal))
+                throw new ArgumentException("conversion goal must match " + RetentionLabelPattern);
+            attrs["goal"] = goal;
+            Event("retention.conversion", attrs);
+        }
+
+        Dictionary<string, object> RetentionIdentity(string method, string userId)
         {
             if (string.IsNullOrWhiteSpace(userId))
-                throw new ArgumentException("retentionActivity requires a non-empty userId");
+                throw new ArgumentException(method + " requires a non-empty userId");
             if (string.IsNullOrWhiteSpace(_settings.PrivacySalt))
-                throw new ArgumentException("retentionActivity requires a non-empty privacySalt");
-            Event("retention.activity", new Dictionary<string, object>
+                throw new ArgumentException(method + " requires a non-empty privacySalt");
+            return new Dictionary<string, object>
             {
                 ["subject"] = Hash.SubjectHash(_settings.PrivacySalt, userId),
                 ["salt"] = Hash.SubjectHash(_settings.PrivacySalt, "wardx.retention.identity")
-            });
+            };
+        }
+
+        public static bool IsRetentionLabel(string value)
+        {
+            if (value == null || value.Length == 0 || value.Length > 64) return false;
+            for (var i = 0; i < value.Length; i++)
+            {
+                var c = value[i];
+                var alphanumeric = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+                if (!alphanumeric && (i == 0 || (c != '.' && c != '_' && c != '-'))) return false;
+            }
+            return true;
         }
 
         public void Identify(string subjectId)

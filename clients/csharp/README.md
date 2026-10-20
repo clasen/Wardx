@@ -552,7 +552,8 @@ they are local diagnostics and do not go over the wire.
 | `Identify(subjectId)` | Sets the instance default subject; `null` clears it. |
 | `Config.Get<T>(key, fallback, subjectId)` | Reads a local shared or variant value. |
 | `Experiment.Goal(name, subjectId, value)` | Records a conversion or quantitative outcome for an exposed subject. |
-| `RetentionActivity(userId)` | Records activity with an explicit stable identity. |
+| `RetentionActivity(userId, channel)` | Records activity with an explicit stable identity and an optional first-touch acquisition channel. |
+| `Conversion(userId, goal)` | Records that the user reached a goal such as `purchase`, for cohort conversion. |
 | `FlushAsync()` | Sends pending frames and keeps scheduling. |
 | `ShutdownAsync()` | Stops scheduling, sends pending frames, and closes transport. |
 | `Stop()` | Stops without a final flush. |
@@ -585,9 +586,25 @@ UTC calendar days. Repeated sessions and devices with the same identity do not
 increase a day's count. A changed salt is rejected. Earlier delayed activity
 can correct the cohort. Separate production and test populations by project.
 
+Pass the acquisition channel with the activity and record conversions
+separately:
+
+```csharp
+wardx.RetentionActivity(userId, "tiktok");
+wardx.Conversion(userId, "purchase");
+```
+
+The channel is first touch: the earliest received activity that carries one
+sets it, and later activity never replaces it. Channels and goals are lowercase
+labels matching `^[a-z0-9][a-z0-9._-]{0,63}$`; invalid labels throw. A
+conversion is not activity and does not count as a return.
+
 Read results through MCP `get_retention` using inclusive `from` and exclusive
 `to` cohort dates (`YYYY-MM-DD`). Days that have not fully elapsed return
-`pending` with null count and rate. Rates are fractions from 0 to 1.
+`pending` with null count and rate. Rates are fractions from 0 to 1. Add
+`goal: "purchase"` for cumulative D1/D7/D30 `conversions` per cohort, and
+`byChannel: true` or `channel: "tiktok"` to split cohorts by first-touch
+channel.
 This retains the SDK's bounded buffer and at-most-once delivery: dropped or
 failed batches can bias retention. Use a server that supports retention.
 

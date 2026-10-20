@@ -88,6 +88,8 @@ fallback. This mode is fixed at creation.
 | Discrete fact | `Event(name, attrs)` |
 | Diagnostic detail | `Log.Error(message, attrs)` or another log level |
 | Explicit user activity for retention | `RetentionActivity(userId)` |
+| Acquisition channel of that user | `RetentionActivity(userId, channel)` |
+| User reached a goal (cohort conversion) | `Conversion(userId, goal)` |
 
 Counters are window deltas; gauges are absent in windows without a `Set`.
 Reuse handles in loops. Prefer counters for high-volume totals; add events/logs
@@ -159,6 +161,13 @@ an explicit nonblank stable ID; `Identify` does not supply it. Use a consistent
 activity definition and stable project salt across devices. The server stores
 UTC cohorts and received-user returns on D1/D7/D30. Lost batches can bias counts;
 delayed activity can revise cohorts. Query semantics belong to the server skill.
+
+Pass `RetentionActivity(userId, channel)` where the acquisition channel is
+known, for example an install-attribution callback; the earliest
+channel-bearing activity fixes it. Call `Conversion(userId, "purchase")` where
+the goal happens. Channels and goals are lowercase low-cardinality labels
+(`^[a-z0-9][a-z0-9._-]{0,63}$`), never per-ad IDs or user-specific values. A
+conversion is not a return.
 
 ## Lifecycle and diagnosis
 

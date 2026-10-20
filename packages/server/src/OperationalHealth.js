@@ -36,7 +36,7 @@ export class OperationalHealth {
     return {
       ok: Object.values(checks).every(Boolean),
       checks,
-      counters: { retentionActivityDropped: this.ingestMetrics.retentionActivityDropped }
+      counters: { ...this.ingestMetrics }
     };
   }
 

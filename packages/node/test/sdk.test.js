@@ -637,6 +637,8 @@ test('disabled SDK leaves telemetry inert without connections or scheduling', as
     wardx.event('event', unreadable);
     wardx.identify(unreadable);
     wardx.retentionActivity(unreadable);
+    wardx.retentionActivity(unreadable, unreadable);
+    wardx.conversion(unreadable, unreadable);
     for (const level of ['debug', 'info', 'warn', 'error']) wardx.log[level]('message', unreadable);
     wardx.experiment.goal('goal', unreadable);
     assert.equal(wardx.config.get('key', fallback, unreadable), fallback);

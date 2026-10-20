@@ -442,6 +442,31 @@ Each cohort contains `users` and D1/D7/D30 `returns` with `users`, `rate` (0–1
 and `status`. Until the entire target UTC day has elapsed, the return is
 `pending` with null count and rate. Empty cohorts are omitted.
 
+### Acquisition channel and conversion
+
+Pass the acquisition channel with the activity, and record conversions with
+`conversion(userId, goal)`:
+
+```js
+wardx.retentionActivity(userId, { channel: 'tiktok' }); // e.g. from utm_source
+wardx.conversion(userId, 'purchase'); // e.g. when the trial turns into a paid plan
+```
+
+The channel is first touch: the earliest received activity that carries a
+channel sets it, and later activity never changes it. Activity without a
+channel keeps counting for returns, so you can pass the channel only where you
+know it. Channels and goals are lowercase labels matching
+`^[a-z0-9][a-z0-9._-]{0,63}$`, for example `tiktok`, `google-ads` or
+`purchase`; invalid labels throw. Keep them low-cardinality: the server caps
+them per project. A conversion is not activity and does not count as a return.
+
+Add `goal: 'purchase'` to `get_retention` to get D1/D7/D30 `conversions` per
+cohort: users whose first conversion falls on or before that day. Add
+`byChannel: true`, or `channel: 'tiktok'`, to split cohorts by first-touch
+channel; `channel: null` rows are users without a channel. With a 7-day trial,
+D7 conversion per channel tells you whether a new campaign converts, before its
+period sales catch up.
+
 Counts are exact for received activity, not proof of complete delivery. This
 uses the existing bounded, in-memory event buffer and at-most-once sync: lost
 batches can lose initial activity or returns. There is no historical backfill

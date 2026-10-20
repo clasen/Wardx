@@ -24,7 +24,7 @@ test('readiness probes SQLite write capability and recovers without changing app
   assert.deepEqual(await response.json(), {
     ok: true,
     checks: { running: true, sqlite: true, persistence: true, capacity: true, mcp: true },
-    counters: { retentionActivityDropped: 0 }
+    counters: { retentionActivityDropped: 0, retentionConversionsDropped: 0, retentionChannelsDropped: 0 }
   });
 
   stateStore.database.pragma('query_only = ON');
@@ -39,7 +39,7 @@ test('readiness probes SQLite write capability and recovers without changing app
   assert.equal((await fetch(`${endpoint}/ready`)).status, 200);
   assert.deepEqual(control.getConfig('demo'), before);
   assert.deepEqual(control.listConfigChanges('demo'), journal);
-  assert.equal(stateStore.schemaVersion(), 3);
+  assert.equal(stateStore.schemaVersion(), 4);
 });
 
 test('SQLite probe reports writer contention and restores the normal busy timeout', async (t) => {

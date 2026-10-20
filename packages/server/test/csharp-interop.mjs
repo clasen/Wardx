@@ -171,9 +171,13 @@ async function verify() {
     assert.equal('registers' in distinct, false);
     const today = new Date().toISOString().slice(0, 10);
     const tomorrow = new Date(Date.parse(today) + 86_400_000).toISOString().slice(0, 10);
-    const retention = await callTool(client, 'get_retention', { project: 'demo', from: today, to: tomorrow });
+    const retention = await callTool(client, 'get_retention', {
+      project: 'demo', from: today, to: tomorrow, goal: 'purchase', byChannel: true
+    });
     assert.equal(retention.cohorts[0].users, 1);
+    assert.equal(retention.cohorts[0].channel, 'interop-channel');
     assert.ok(retention.cohorts[0].returns.every((row) => row.status === 'pending'));
+    assert.ok(retention.cohorts[0].conversions.every((row) => row.status === 'pending'));
     await client.close();
 
     const envelopes = (await readFile(ndjsonPath, 'utf8'))
@@ -196,7 +200,10 @@ async function verify() {
     assert.ok(events.some((row) => row[1] === 'interop.event'));
     const activity = events.find((row) => row[1] === 'retention.activity');
     const exposure = events.find((row) => row[1] === 'experiment.exposure');
+    const conversion = events.find((row) => row[1] === 'retention.conversion');
     assert.equal(activity[2].subject, exposure[2].subject);
+    assert.equal(activity[2].channel, 'interop-channel');
+    assert.deepEqual(conversion[2], { subject: activity[2].subject, salt: activity[2].salt, goal: 'purchase' });
     for (let index = 1; index < frames.length; index++) {
       assert.equal(frames[index].seq, frames[index - 1].seq + 1);
     }
