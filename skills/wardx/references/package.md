@@ -47,6 +47,7 @@ The core does not send HTTP. A runtime (this Node package, or a future SDK) must
 - `config.get` never blocks on network. Missing key → caller fallback.
 - `identify(subjectId)` sets the SDK-instance default subject. `identify(null)` clears it. Per-call `{ subjectId }` overrides it. A `game-server` that serves many users must pass `subjectId` per call and must not share an instance default.
 - `experiment.goal` throws without a subject (`identify` or `{ subjectId }`). Exposure payload hashes the subject with the required explicit `privacySalt`. Raw `subjectId` does not go on the wire. Same `subjectId` + experiment `id` + `salt` → same variant; do not persist the group.
+- `conversion(userId, goal)` is not `experiment.goal`: it records cohort conversion for `get_retention` (for example `purchase`), needs an explicit `userId` on every call, ignores `identify`, and is unrelated to experiment assignment. Use `experiment.goal` for experiment outcomes and `conversion` for acquisition/retention funnels; call both when a purchase is both.
 - Tracer is duck-typed and optional. Hooks: core `measure`, `event`, `log`, `frame`; runtime also `sync`. Omit unused hooks. Tracer must not change frames, delivery, or config.
 - Envelope `sdk.name` is `wardx-node`. `client.platform` is `node`. Every `createWardx()` instance owns one ULID `client.instanceId` and one ULID `sessionId`; they are not process-wide.
 - Sync delay is `syncIntervalMs * random(syncJitterMin, syncJitterMax)`, recomputed every cycle. Aggregate and sync timers are `unref()`'d.

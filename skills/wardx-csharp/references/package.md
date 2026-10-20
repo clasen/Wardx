@@ -35,6 +35,7 @@ Exports: `WardxClient`, `WardxOptions`, `WardxBehaviour` (Unity), `Dims`, `Conso
 - `Config.Get` never blocks on network. Missing key → caller fallback.
 - `Identify(subjectId)` sets the instance default subject. `Identify(null)` clears it. Empty string throws. Per-call `subjectId` overrides it. A `game-server` that serves many users must pass `subjectId` per call and must not `Identify()`.
 - `Experiment.Goal` throws without a subject (`Identify` or `subjectId`). Exposure payload hashes the subject with the required explicit `PrivacySalt`. Raw `subjectId` does not go on the wire. Same `subjectId` + experiment `id` + `salt` → same variant; do not persist the group.
+- `Conversion(userId, goal)` is not `Experiment.Goal`: it records cohort conversion for `get_retention` (for example `purchase`), needs an explicit `userId` on every call, ignores `Identify`, and is unrelated to experiment assignment. Use `Experiment.Goal` for experiment outcomes and `Conversion` for acquisition/retention funnels; call both when a purchase is both.
 - Tracer is an optional `ITracer`; subclass `TracerBase` to override only needed
   hooks: `Measure`, `Event`, `Log`, `Frame`, `Sync`. It must not change frames,
   delivery, or config.
