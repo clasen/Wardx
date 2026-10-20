@@ -75,13 +75,15 @@ origin that receives `/v1/sync`. Claude Code:
 claude mcp add --transport http --scope user wardx https://wardx.example.com/mcp --header "Authorization: Bearer <token>"
 ```
 
-Codex, with the token exported as `WARDX_MCP_TOKEN`:
+Codex (`~/.codex/config.toml`):
 
-```bash
-codex mcp add wardx --url https://wardx.example.com/mcp --bearer-token-env-var WARDX_MCP_TOKEN
+```toml
+[mcp_servers.wardx]
+url = "https://wardx.example.com/mcp"
+http_headers = { Authorization = "Bearer <token>" }
 ```
 
-Server setup, manual configuration, and local stdio:
+Server setup, manual configuration, several servers, and local stdio:
 [Connect an agent over MCP](packages/server/README.md#connect-an-agent-over-mcp).
 
 ## Verification

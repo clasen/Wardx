@@ -293,31 +293,53 @@ keep it secret. To rotate it, change `WARDX_MCP_TOKEN` and restart Wardx.
 
 ### Remote: 2. Connect the agent
 
-Claude Code stores the header in its configuration, so paste the token value
-in place of `<token>` and keep that configuration out of version control:
+Both clients store the header in their configuration, so paste the token value
+in place of `<token>` and keep that configuration out of version control.
+
+Claude Code:
 
 ```bash
 claude mcp add --transport http --scope user wardx https://wardx.example.com/mcp --header "Authorization: Bearer <token>"
 ```
 
-Codex reads the token from an environment variable at connect time, so export
-`WARDX_MCP_TOKEN` in the shell that starts Codex:
-
-```bash
-codex mcp add wardx --url https://wardx.example.com/mcp --bearer-token-env-var WARDX_MCP_TOKEN
-```
-
-That command writes the equivalent entry to `~/.codex/config.toml`, which you
-can also edit by hand:
+Codex has no `mcp add` flag for a fixed header, so add the entry to
+`~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.wardx]
 url = "https://wardx.example.com/mcp"
-bearer_token_env_var = "WARDX_MCP_TOKEN"
+http_headers = { Authorization = "Bearer <token>" }
 ```
 
 Requests are accepted only after the Bearer token, body-size bound, and
 concurrent-request bound pass.
+
+### Remote: several servers
+
+Each Wardx server answers MCP only for its own projects. To reach more than one
+server, add one MCP entry per server, each with a distinct name and its own
+token:
+
+```bash
+claude mcp add --transport http --scope user wardx-a https://wardx-a.example.com/mcp --header "Authorization: Bearer <token-a>"
+claude mcp add --transport http --scope user wardx-b https://wardx-b.example.com/mcp --header "Authorization: Bearer <token-b>"
+```
+
+Codex (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.wardx-a]
+url = "https://wardx-a.example.com/mcp"
+http_headers = { Authorization = "Bearer <token-a>" }
+
+[mcp_servers.wardx-b]
+url = "https://wardx-b.example.com/mcp"
+http_headers = { Authorization = "Bearer <token-b>" }
+```
+
+The agent client prefixes every tool with the entry name, so each call goes to
+exactly one server. Projects with the same name on two servers are independent:
+before a mutation, confirm the entry matches the server you intend to change.
 
 ### Local: stdio
 
