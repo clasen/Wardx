@@ -118,7 +118,7 @@ be resumed under the old ID.
 
 Sync handlers, pending historical batches/bytes, experiment ledger rows, MCP
 reads, MCP HTTP requests/bodies, current series, rings, query ranges, and
-retained tiers are all bounded by required configuration. Above those limits Wardx rejects work with a
+retained tiers are all bounded by configuration. Above those limits Wardx rejects work with a
 non-sensitive overload response instead of building an unbounded queue. Clients
 and proxies must not retry `POST /v1/sync`; general telemetry remains
 at-most-once. Experiment evidence is the narrow exception: accepted evidence is

@@ -22,7 +22,7 @@ test('createIngestServer attaches Wardx to a supplied HTTPS server', async () =>
   try {
     assert.equal(server, transport);
     assert.equal(server.listenerCount('request'), 1);
-    assert.equal(server.wardx.config, config);
+    assert.deepEqual(server.wardx.config, config);
 
     const address = await listen(server, config.port, config.host);
     assert.equal(typeof address.port, 'number');

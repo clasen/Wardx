@@ -1,6 +1,4 @@
 {
-  "host": "127.0.0.1",
-  "port": 8787,
   "credentials": {
     "dev_project_key": {
       "label": "demo-client",
@@ -12,59 +10,7 @@
   },
   "sink": "memory",
   "ndjsonPath": "wardx-dev.ndjson",
-  "maxRequestBytes": 2097152,
-  "maxClockSkewMs": 300000,
-  "maxFramesPerEnvelope": 256,
-  "maxItemsPerEnvelope": 10000,
-  "maxNameBytes": 256,
-  "maxDimensionKeys": 8,
-  "maxDimensionValueLength": 64,
-  "maxAttributeKeys": 32,
-  "maxAttributeValueLength": 1024,
-  "persistenceFlushIntervalMs": 250,
-  "readiness": {
-    "probeIntervalMs": 10000,
-    "probeTimeoutMs": 50,
-    "maxPersistenceLagMs": 60000
-  },
-  "diagnostics": { "sink": "stderr" },
-  "aggregateRetentionMinutes": 60,
-  "aggregateMaxSeriesPerMetric": 1000,
-  "memorySinkMaxEnvelopes": 10000,
-  "recentClientsMax": 100,
-  "recentEventsMax": 1000,
-  "recentLogsMax": 200,
-  "sqlite": {
-    "path": "wardx-dev.sqlite",
-    "journalMode": "WAL",
-    "synchronous": "NORMAL",
-    "busyTimeoutMs": 5000,
-    "walAutoCheckpointPages": 1000,
-    "checkpointMode": "PASSIVE",
-    "maxWriteBatchRows": 1000,
-    "transactionTimeoutMs": 5000,
-    "maxPendingBatches": 32,
-    "maxPendingBytes": 67108864
-  },
-  "history": {
-    "clockSkewAllowanceMs": 300000,
-    "maxAcceptedPastAgeMs": 3600000,
-    "aggregateHourlyRetentionHours": 720,
-    "aggregateDailyRetentionDays": 365,
-    "maxAppVersionsPerProjectRoleTier": 20,
-    "maxQueryBuckets": 744,
-    "maxQueryRows": 10000,
-    "compactionIntervalMs": 60000
-  },
-  "control": {
-    "journalCapacity": 1000,
-    "maxConcurrentMcpReads": 8,
-    "maxPendingMcpReads": 32
-  },
-  "mcpHttp": { "enabled": false },
-  "capacity": { "maxConcurrentSyncHandlers": 256, "syncBodyTimeoutMs": 30000 },
-  "retention": { "maxUsersPerProject": 1000000, "maxChannelsPerProject": 64, "maxGoalsPerProject": 16, "maxQueryDays": 366 },
-  "experiments": { "ledgerMaxRows": 1000000 },
+  "sqlite": { "path": "wardx-dev.sqlite", "synchronous": "NORMAL" },
   "projects": {
     "demo": {
       "version": 1,

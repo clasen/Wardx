@@ -30,7 +30,7 @@ test('handler uses an external transport without ingest listen or process signal
   const runtime = await createWardxHandler(config);
   t.after(() => runtime.stop());
   external.on('request', runtime.handler);
-  assert.equal(runtime.config, config);
+  assert.deepEqual(runtime.config, config);
   assert.deepEqual(['SIGINT', 'SIGTERM'].map((signal) => process.listeners(signal)), signals);
   const base = `http://127.0.0.1:${address.port}`;
   assert.equal((await fetch(`${base}/ready`)).status, 200);

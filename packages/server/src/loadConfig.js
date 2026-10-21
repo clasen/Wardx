@@ -7,78 +7,105 @@ import { validateKeyRoles } from './roles.js';
 import { assertUnambiguousGoalMetrics, validateExperiment } from './control/validateExperiment.js';
 import { CredentialRegistry } from './auth/CredentialRegistry.js';
 
-const REQUIRED = [
-  'host',
-  'port',
-  'credentials',
-  'sink',
-  'maxRequestBytes',
-  'maxClockSkewMs',
-  'maxFramesPerEnvelope',
-  'maxItemsPerEnvelope',
-  'maxNameBytes',
-  'maxDimensionKeys',
-  'maxDimensionValueLength',
-  'maxAttributeKeys',
-  'maxAttributeValueLength',
-  'persistenceFlushIntervalMs',
-  'diagnostics',
-  'readiness',
-  'aggregateRetentionMinutes',
-  'aggregateMaxSeriesPerMetric',
-  'memorySinkMaxEnvelopes',
-  'recentClientsMax',
-  'recentEventsMax',
-  'recentLogsMax',
-  'sqlite',
-  'history',
-  'control',
-  'mcpHttp',
-  'capacity',
-  'retention',
-  'experiments',
-  'projects'
-];
+// Conventional settings: a configuration supplies credentials, projects and
+// only the values it changes. Each group merges over its defaults, and the
+// default keys define each group's closed schema.
+const DEFAULTS = {
+  host: '127.0.0.1',
+  port: 8787,
+  sink: 'null',
+  maxRequestBytes: 2097152,
+  maxClockSkewMs: 300000,
+  maxFramesPerEnvelope: 256,
+  maxItemsPerEnvelope: 10000,
+  maxNameBytes: 256,
+  maxDimensionKeys: 8,
+  maxDimensionValueLength: 64,
+  maxAttributeKeys: 32,
+  maxAttributeValueLength: 1024,
+  persistenceFlushIntervalMs: 250,
+  aggregateRetentionMinutes: 60,
+  aggregateMaxSeriesPerMetric: 1000,
+  memorySinkMaxEnvelopes: 10000,
+  recentClientsMax: 100,
+  recentEventsMax: 1000,
+  recentLogsMax: 200
+};
+const GROUP_DEFAULTS = {
+  diagnostics: { sink: 'stderr' },
+  readiness: { probeIntervalMs: 10000, probeTimeoutMs: 50, maxPersistenceLagMs: 60000 },
+  sqlite: {
+    path: 'wardx.sqlite',
+    journalMode: 'WAL',
+    synchronous: 'FULL',
+    busyTimeoutMs: 5000,
+    walAutoCheckpointPages: 1000,
+    checkpointMode: 'PASSIVE',
+    maxWriteBatchRows: 1000,
+    transactionTimeoutMs: 5000,
+    maxPendingBatches: 32,
+    maxPendingBytes: 67108864
+  },
+  history: {
+    clockSkewAllowanceMs: 300000,
+    maxAcceptedPastAgeMs: 3600000,
+    aggregateHourlyRetentionHours: 720,
+    aggregateDailyRetentionDays: 365,
+    maxAppVersionsPerProjectRoleTier: 20,
+    maxQueryBuckets: 744,
+    maxQueryRows: 10000,
+    compactionIntervalMs: 60000
+  },
+  control: { journalCapacity: 1000, maxConcurrentMcpReads: 8, maxPendingMcpReads: 32 },
+  mcpHttp: { enabled: false },
+  capacity: { maxConcurrentSyncHandlers: 256, syncBodyTimeoutMs: 30000 },
+  retention: { maxUsersPerProject: 1000000, maxChannelsPerProject: 64, maxGoalsPerProject: 16, maxQueryDays: 366 },
+  experiments: { ledgerMaxRows: 1000000 }
+};
+const MCP_HTTP_DEFAULTS = {
+  enabled: true,
+  path: '/mcp',
+  bearerTokenEnvironmentVariable: 'WARDX_MCP_TOKEN',
+  maxRequestBytes: 65536,
+  maxConcurrentRequests: 8,
+  bodyTimeoutMs: 30000
+};
 
+const REQUIRED = ['credentials', 'projects'];
 const REQUIRED_PROJECT = ['version', 'values', 'keyRoles', 'experiments'];
-const ALLOWED = new Set([...REQUIRED, 'ndjsonPath', 'configPath']);
+const ALLOWED = new Set([
+  ...REQUIRED,
+  ...Object.keys(DEFAULTS),
+  ...Object.keys(GROUP_DEFAULTS),
+  'ndjsonPath',
+  'configPath'
+]);
 const ALLOWED_PROJECT = new Set([...REQUIRED_PROJECT, 'catalog', 'keyRules']);
 
-const REQUIRED_SQLITE = [
-  'path',
-  'journalMode',
-  'synchronous',
-  'busyTimeoutMs',
-  'walAutoCheckpointPages',
-  'checkpointMode',
-  'maxWriteBatchRows',
-  'transactionTimeoutMs',
-  'maxPendingBatches',
-  'maxPendingBytes'
-];
-const REQUIRED_HISTORY = [
-  'clockSkewAllowanceMs',
-  'maxAcceptedPastAgeMs',
-  'aggregateHourlyRetentionHours',
-  'aggregateDailyRetentionDays',
-  'maxAppVersionsPerProjectRoleTier',
-  'maxQueryBuckets',
-  'maxQueryRows',
-  'compactionIntervalMs'
-];
-const REQUIRED_CONTROL = ['journalCapacity', 'maxConcurrentMcpReads', 'maxPendingMcpReads'];
-const REQUIRED_MCP_HTTP = [
-  'enabled',
-  'path',
-  'bearerTokenEnvironmentVariable',
-  'maxRequestBytes',
-  'maxConcurrentRequests',
-  'bodyTimeoutMs'
-];
-const REQUIRED_CAPACITY = ['maxConcurrentSyncHandlers', 'syncBodyTimeoutMs'];
-const REQUIRED_READINESS = ['probeIntervalMs', 'probeTimeoutMs', 'maxPersistenceLagMs'];
-const REQUIRED_RETENTION = ['maxUsersPerProject', 'maxChannelsPerProject', 'maxGoalsPerProject', 'maxQueryDays'];
-const REQUIRED_EXPERIMENTS = ['ledgerMaxRows'];
+const SQLITE_KEYS = Object.keys(GROUP_DEFAULTS.sqlite);
+const HISTORY_KEYS = Object.keys(GROUP_DEFAULTS.history);
+const CONTROL_KEYS = Object.keys(GROUP_DEFAULTS.control);
+const MCP_HTTP_KEYS = Object.keys(MCP_HTTP_DEFAULTS);
+const CAPACITY_KEYS = Object.keys(GROUP_DEFAULTS.capacity);
+const READINESS_KEYS = Object.keys(GROUP_DEFAULTS.readiness);
+const RETENTION_KEYS = Object.keys(GROUP_DEFAULTS.retention);
+const EXPERIMENTS_KEYS = Object.keys(GROUP_DEFAULTS.experiments);
+
+function isObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function withDefaults(input) {
+  if (!isObject(input)) throw new Error('server config must be an object');
+  const config = { ...DEFAULTS, ...input };
+  for (const [key, defaults] of Object.entries(GROUP_DEFAULTS)) {
+    const value = input[key];
+    if (value === undefined || value === null) config[key] = { ...defaults };
+    else if (isObject(value)) config[key] = { ...defaults, ...value };
+  }
+  if (config.mcpHttp.enabled === true) config.mcpHttp = { ...MCP_HTTP_DEFAULTS, ...config.mcpHttp };
+  return config;
+}
 
 function validateClosedObject(value, required, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -125,7 +152,7 @@ function validateMcpHttp(config) {
     validateClosedObject(config, ['enabled'], 'server config.mcpHttp');
     return;
   }
-  validateClosedObject(config, REQUIRED_MCP_HTTP, 'server config.mcpHttp');
+  validateClosedObject(config, MCP_HTTP_KEYS, 'server config.mcpHttp');
   if (
     typeof config.path !== 'string' ||
     !config.path.startsWith('/') ||
@@ -188,7 +215,8 @@ export function loadServerConfig(path) {
   return config;
 }
 
-export function validateServerConfig(parsed) {
+export function validateServerConfig(input) {
+  const parsed = withDefaults(input);
   requireKeys(parsed, REQUIRED, 'server config');
   for (const key of Object.keys(parsed)) {
     if (!ALLOWED.has(key)) throw new Error(`server config unknown key: ${key}`);
@@ -254,7 +282,7 @@ export function validateServerConfig(parsed) {
   if (!Number.isInteger(parsed.recentLogsMax) || parsed.recentLogsMax < 1) {
     throw new Error('server config recentLogsMax must be an integer >= 1');
   }
-  validateClosedObject(parsed.sqlite, REQUIRED_SQLITE, 'server config.sqlite');
+  validateClosedObject(parsed.sqlite, SQLITE_KEYS, 'server config.sqlite');
   if (typeof parsed.sqlite.path !== 'string' || parsed.sqlite.path.length === 0) {
     throw new Error('server config.sqlite.path must be a non-empty string');
   }
@@ -279,16 +307,16 @@ export function validateServerConfig(parsed) {
     ],
     'server config.sqlite'
   );
-  validateClosedObject(parsed.retention, REQUIRED_RETENTION, 'server config.retention');
-  validatePositiveIntegers(parsed.retention, REQUIRED_RETENTION, 'server config.retention');
-  validateClosedObject(parsed.history, REQUIRED_HISTORY, 'server config.history');
-  validatePositiveIntegers(parsed.history, REQUIRED_HISTORY, 'server config.history');
-  validateClosedObject(parsed.control, REQUIRED_CONTROL, 'server config.control');
-  validatePositiveIntegers(parsed.control, REQUIRED_CONTROL, 'server config.control');
+  validateClosedObject(parsed.retention, RETENTION_KEYS, 'server config.retention');
+  validatePositiveIntegers(parsed.retention, RETENTION_KEYS, 'server config.retention');
+  validateClosedObject(parsed.history, HISTORY_KEYS, 'server config.history');
+  validatePositiveIntegers(parsed.history, HISTORY_KEYS, 'server config.history');
+  validateClosedObject(parsed.control, CONTROL_KEYS, 'server config.control');
+  validatePositiveIntegers(parsed.control, CONTROL_KEYS, 'server config.control');
   validateMcpHttp(parsed.mcpHttp);
-  validateClosedObject(parsed.readiness, REQUIRED_READINESS, 'server config.readiness');
-  validatePositiveIntegers(parsed.readiness, REQUIRED_READINESS, 'server config.readiness');
-  for (const key of REQUIRED_READINESS) {
+  validateClosedObject(parsed.readiness, READINESS_KEYS, 'server config.readiness');
+  validatePositiveIntegers(parsed.readiness, READINESS_KEYS, 'server config.readiness');
+  for (const key of READINESS_KEYS) {
     if (!Number.isSafeInteger(parsed.readiness[key])) {
       throw new Error(`server config.readiness.${key} must be a safe integer`);
     }
@@ -298,10 +326,10 @@ export function validateServerConfig(parsed) {
       throw new Error(`server config.readiness.${key} exceeds the timer range`);
     }
   }
-  validateClosedObject(parsed.capacity, REQUIRED_CAPACITY, 'server config.capacity');
-  validatePositiveIntegers(parsed.capacity, REQUIRED_CAPACITY, 'server config.capacity');
-  validateClosedObject(parsed.experiments, REQUIRED_EXPERIMENTS, 'server config.experiments');
-  validatePositiveIntegers(parsed.experiments, REQUIRED_EXPERIMENTS, 'server config.experiments');
+  validateClosedObject(parsed.capacity, CAPACITY_KEYS, 'server config.capacity');
+  validatePositiveIntegers(parsed.capacity, CAPACITY_KEYS, 'server config.capacity');
+  validateClosedObject(parsed.experiments, EXPERIMENTS_KEYS, 'server config.experiments');
+  validatePositiveIntegers(parsed.experiments, EXPERIMENTS_KEYS, 'server config.experiments');
   if (typeof parsed.projects !== 'object' || parsed.projects === null || Array.isArray(parsed.projects)) {
     throw new Error('server config projects must be an object');
   }

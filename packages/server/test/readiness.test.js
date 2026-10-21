@@ -154,10 +154,12 @@ test('readiness requires MCP HTTP request capacity when configured', async (t) =
   assert.equal(health.snapshot().checks.mcp, true);
 });
 
-test('readiness policy is required, bounded, and closed-schema', () => {
+test('readiness policy is defaulted, bounded, and closed-schema', () => {
   const missing = testServerConfig();
   delete missing.readiness;
-  assert.throws(() => validateServerConfig(missing), /readiness/);
+  assert.deepEqual(validateServerConfig(missing).readiness, {
+    probeIntervalMs: 10000, probeTimeoutMs: 50, maxPersistenceLagMs: 60000
+  });
   for (const field of ['probeIntervalMs', 'probeTimeoutMs', 'maxPersistenceLagMs']) {
     const config = testServerConfig();
     config.readiness[field] = 0;

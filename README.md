@@ -121,4 +121,4 @@ pending. Pass a first-touch acquisition channel with the activity
 `conversion(userId, 'purchase')`; `get_retention` then reports D1/D7/D30
 conversion per cohort and channel. Delivery remains at-most-once, so lost activity can bias results.
 See the [server retention contract](packages/server/README.md#persistent-user-retention)
-for required configuration, limits and the SQLite schema upgrade.
+for configuration, limits and the SQLite schema upgrade.

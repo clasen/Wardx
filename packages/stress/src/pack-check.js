@@ -209,9 +209,7 @@ async function verifyPackagedBinary(projectDirectory) {
       enabled: true
     }
   };
-  sourceConfig.history.clockSkewAllowanceMs = 1;
-  sourceConfig.history.maxAcceptedPastAgeMs = 604800000;
-  sourceConfig.history.compactionIntervalMs = 10;
+  sourceConfig.history = { clockSkewAllowanceMs: 1, maxAcceptedPastAgeMs: 604800000, compactionIntervalMs: 10 };
   sourceConfig.projects.demo.experiments = [];
   sourceConfig.projects.demo.values['pack.variant'] = 'control';
   sourceConfig.projects.demo.keyRoles['pack.variant'] = ['trusted'];

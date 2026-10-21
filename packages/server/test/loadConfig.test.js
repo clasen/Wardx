@@ -26,16 +26,50 @@ test('loadServerConfig reads a JSON file', () => {
   assert.equal(config.adminKey, undefined);
 });
 
-test('validateServerConfig requires aggregateMaxSeriesPerMetric', () => {
-  const config = testServerConfig();
-  delete config.aggregateMaxSeriesPerMetric;
-  assert.throws(() => validateServerConfig(config), /aggregateMaxSeriesPerMetric/);
+test('validateServerConfig needs only credentials and projects', () => {
+  const { credentials, projects } = testServerConfig();
+  const config = validateServerConfig({ credentials, projects });
+  assert.equal(config.host, '127.0.0.1');
+  assert.equal(config.port, 8787);
+  assert.equal(config.sink, 'null');
+  assert.equal(config.sqlite.path, 'wardx.sqlite');
+  assert.equal(config.sqlite.synchronous, 'FULL');
+  assert.deepEqual(config.retention, {
+    maxUsersPerProject: 1000000, maxChannelsPerProject: 64, maxGoalsPerProject: 16, maxQueryDays: 366
+  });
+  assert.deepEqual(config.mcpHttp, { enabled: false });
+
+  assert.throws(() => validateServerConfig({ projects }), /missing required keys: credentials/);
+  assert.throws(() => validateServerConfig({ credentials }), /missing required keys: projects/);
+  assert.throws(() => validateServerConfig(null), /server config must be an object/);
 });
 
-test('validateServerConfig requires a positive recent event capacity', () => {
+test('validateServerConfig merges each group over its defaults without mutating the input', () => {
+  const { credentials, projects } = testServerConfig();
+  const input = { credentials, projects, retention: { maxGoalsPerProject: 4 }, sqlite: { synchronous: 'NORMAL' } };
+  const snapshot = structuredClone(input);
+  const config = validateServerConfig(input);
+  assert.equal(config.retention.maxGoalsPerProject, 4);
+  assert.equal(config.retention.maxUsersPerProject, 1000000);
+  assert.equal(config.sqlite.synchronous, 'NORMAL');
+  assert.equal(config.sqlite.journalMode, 'WAL');
+  assert.deepEqual(input, snapshot);
+  assert.throws(
+    () => validateServerConfig({ credentials, projects, retention: { maxGoals: 4 } }),
+    /retention unknown key: maxGoals/
+  );
+});
+
+test('validateServerConfig defaults an omitted aggregateMaxSeriesPerMetric', () => {
+  const config = testServerConfig();
+  delete config.aggregateMaxSeriesPerMetric;
+  assert.equal(validateServerConfig(config).aggregateMaxSeriesPerMetric, 1000);
+});
+
+test('validateServerConfig defaults and bounds the recent event capacity', () => {
   const missing = testServerConfig();
   delete missing.recentEventsMax;
-  assert.throws(() => validateServerConfig(missing), /recentEventsMax/);
+  assert.equal(validateServerConfig(missing).recentEventsMax, 1000);
 
   assert.throws(
     () => validateServerConfig(testServerConfig({ recentEventsMax: 0 })),
@@ -66,17 +100,19 @@ test('validateServerConfig requires scoped credential and capacity records', () 
 
   const sqlite = testServerConfig();
   delete sqlite.sqlite.maxPendingBytes;
-  assert.throws(() => validateServerConfig(sqlite), /maxPendingBytes/);
+  assert.equal(validateServerConfig(sqlite).sqlite.maxPendingBytes, 67108864);
+  sqlite.sqlite.maxPendingBytes = 0;
+  assert.throws(() => validateServerConfig(sqlite), /maxPendingBytes must be an integer >= 1/);
 
   const history = testServerConfig();
   history.history.maxQueryRows = 0;
   assert.throws(() => validateServerConfig(history), /maxQueryRows must be an integer >= 1/);
 });
 
-test('validateServerConfig requires explicit bounded MCP HTTP configuration', () => {
+test('validateServerConfig defaults and bounds MCP HTTP configuration', () => {
   const missing = testServerConfig();
   delete missing.mcpHttp;
-  assert.throws(() => validateServerConfig(missing), /mcpHttp/);
+  assert.deepEqual(validateServerConfig(missing).mcpHttp, { enabled: false });
 
   assert.doesNotThrow(() => validateServerConfig(testServerConfig({ mcpHttp: { enabled: false } })));
 
@@ -89,6 +125,11 @@ test('validateServerConfig requires explicit bounded MCP HTTP configuration', ()
     bodyTimeoutMs: 30000
   };
   assert.doesNotThrow(() => validateServerConfig(testServerConfig({ mcpHttp: enabled })));
+  assert.deepEqual(validateServerConfig(testServerConfig({ mcpHttp: { enabled: true } })).mcpHttp, enabled);
+  assert.throws(
+    () => validateServerConfig(testServerConfig({ mcpHttp: { path: '/agents' } })),
+    /mcpHttp unknown key: path/
+  );
 
   for (const key of ['host', 'port', 'allowedHosts', 'allowedOrigins']) {
     assert.throws(

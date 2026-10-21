@@ -21,12 +21,11 @@ npm install @wardx/server
 
 ### Start from code
 
-`startServer` accepts a complete configuration object from your application's
+`startServer` accepts a configuration object from your application's
 configuration module; no JSON file is required. In this example, `wardx.config.js`
-is your own module exporting that object. Use the
-[complete development configuration](https://github.com/clasen/Wardx/blob/main/config/development.json)
-as a reference for the required fields, then supply your deployment's settings
-and credentials.
+is your own module exporting that object. Only `credentials` and `projects` are
+required; every other setting has a default (see
+[Configuration](#configuration)), so supply only what your deployment changes.
 
 ```js
 import { startServer } from '@wardx/server';
@@ -144,13 +143,69 @@ degraded or draining. Its body is `{ "ok": true, "checks": { "running": true,
 false. Counters are process-wide since startup and do not affect `ok`. It
 exposes no project names, values, paths, or errors.
 
-## Required configuration
+## Configuration
 
-The configuration is closed-schema: every operational, retention, capacity, and
-durability value is required and unknown keys fail startup. See the
-[complete development configuration](https://github.com/clasen/Wardx/blob/main/config/development.json)
-in the repository; it is not included in the npm package. Configuration snippets
-below show individual fields or groups, not complete startup configurations.
+Only `credentials` and `projects` are required. Every other setting has the
+default below, and each group merges over its defaults, so
+`"retention": { "maxGoalsPerProject": 4 }` changes one value and keeps the
+rest. The schema stays closed: unknown keys, including misspelled ones, fail
+startup. Configuration snippets below show individual fields or groups.
+
+```json
+{
+  "host": "127.0.0.1",
+  "port": 8787,
+  "sink": "null",
+  "maxRequestBytes": 2097152,
+  "maxClockSkewMs": 300000,
+  "maxFramesPerEnvelope": 256,
+  "maxItemsPerEnvelope": 10000,
+  "maxNameBytes": 256,
+  "maxDimensionKeys": 8,
+  "maxDimensionValueLength": 64,
+  "maxAttributeKeys": 32,
+  "maxAttributeValueLength": 1024,
+  "persistenceFlushIntervalMs": 250,
+  "aggregateRetentionMinutes": 60,
+  "aggregateMaxSeriesPerMetric": 1000,
+  "memorySinkMaxEnvelopes": 10000,
+  "recentClientsMax": 100,
+  "recentEventsMax": 1000,
+  "recentLogsMax": 200,
+  "diagnostics": { "sink": "stderr" },
+  "readiness": { "probeIntervalMs": 10000, "probeTimeoutMs": 50, "maxPersistenceLagMs": 60000 },
+  "sqlite": {
+    "path": "wardx.sqlite",
+    "journalMode": "WAL",
+    "synchronous": "FULL",
+    "busyTimeoutMs": 5000,
+    "walAutoCheckpointPages": 1000,
+    "checkpointMode": "PASSIVE",
+    "maxWriteBatchRows": 1000,
+    "transactionTimeoutMs": 5000,
+    "maxPendingBatches": 32,
+    "maxPendingBytes": 67108864
+  },
+  "history": {
+    "clockSkewAllowanceMs": 300000,
+    "maxAcceptedPastAgeMs": 3600000,
+    "aggregateHourlyRetentionHours": 720,
+    "aggregateDailyRetentionDays": 365,
+    "maxAppVersionsPerProjectRoleTier": 20,
+    "maxQueryBuckets": 744,
+    "maxQueryRows": 10000,
+    "compactionIntervalMs": 60000
+  },
+  "control": { "journalCapacity": 1000, "maxConcurrentMcpReads": 8, "maxPendingMcpReads": 32 },
+  "mcpHttp": { "enabled": false },
+  "capacity": { "maxConcurrentSyncHandlers": 256, "syncBodyTimeoutMs": 30000 },
+  "retention": { "maxUsersPerProject": 1000000, "maxChannelsPerProject": 64, "maxGoalsPerProject": 16, "maxQueryDays": 366 },
+  "experiments": { "ledgerMaxRows": 1000000 }
+}
+```
+
+`sink: "ndjson"` also requires `ndjsonPath`. `server.wardx.config` holds the
+effective configuration with defaults applied.
 
 Use an absolute `sqlite.path` when configuring Wardx from code. A relative path
 in an object without `configPath` is relative to the process working directory;
@@ -272,6 +327,12 @@ Agents connect in one of two ways:
 Generate a token with `openssl rand -hex 32` and set it as `WARDX_MCP_TOKEN` in
 the Wardx service environment. Startup fails if the variable is missing or
 shorter than 32 bytes. Then enable MCP in the server configuration:
+
+```json
+{ "mcpHttp": { "enabled": true } }
+```
+
+Enabled MCP HTTP defaults to the values below; set any of them to override it:
 
 ```json
 {
@@ -812,7 +873,7 @@ labels matching `^[a-z0-9][a-z0-9._-]{0,63}$`; anything else is rejected with
 HTTP 400. A conversion is not activity: an automatic renewal does not count as
 a return.
 
-Required centralized configuration:
+Retention configuration, shown with its defaults:
 
 ```json
 "retention": {
@@ -925,9 +986,7 @@ conversions and every other table are kept. Backups of versions 3 and 4 remain
 verifiable and restorable. Versions 1 and 2 are rejected: they require fresh telemetry
 history and a coordinated server and SDK upgrade. Use the offline `reset-data` command above to preserve configuration and
 catalog definitions while discarding old telemetry, or create a fresh database.
-No other migration or deletion is performed at server startup. External configuration files must include the
-required `retention` object, including `maxChannelsPerProject` and
-`maxGoalsPerProject`, before startup.
+No other migration or deletion is performed at server startup.
 
 Accepted retention and experiment evidence commit in one SQLite transaction
 before sync success. General telemetry persistence retains its existing

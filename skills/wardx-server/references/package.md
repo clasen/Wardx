@@ -49,7 +49,7 @@ npm availability from this checkout or silently substitute the forwarding bridge
 | Path | Responsibility |
 | --- | --- |
 | `src/server.js` | Shared ingest runtime, handler API, transport/MCP startup, and shutdown. |
-| `src/loadConfig.js` | Closed required operational config; no defaults. |
+| `src/loadConfig.js` | Closed operational config; conventional defaults merged per group. |
 | `src/auth/CredentialRegistry.js` | Authenticate raw keys and authorize claimed roles. |
 | `src/ingest/` | Bounded HTTP read/validation and pre-mutation capacity checks. |
 | `src/config/ConfigRepository.js`, `src/config/rules.js` | Role-visible snapshots, ordered conditions, and context tokens. |
@@ -92,12 +92,14 @@ npm availability from this checkout or silently substitute the forwarding bridge
   write batch, transaction/busy/checkpoint policy, history ranges/rows/
   retention/cardinality, journal, MCP reads, and ledger rows.
 
-## Required config groups
+## Config groups
 
-Top-level required groups include `credentials`, `sqlite`, `history`, `control`,
-`mcpHttp`, `capacity`, `experiments`, `retention`, and `projects`, in addition to
-HTTP/envelope/sink/current-window settings. See `REQUIRED*` in
-`src/loadConfig.js`; never duplicate that list here in code or add a fallback.
+Only `credentials` and `projects` are required. Every other setting, including
+the `sqlite`, `history`, `control`, `mcpHttp`, `capacity`, `experiments` and
+`retention` groups, has a conventional default in `DEFAULTS`/`GROUP_DEFAULTS`
+of `src/loadConfig.js`, and each group merges over its defaults. The default
+keys define the closed schema, so unknown keys still fail startup. Keep that
+file the single source of defaults.
 
 Each credential contains `label`, `project`, `allowedRoles`,
 `trustedForDecisions`, and `enabled`. Each project contains `version`, `values`,
@@ -118,8 +120,8 @@ when no value changes and invalidate role caches on replacement. Never accumulat
 a cache keyed by arbitrary client attributes. See `docs/PROTOCOL.md` for the wire
 contract and the tools reference for condition syntax.
 
-Retention config requires `maxUsersPerProject`, `maxChannelsPerProject`,
-`maxGoalsPerProject` and `maxQueryDays`. User state, channels and goals do not
+Retention config bounds `maxUsersPerProject`, `maxChannelsPerProject`,
+`maxGoalsPerProject` and `maxQueryDays` (defaults 1000000, 64, 16, 366). User state, channels and goals do not
 expire; capacity drops new users' activity and conversions rather than
 reenrolling existing ones, accepts the rest of the envelope, and counts drops in
 `/ready` `counters.retentionActivityDropped` and `retentionConversionsDropped`.
