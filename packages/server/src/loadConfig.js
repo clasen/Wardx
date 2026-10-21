@@ -152,7 +152,12 @@ function validateMcpHttp(config) {
     validateClosedObject(config, ['enabled'], 'server config.mcpHttp');
     return;
   }
-  validateClosedObject(config, MCP_HTTP_KEYS, 'server config.mcpHttp');
+  // bearerToken is optional: when present it replaces the environment variable.
+  const { bearerToken, ...settings } = config;
+  validateClosedObject(settings, MCP_HTTP_KEYS, 'server config.mcpHttp');
+  if (bearerToken !== undefined && (typeof bearerToken !== 'string' || Buffer.byteLength(bearerToken) < 32)) {
+    throw new Error('server config.mcpHttp.bearerToken must contain at least 32 bytes');
+  }
   if (
     typeof config.path !== 'string' ||
     !config.path.startsWith('/') ||

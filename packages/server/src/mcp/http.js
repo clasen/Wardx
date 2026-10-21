@@ -27,6 +27,7 @@ function authorized(header, expectedToken) {
 }
 
 export function readMcpBearerToken(config, environment = process.env) {
+  if (config.bearerToken !== undefined) return config.bearerToken;
   const name = config.bearerTokenEnvironmentVariable;
   const token = environment[name];
   if (typeof token !== 'string' || Buffer.byteLength(token) < 32) {

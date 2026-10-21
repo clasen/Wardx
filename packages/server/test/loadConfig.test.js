@@ -148,6 +148,17 @@ test('validateServerConfig defaults and bounds MCP HTTP configuration', () => {
     () => validateServerConfig(testServerConfig({ mcpHttp: { ...enabled, extra: true } })),
     /mcpHttp unknown key: extra/
   );
+  const bearerToken = 'wardx-config-test-token-at-least-32-bytes';
+  assert.equal(
+    validateServerConfig(testServerConfig({ mcpHttp: { enabled: true, bearerToken } })).mcpHttp.bearerToken,
+    bearerToken
+  );
+  for (const short of ['short', 42]) {
+    assert.throws(
+      () => validateServerConfig(testServerConfig({ mcpHttp: { enabled: true, bearerToken: short } })),
+      /mcpHttp\.bearerToken must contain at least 32 bytes/
+    );
+  }
   assert.throws(
     () => validateServerConfig(testServerConfig({ mcpHttp: { ...enabled, maxConcurrentRequests: 0 } })),
     /maxConcurrentRequests must be an integer >= 1/

@@ -1,6 +1,6 @@
 {
   "name": "@wardx/server",
-  "version": "0.13.2",
+  "version": "0.14.0",
   "description": "Wardx ingest server for HTTP sync. Remote Config and experiments are controlled through MCP.",
   "keywords": [
     "wardx",
@@ -40,7 +40,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "better-sqlite3": "12.11.1",
     "xxhash-wasm": "1.1.0"
   }

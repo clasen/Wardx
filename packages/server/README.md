@@ -19,6 +19,37 @@ release. Streamable HTTP exposes the same MCP tools, not a second control API.
 npm install @wardx/server
 ```
 
+### Scaffold a site
+
+`init` creates a site directory with client credentials and an MCP token:
+
+```bash
+npx -p @wardx/server wardx-server init wardx.example.com --project game --client backend:trusted --client app:public
+```
+
+Each `--client role:trusted|public` becomes one credential for that role;
+`public` clients are untrusted for decisions. The directory contains:
+
+- `index.js`: a module whose default export takes a virtual server, registers
+  `stop` with its `onClose` hook, and returns the request handler. A host such as
+  roster-server provides HTTPS and routes the directory's domain to it.
+- `config.cjs`: the server configuration. Edit projects and settings here.
+- `secrets.json`: credentials and the MCP token, written with mode `0600` and
+  listed in `.gitignore`.
+
+The command prints each client key and the ready-to-run agent commands for
+`https://<directory name>/mcp`. Later changes edit only `secrets.json` and need a
+restart of the site:
+
+```bash
+npx -p @wardx/server wardx-server credential add wardx.example.com --project game --role unity --label game-unity
+npx -p @wardx/server wardx-server mcp-token wardx.example.com
+```
+
+`credential add` creates a public credential unless `--trusted` is passed; its
+project must exist in `config.cjs`. `mcp-token` replaces the MCP token and prints
+the agent commands again.
+
 ### Start from code
 
 `startServer` accepts a configuration object from your application's
@@ -324,8 +355,13 @@ Agents connect in one of two ways:
 
 ### Remote: 1. Enable MCP HTTP on the server
 
-Generate a token with `openssl rand -hex 32` and set it as `WARDX_MCP_TOKEN` in
-the Wardx service environment. Startup fails if the variable is missing or
+A site created with `wardx-server init` already has MCP enabled with
+`mcpHttp.bearerToken` read from its `secrets.json`; skip to step 2.
+
+Otherwise, generate a token with `openssl rand -hex 32` and set it as
+`WARDX_MCP_TOKEN` in the Wardx service environment, or pass it directly as
+`mcpHttp.bearerToken` from a configuration module. A configured `bearerToken`
+replaces the environment variable. Startup fails if the token is missing or
 shorter than 32 bytes. Then enable MCP in the server configuration:
 
 ```json

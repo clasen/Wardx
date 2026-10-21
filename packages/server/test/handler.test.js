@@ -172,3 +172,28 @@ test('handler rejects a missing MCP token before opening state and can be initia
   const runtime = await createWardxHandler(config);
   await runtime.stop();
 });
+
+test('handler authenticates MCP with a configured bearer token instead of the environment', async (t) => {
+  const token = 'wardx-handler-configured-token-32-bytes';
+  const config = testServerConfig({ mcpHttp: { ...mcpConfig(), bearerToken: token } });
+  const name = config.mcpHttp.bearerTokenEnvironmentVariable;
+  const previous = process.env[name];
+  delete process.env[name];
+  t.after(() => {
+    if (previous !== undefined) process.env[name] = previous;
+  });
+  const runtime = await createWardxHandler(config);
+  t.after(() => runtime.stop());
+  const external = http.createServer(runtime.handler);
+  const address = await listen(external, 0, '127.0.0.1');
+  t.after(() => close(external));
+  const url = new URL(`http://127.0.0.1:${address.port}/mcp`);
+  const client = new Client({ name: 'handler-test', version: '1.0.0' });
+  t.after(() => client.close());
+  await client.connect(new StreamableHTTPClientTransport(url, {
+    requestInit: { headers: { authorization: `Bearer ${token}` } }
+  }));
+  const result = await client.callTool({ name: 'list_projects', arguments: {} });
+  assert.deepEqual(JSON.parse(result.content[0].text), { projects: ['demo'] });
+  assert.equal(process.env[name], undefined);
+});
