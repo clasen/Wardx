@@ -41,11 +41,11 @@ to both .NET and Unity.
 https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime
 ```
 
-Release `#v0.9.5` sends `client.os`, the detected operating system family, and needs server 0.11.0 or newer. `#v0.9.4` keeps each sync request within `MaxEnvelopeItems` rows and `MaxEnvelopeBytes`, sending pending frames across several requests when needed. `#v0.9.3` built snapshots and split frames on the thread pool on threaded runtimes, and moved sync accounting into `WardxCore` (`RecordSyncBytes`, `RecordSyncResult`, `RecordSyncError`, `RecordProcessRss`, `RecordConfigVersion`); wire format and metrics are unchanged. `#v0.9.2` added linear frame splitting, background envelope encoding on threaded runtimes, and coalesced pending flushes. In
+Release `#v0.10.0` aligns timestamps to the server clock, cuts the Unity frame window at application pause, and adds `RetentionActivity(userId, channel)` and `Conversion(userId, goal)`; it needs server 0.13.0 or newer. `#v0.9.5` sends `client.os`, the detected operating system family, and needs server 0.11.0 or newer. `#v0.9.4` keeps each sync request within `MaxEnvelopeItems` rows and `MaxEnvelopeBytes`, sending pending frames across several requests when needed. `#v0.9.3` built snapshots and split frames on the thread pool on threaded runtimes, and moved sync accounting into `WardxCore` (`RecordSyncBytes`, `RecordSyncResult`, `RecordSyncError`, `RecordProcessRss`, `RecordConfigVersion`); wire format and metrics are unchanged. `#v0.9.2` added linear frame splitting, background envelope encoding on threaded runtimes, and coalesced pending flushes. In
 `Packages/manifest.json`:
 
 ```json
-"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.9.5"
+"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.10.0"
 ```
 
 **Unity (this checkout).** Package Manager → Add package from disk → `clients/csharp/Runtime/package.json`.
