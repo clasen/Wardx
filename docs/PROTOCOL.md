@@ -271,6 +271,8 @@ It reports exact received-user counts and rates for activity **on** D1/D7/D30.
 With `goal`, it also reports users whose first conversion falls **on or
 before** D1/D7/D30 (cumulative). `byChannel` or `channel` split cohorts by
 first-touch channel. A target UTC day must fully elapse before its count/rate
-stops being null.
+stops being null. With `goal` it also reports repeat conversions per row and
+orphan conversions (received users with no activity yet). A first touch beyond
+the channel cap is stored as the reserved channel `(over_cap)`.
 Maturity does not certify delivery completeness or freeze late corrections.
 The SDK's existing at-most-once transport remains unchanged.

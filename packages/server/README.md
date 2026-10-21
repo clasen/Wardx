@@ -770,8 +770,8 @@ preserves counters, gauges, histograms, event/log counts, bucket boundaries,
 finalization, drop counts, and compaction watermarks. Empty buckets remain in
 place. The result additionally reports `removedDistincts`, the number of sketch
 rows removed across all history tiers. `removedRows` counts deleted SQLite rows
-in the reset tables. Both modes preserve definitions and upgrade schemas 1/2/3 to
-4 atomically; malformed historical JSON aborts the filtered reset with rollback.
+in the reset tables. Both modes preserve definitions and upgrade schemas 1–4 to
+5 atomically; malformed historical JSON aborts the filtered reset with rollback.
 
 Without `--hash-data-only`, the full reset behaves as follows.
 
@@ -783,7 +783,7 @@ versions, and the configuration mutation journal. Enabled experiments keep
 their definitions and analysis dates; review their plans before collecting a
 new sample.
 
-The command accepts SQLite schemas 1, 2, 3, and 4 and recreates the empty telemetry
+The command accepts SQLite schemas 1 through 5 and recreates the empty telemetry
 tables using the current XXHash64 schema in one transaction. Pass the database path used by the running application (`config.server.sqlite.path`
 for a `createWardxSite` wrapper). It does not load configuration or credentials;
 CJS, ESM, JSON, and programmatic setups use the same command. Relative paths
@@ -861,15 +861,33 @@ cohorts, which a per-period `purchase` counter cannot do: a channel that
 started last week has few sales in the period even when its cohorts convert
 well.
 
+With `goal`, each row also reports `duplicateConversions`: repeat conversions
+to that goal by its users, such as webhook retries or second purchases. They
+never change the rates. The result also reports `orphanConversions`: users
+whose first conversion to that goal falls inside the queried dates (as
+conversion dates, not cohort dates) but who have no cohort because no activity
+from them was received, for example a purchase from another browser. If their
+activity arrives later, they join that cohort and stop being orphans.
+
 Channel and goal labels are pinned per project and do not expire. Once a
 project holds `maxChannelsPerProject` channels, a first touch that names a new
-channel is ignored: the activity still counts, the user keeps their previous
-channel or none, and `retentionChannelsDropped` in `/ready` increments with an
-`ingest.retention_channel_capacity` diagnostic. Once it holds
-`maxGoalsPerProject` goals, conversions to a new goal are dropped and
-`retentionConversionsDropped` increments with an `ingest.retention_capacity`
-diagnostic. A subject first seen through a conversion counts toward
-`maxUsersPerProject`; at capacity, its conversion is dropped the same way.
+channel is kept as the reserved channel `(over_cap)`: the activity still
+counts, the user is never merged into another channel or into `null`, and
+`retentionChannelsDropped` in `/ready` increments with an
+`ingest.retention_channel_capacity` diagnostic. Filter it with
+`channel: "(over_cap)"`. Once a project holds `maxGoalsPerProject` goals,
+conversions to a new goal are dropped and `retentionConversionsDropped`
+increments with an `ingest.retention_capacity` diagnostic. A subject first seen
+through a conversion counts toward `maxUsersPerProject`; at capacity, its
+conversion is dropped the same way.
+
+Every result carries `capacity`: `users`, `channels` and `goals` against
+`maxUsers`, `maxChannels` and `maxGoals`, plus `droppedActivity` and
+`droppedConversions`. Unlike the `/ready` counters, which are process-wide
+and reset on restart, these drops persist per project in SQLite.
+
+See the Node SDK's [use case 17](../node/README.md#use-case-17-measure-ad-campaigns-for-a-website-that-sells-a-desktop-app)
+for a website that sells a desktop app through ads and a payment webhook.
 
 Each project's first activity pins a fingerprint of the client's privacy salt.
 All clients must keep that salt and user identity stable. A mismatched salt
@@ -880,7 +898,8 @@ and gameplay definitions within the same project.
 
 SQLite stores one salted subject hash, earliest activity UTC day and a 31-bit
 activity mask per user, plus the first-touch channel and its timestamp, and the
-earliest conversion UTC day per user and goal. The mask also preserves intermediate days so that an
+earliest conversion UTC day and repeat count per user and goal, and the
+project's persisted activity and conversion drops. The mask also preserves intermediate days so that an
 earlier delayed activity can correct the cohort without losing D1/D7/D30
 returns. Processing duplicates, different arrival orders and process restarts
 does not double-count users. Queries expose no subject hashes. Counts can be
@@ -898,11 +917,12 @@ in the deployment's data-retention policy. This feature adds no user-history
 or per-user query API. Raw diagnostic sinks/allowlisted recent event inspection
 can retain the hashed activity payload under their existing policies.
 
-The SQLite schema is now version 4 and stores XXHash64 identities as 8-byte
-values. On startup the server migrates a version 3 database in place, in one
-transaction, by adding the channel, goal and conversion tables; existing users,
-cohorts and every other table are kept. Backups of version 3 remain verifiable
-and restorable. Versions 1 and 2 are rejected: they require fresh telemetry
+The SQLite schema is now version 5 and stores XXHash64 identities as 8-byte
+values. On startup the server migrates a version 3 or 4 database in place, in
+one transaction: version 3 gains the channel, goal and conversion tables, and
+both gain the drop and repeat-conversion columns. Existing users, cohorts,
+conversions and every other table are kept. Backups of versions 3 and 4 remain
+verifiable and restorable. Versions 1 and 2 are rejected: they require fresh telemetry
 history and a coordinated server and SDK upgrade. Use the offline `reset-data` command above to preserve configuration and
 catalog definitions while discarding old telemetry, or create a fresh database.
 No other migration or deletion is performed at server startup. External configuration files must include the

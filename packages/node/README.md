@@ -659,6 +659,8 @@ process.on('SIGINT', onStop);
 
 `flush` sends the current pending frames and does not stop the timers. Use `shutdown` when the process stops.
 
+`flush` resolves `{ ok }`. `ok` is `false` when anything recorded after the previous `flush()` call may not have reached the server: a full event buffer, dropped frame rows or pending frames, a failed snapshot, or a failed sync. A caller that records evidence and then flushes, such as a payment webhook after `conversion`, can answer with an error so its sender retries. Other losses inside the same window also make it `false`.
+
 ## Use case 13: Trace measure calls while instrumenting
 
 **When:** You are adding counters, events, and logs and you want to see each call and each sync on stderr.
@@ -826,6 +828,142 @@ From MCP: `get_aggregates` for the rate, then `get_recent_logs` with `level: 'er
 
 The log ring is recent only (`recentLogsMax`). It is not a history search. See `@wardx/server` use case 8.
 
+## Use case 17: Measure ad campaigns for a website that sells a desktop app
+
+**When:** Ads send people to a website. The website's Node server serves the pages, the visitor downloads a desktop app with a free trial, and buys later on the website. A payment provider webhook (Paddle, Stripe) reports the purchase to the same server. The app does not know the visitor.
+
+**Objective:** For each acquisition channel, measure how many people who started on a given day bought within D1/D7/D30. Count it per cohort, not per period: a channel that started last week has few sales this week even when its cohorts convert well.
+
+The anonymous visitor ID in a first-party cookie is the Wardx `userId`; it is not an account or an email. Everything below uses existing Wardx resources:
+
+| Need | Wardx resource |
+| --- | --- |
+| Cohort entry with a fixed channel | `retentionActivity(visitorId, { channel })` |
+| Purchase, refund and chargeback per cohort | `conversion(visitorId, goal)` with goals `purchase`, `refund`, `chargeback` |
+| Know whether the purchase reached Wardx | `const { ok } = await wardx.flush()` |
+| Visits and downloads per channel | `counter(name, { channel })`, read with `get_aggregates` / `get_aggregate_history` |
+| Totals per period, purchases without a visitor | counters |
+| Cohorts by date and channel | MCP `get_retention({ goal, byChannel })` |
+| Capacity, drops and data quality | `capacity`, `orphanConversions`, `duplicateConversions` in `get_retention` |
+
+```js
+import express from 'express';
+import cookieParser from 'cookie-parser';
+import { randomUUID } from 'node:crypto';
+import { createWardx } from 'wardx';
+
+const wardx = createWardx({
+  endpoint: process.env.WARDX_ENDPOINT,
+  projectKey: process.env.WARDX_PROJECT_KEY,
+  project: 'shop-web',
+  role: 'backend',
+  appVersion: process.env.APP_VERSION,
+  environment: 'production',
+  privacySalt: process.env.WARDX_PRIVACY_SALT
+});
+
+// A closed list keeps the channel cap unreachable and the labels valid.
+const CHANNELS = ['meta', 'google', 'youtube', 'organic', 'other'];
+const SOURCES = {
+  facebook: 'meta', fb: 'meta', instagram: 'meta', ig: 'meta', meta: 'meta',
+  google: 'google', adwords: 'google', youtube: 'youtube', yt: 'youtube'
+};
+const BOT = /bot|crawl|spider|slurp|preview|facebookexternalhit|headless|lighthouse/i;
+const DAY = 86_400_000;
+const COOKIE = { httpOnly: true, secure: true, sameSite: 'lax' };
+
+// utm_source first: YouTube ads also carry gclid.
+function channelOf(query) {
+  const source = String(query.utm_source ?? '').trim().toLowerCase();
+  if (source) return SOURCES[source] ?? 'other';
+  if (query.fbclid) return 'meta';
+  if (query.gclid || query.gbraid || query.wbraid) return 'google';
+  return 'organic';
+}
+
+const byChannel = (name) => Object.fromEntries(CHANNELS.map((c) => [c, wardx.counter(name, { channel: c })]));
+const visits = byChannel('web.visitor_day');
+const downloads = byChannel('web.download');
+const adjustments = { refund: wardx.counter('payment.refund'), chargeback: wardx.counter('payment.chargeback') };
+const purchasesWithoutVisitor = wardx.counter('payment.purchase_without_visitor');
+
+const app = express();
+app.use(cookieParser());
+
+// Visit: set the visitor ID and the first-touch channel once; count one visit per visitor and UTC day.
+app.use((req, res, next) => {
+  const human = req.method === 'GET' && req.accepts('html') && !BOT.test(req.get('user-agent') ?? '')
+    && !(req.get('sec-purpose') ?? req.get('purpose') ?? '').includes('prefetch');
+  if (!human) return next();
+  req.visitorId = req.cookies.vid ?? randomUUID();
+  req.channel = CHANNELS.includes(req.cookies.vch) ? req.cookies.vch : channelOf(req.query);
+  res.cookie('vid', req.visitorId, { ...COOKIE, maxAge: 90 * DAY });
+  res.cookie('vch', req.channel, { ...COOKIE, maxAge: 90 * DAY });
+  const today = new Date().toISOString().slice(0, 10);
+  if (req.cookies.vday !== today) {
+    visits[req.channel].inc();
+    res.cookie('vday', today, { ...COOKIE, maxAge: 2 * DAY });
+  }
+  next(); // render req.visitorId into the checkout: Paddle.Checkout.open({ customData: { visitorId } })
+});
+
+// Trial download: the cohort starts here, with the visitor's first-touch channel.
+app.get('/download', (req, res) => {
+  if (req.visitorId) {
+    wardx.retentionActivity(req.visitorId, { channel: req.channel });
+    downloads[req.channel].inc();
+  }
+  res.redirect(302, process.env.DMG_URL);
+});
+
+// Purchase, refund and chargeback from the payment provider.
+app.post('/payments/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  const event = await verifyWebhook(req); // the provider's signature check; reject with 400 on failure
+  if (await db.processed(event.event_id)) return res.sendStatus(200);
+  const data = event.data;
+  if (event.event_type === 'transaction.completed') {
+    const visitorId = data.custom_data?.visitorId;
+    if (visitorId) {
+      await db.saveTransactionVisitor(data.id, visitorId);
+      wardx.conversion(visitorId, 'purchase');
+    } else {
+      purchasesWithoutVisitor.inc();
+    }
+  } else if (event.event_type.startsWith('adjustment.') && data.status === 'approved'
+      && (data.action === 'refund' || data.action === 'chargeback')) {
+    const visitorId = await db.transactionVisitor(data.transaction_id);
+    adjustments[data.action].inc();
+    if (visitorId) wardx.conversion(visitorId, data.action);
+  }
+  const { ok } = await wardx.flush();
+  if (!ok) return res.sendStatus(503); // the provider retries; repeating a conversion is idempotent
+  await db.markProcessed(event.event_id);
+  res.sendStatus(200);
+});
+
+process.on('SIGTERM', async () => {
+  await wardx.shutdown();
+  process.exit(0);
+});
+```
+
+`verifyWebhook` and `db` are the application's own. The webhook field names follow Paddle Billing (`custom_data`, `action`, `status`, `transaction_id`); check them against your provider and webhook version.
+
+### Procedure
+
+1. **Create a separate Wardx project** (`shop-web`) with its own `backend` credential. Its activity definition (trial download) and its anonymous population must not mix with an app's retention project. User capacity is counted per project.
+2. **Start the cohort at the trial download, not at every visit.** Bots and window-shoppers rarely download, so the cohort stays small and meaningful; D7 then lines up with a 7-day trial. A buyer who checks out from another browser has a new visitor ID without a download: the purchase appears in `orphanConversions` instead of creating an `organic` cohort that converts on D0. Count visits with a counter by channel.
+3. **Always pass a channel**, using `organic` when the request has no campaign parameters. Then the first activity fixes the channel (strict first touch); a later visit from another ad never changes it. Keeping the channel in a cookie from the first visit carries it to the download. Map sources through a closed list: labels must match `^[a-z0-9][a-z0-9._-]{0,63}$`, never per-ad or per-campaign IDs.
+4. **Call `retentionActivity` once per visitor and day at most.** It is enough for D1/D7/D30 and keeps the SDK's in-memory event buffer (`maxBufferedEvents`, shared with every event) from dropping a purchase during a traffic burst.
+5. **Pass the visitor ID to the checkout** (`customData` in Paddle, `metadata` in Stripe) and record `conversion(visitorId, 'purchase')` in the webhook. A conversion is not activity: an automatic renewal or a webhook does not count as a return.
+6. **Answer the webhook from `flush()`.** `{ ok: false }` means something recorded since the previous `flush()` call may not have reached Wardx; answer 5xx so the provider retries. Mark the event as processed only after `ok`. A retry repeats the conversion, which Wardx counts in `duplicateConversions` and does not double in the rates.
+7. **Record refunds and chargebacks as their own goals**, plus counters for period totals. Conversions are not reversed: providers do not guarantee the order of purchase and refund, and a person can buy again. The net per cohort is `purchase` minus `refund`, from two `get_retention` calls.
+8. **Read cohorts from MCP**: `get_retention({ project: 'shop-web', from, to, goal: 'purchase', byChannel: true })`. `conversions` is cumulative (bought on or before D_N); `returns` here measures repeat downloads, not app usage, because the app does not know the visitor. Compare channels at the same cohort age. For a weekly view, add `users` and mature `conversions[n].users` of the daily rows yourself; ignore pending horizons. The horizons are D1/D7/D30; there is no D14.
+9. **Watch data quality and capacity** in the same response: `orphanConversions` (purchases without a cohort), `duplicateConversions` (retries or repeat purchases), rows with `channel: "(over_cap)"` (first touch beyond `maxChannelsPerProject`, never merged into another channel) and `capacity` (users against `maxUsersPerProject`, persisted drops). User rows do not expire; when `capacity.users` approaches the cap, raise `maxUsersPerProject` or start a new project for the next period.
+10. **To A/B test the landing or the price**, assign on the backend with `config.get(key, fallback, { subjectId: visitorId })` and record `wardx.experiment.goal('purchase', { subjectId: visitorId })` next to `conversion`. They are separate evidence: the experiment decides the variant, the cohort measures the channel.
+
+Delivery stays at-most-once: a lost batch or a process crash between syncs loses its activity. `flush()` reports losses so the webhook can retry; page visits and downloads have no retry.
+
 ## API
 
 | Call | Description |
@@ -841,7 +979,9 @@ The log ring is recent only (`recentLogsMax`). It is not a history search. See `
 | `identify(subjectId)` | Sets the default subject for this SDK instance. `identify(null)` clears it. Do not share that default across users on a multi-user server. |
 | `config.get(key, fallback, context)` | Reads Remote Config. Uses `identify()` or `{ subjectId }`. A per-call `{ subjectId }` overrides `identify()`. Omit both for the shared value. |
 | `experiment.goal(name, context)` | Emits `experiment.goal`. Needs a subject from `identify()` or `{ subjectId }`. Optional `value` for a quantitative goal such as session duration. |
-| `flush()` | Sends pending frames now. Returns a Promise. |
+| `flush()` | Sends pending frames now. Resolves `{ ok }`: `false` when anything recorded since the previous `flush()` call may not have reached the server. |
+| `retentionActivity(userId, { channel })` | Records explicit activity for D1/D7/D30 retention, with an optional first-touch channel. |
+| `conversion(userId, goal)` | Records the first conversion to `goal` for cohort conversion. |
 | `shutdown()` | Stops timers, sends pending frames, and closes the HTTP agent. |
 
 Each `createWardx()` SDK instance creates its own `instanceId` and `sessionId`. The IDs are ULIDs; they are not process-wide singletons or subject/journey keys.

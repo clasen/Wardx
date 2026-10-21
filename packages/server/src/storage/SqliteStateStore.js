@@ -1,9 +1,9 @@
 import Database from 'better-sqlite3';
 import { assertHistoryBoundary } from '../aggregation/history/HistoryBucket.js';
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 // Older versions that open by migrating in place, without losing stored state.
-const MIGRATABLE_VERSIONS = [3];
+const MIGRATABLE_VERSIONS = [3, 4];
 const RETENTION_SCHEMA = `
   CREATE TABLE retention_projects (
     project TEXT PRIMARY KEY,
@@ -20,7 +20,7 @@ const RETENTION_SCHEMA = `
   CREATE INDEX retention_cohorts ON retention_users(project, cohort_day);
 `;
 // Version 4 adds first-touch channels and conversions beside the version 3
-// retention tables, so a version 3 database migrates by creating these alone.
+// retention tables, so a version 3 database migrates by creating these.
 const RETENTION_ATTRIBUTION_SCHEMA = `
   CREATE TABLE retention_labels (
     project TEXT NOT NULL,
@@ -42,6 +42,12 @@ const RETENTION_ATTRIBUTION_SCHEMA = `
     conversion_day INTEGER NOT NULL CHECK (conversion_day >= 0),
     PRIMARY KEY(project, subject_hash, goal)
   ) STRICT;
+`;
+// Version 5 persists per-project capacity drops and repeated conversions.
+const RETENTION_DROPS_SCHEMA = `
+  ALTER TABLE retention_projects ADD COLUMN dropped_activity INTEGER NOT NULL DEFAULT 0 CHECK (dropped_activity >= 0);
+  ALTER TABLE retention_projects ADD COLUMN dropped_conversions INTEGER NOT NULL DEFAULT 0 CHECK (dropped_conversions >= 0);
+  ALTER TABLE retention_conversions ADD COLUMN duplicates INTEGER NOT NULL DEFAULT 0 CHECK (duplicates >= 0);
 `;
 const TIERS = new Set(['minute', 'hour', 'day']);
 const TABLE_BY_TIER = Object.freeze({
@@ -338,6 +344,7 @@ export class SqliteStateStore {
 
         ${RETENTION_SCHEMA}
         ${RETENTION_ATTRIBUTION_SCHEMA}
+        ${RETENTION_DROPS_SCHEMA}
         PRAGMA user_version = ${SCHEMA_VERSION};
       `);
       database.exec('COMMIT');
@@ -352,7 +359,8 @@ export class SqliteStateStore {
     try {
       validateSqliteSchema(database, version);
       database.exec(`
-        ${RETENTION_ATTRIBUTION_SCHEMA}
+        ${version < 4 ? RETENTION_ATTRIBUTION_SCHEMA : ''}
+        ${RETENTION_DROPS_SCHEMA}
         UPDATE schema_metadata SET version = ${SCHEMA_VERSION} WHERE singleton = 1;
         PRAGMA user_version = ${SCHEMA_VERSION};
       `);

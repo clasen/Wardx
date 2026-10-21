@@ -442,7 +442,7 @@ export const TOOL_DEFS = [
   {
     name: 'get_retention',
     annotations: { readOnlyHint: true },
-    description: 'Exact D1/D7/D30 retention and conversion for received explicit user activity. Cohorts use the earliest received activity timestamp in UTC; return means active ON that day. With goal, conversions count cohort users whose first received conversion to that goal falls on or before that day (cumulative). With byChannel or channel, rows split by first-touch acquisition channel; channel null means no channel-bearing activity was received. Pending days return null. Date range selects cohorts, not return or conversion events. Late activity and conversions can revise cohorts and counts. No user identifiers are returned.',
+    description: 'Exact D1/D7/D30 retention and conversion for received explicit user activity. Cohorts use the earliest received activity timestamp in UTC; return means active ON that day. With goal, conversions count cohort users whose first received conversion to that goal falls on or before that day (cumulative). goal also returns duplicateConversions per row (repeat conversions ignored for rates) and orphanConversions: users who converted within the queried dates but have no cohort (no activity received, for example another browser). With byChannel or channel, rows split by first-touch acquisition channel; channel null means no channel-bearing activity was received, and (over_cap) means the first touch named a channel beyond the project cap. capacity reports users, channels and goals against their caps and the persisted activity and conversion drops. Pending days return null. Date range selects cohorts, not return or conversion events. Late activity and conversions can revise cohorts and counts. No user identifiers are returned.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -451,7 +451,11 @@ export const TOOL_DEFS = [
         to: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'Exclusive cohort date, YYYY-MM-DD UTC.' },
         goal: { type: 'string', pattern: RETENTION_LABEL_PATTERN, description: 'Conversion goal to report D1/D7/D30 conversion for, for example purchase.' },
         byChannel: { type: 'boolean', description: 'Split each cohort by first-touch acquisition channel.' },
-        channel: { type: 'string', pattern: RETENTION_LABEL_PATTERN, description: 'Only cohort users whose first-touch channel is this one.' }
+        channel: {
+          type: 'string',
+          pattern: '^([a-z0-9][a-z0-9._-]{0,63}|\\(over_cap\\))$',
+          description: 'Only cohort users whose first-touch channel is this one, or (over_cap).'
+        }
       },
       required: ['project', 'from', 'to'],
       additionalProperties: false

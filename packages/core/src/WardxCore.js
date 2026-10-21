@@ -44,6 +44,9 @@ export class WardxCore {
       }
     });
     this.seq = 0;
+    // Monotonic count of events and frames this instance failed to deliver:
+    // buffer and frame drops, pending-frame overflow and failed syncs.
+    this._deliveryLosses = 0;
     this.pendingFrames = [];
     this._frameJsons = new WeakMap();
     this.windowStart = Date.now();
@@ -92,7 +95,10 @@ export class WardxCore {
 
   event(name, attrs) {
     const dropped = !this.events.push(name, attrs);
-    if (dropped) this.internal.eventsDropped += 1;
+    if (dropped) {
+      this.internal.eventsDropped += 1;
+      this._deliveryLosses += 1;
+    }
     emit(this._tracer, 'event', { name, attrs: attrs ?? null, dropped });
   }
 
@@ -283,7 +289,9 @@ export class WardxCore {
     if (overflow > 0) {
       this.pendingFrames.splice(0, Math.min(overflow, this.pendingFrames.length));
       this.internal.framesFailed += overflow;
+      this._deliveryLosses += overflow;
     }
+    this._deliveryLosses += batch.droppedEvents ?? 0;
     for (let i = Math.max(0, batch.frames.length - capacity); i < batch.frames.length; i++) {
       this.pendingFrames.push(batch.frames[i]);
       this._frameJsons.set(batch.frames[i], batch.jsons[i]);
@@ -367,12 +375,17 @@ export class WardxCore {
 
   recordSyncResult({ ok, frames, ms }) {
     this.internal.lastSyncMs = ms;
-    if (ok) this.internal.framesSent += frames;
-    else this.internal.framesFailed += Math.max(frames, 1);
+    if (ok) {
+      this.internal.framesSent += frames;
+      return;
+    }
+    this.internal.framesFailed += Math.max(frames, 1);
+    this._deliveryLosses += Math.max(frames, 1);
   }
 
   recordSyncError() {
     this.internal.framesFailed += 1;
+    this._deliveryLosses += 1;
   }
 
   applySyncResponse(response) {

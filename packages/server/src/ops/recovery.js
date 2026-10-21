@@ -197,7 +197,7 @@ export async function resetData(sqlitePath, { hashDataOnly = false } = {}) {
     database = new Database(source, { fileMustExist: true, timeout: 0 });
     return database.transaction(() => {
       const version = database.pragma('user_version', { simple: true });
-      if (![1, 2, 3, SqliteStateStore.SCHEMA_VERSION].includes(version)) {
+      if (![1, 2, 3, 4, SqliteStateStore.SCHEMA_VERSION].includes(version)) {
         throw new Error(`unsupported SQLite schema version ${version}`);
       }
       validateSqliteSchema(database, version);

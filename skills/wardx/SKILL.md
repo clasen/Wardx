@@ -149,6 +149,12 @@ the goal happens, including server-side payment webhooks. Channels and goals
 are lowercase low-cardinality labels (`^[a-z0-9][a-z0-9._-]{0,63}$`), never
 campaign IDs per ad or user-specific values. A conversion is not a return.
 
+`await flush()` resolves `{ ok }`; `false` means something recorded since the
+previous `flush()` may not have arrived. Where the sender can retry, such as a
+payment webhook, answer with an error on `ok: false`; repeating a conversion is
+idempotent. For ad campaigns on a website that sells an app through a payment
+webhook, follow [references/acquisition.md](references/acquisition.md).
+
 ## Lifecycle and diagnosis
 
 Retain and await `shutdown()` in the application's existing shutdown integration.

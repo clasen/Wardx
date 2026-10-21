@@ -276,14 +276,17 @@ test('flush storms share one pending sync behind a slow destination without losi
     await started;
     const counter = wardx.counter('operations');
     const pending = wardx._enqueueSync({});
+    const flushes = [];
     for (let i = 0; i < 10000; i++) {
       counter.inc();
-      assert.equal(wardx.flush(), pending);
+      flushes.push(wardx.flush());
+      assert.equal(wardx._syncChain, pending);
     }
     assert.equal(envelopes.length, 1);
     releaseBootstrap();
     await pending;
     assert.equal(envelopes.length, 2);
+    assert.ok((await Promise.all(flushes)).every((result) => result.ok));
     assert.equal(maxActive, 1);
     const operations = envelopes[1].frames.flatMap((frame) => frame.metrics.counters)
       .find((row) => row[0] === 'operations');
@@ -468,8 +471,9 @@ test('snapshot storms stay bounded and shutdown waits for late measurements', as
     assert.equal(frames.flatMap((frame) => frame.events).filter((row) => row[1] === 'during-snapshot').length, 1);
     assert.equal(wardx._core.pendingFrames.length, 0);
     assert.equal(wardx._queuedSnapshot, null);
-    assert.equal(wardx.flush(), shutdown, 'late flushes do not restart work after shutdown');
-    assert.equal(recorded.envelopes.length, 2);
+    assert.deepEqual(await wardx.flush(), { ok: true });
+    assert.equal(recorded.envelopes.length, 2, 'late flushes do not restart work after shutdown');
+    assert.equal(wardx._queuedSync, null);
   } finally {
     release();
     await wardx.shutdown();
@@ -744,4 +748,34 @@ test('a sync response without serverTime fails the sync', async () => {
   } finally {
     await wardx.shutdown();
   }
+});
+
+test('flush reports whether everything recorded since the previous flush reached the server', async () => {
+  const settings = {
+    projectKey: 'test-key', project: 'demo', role: 'client', appVersion: '1.0.0', environment: 'test',
+    privacySalt: 'test-salt', aggregateIntervalMs: 60_000, syncIntervalMs: 60_000, maxBufferedEvents: 2
+  };
+  await withServer(async (server, endpoint) => {
+    const wardx = createWardx({ ...settings, endpoint });
+    try {
+      wardx.conversion('buyer', 'purchase');
+      assert.deepEqual(await wardx.flush(), { ok: true });
+      for (let i = 0; i < 3; i++) wardx.conversion(`buyer-${i}`, 'purchase');
+      assert.deepEqual(await wardx.flush(), { ok: false }, 'the buffer dropped the third conversion');
+      assert.deepEqual(await wardx.flush(), { ok: true }, 'only losses after the previous flush call count');
+      const events = server.wardx.sink.envelopes.flatMap((envelope) => envelope.frames.flatMap((frame) => frame.events));
+      assert.equal(events.filter((row) => row[1] === 'retention.conversion').length, 3);
+    } finally {
+      await wardx.shutdown();
+    }
+  });
+  const down = createWardx({ ...settings, endpoint: 'http://127.0.0.1:1' });
+  try {
+    down.conversion('buyer', 'purchase');
+    assert.deepEqual(await down.flush(), { ok: false });
+    assert.deepEqual(await down.flush(), { ok: false });
+  } finally {
+    await down.shutdown();
+  }
+  assert.deepEqual(await createWardx({ enabled: false }).flush(), { ok: true });
 });

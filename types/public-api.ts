@@ -12,7 +12,7 @@ import type {
   SyncTraceRecord
 } from '@wardx/core';
 import { createConsoleTracer, createWardx } from 'wardx';
-import type { CreateWardxOptions, WardxNode } from 'wardx';
+import type { CreateWardxOptions, FlushResult, WardxNode } from 'wardx';
 
 const options: CreateWardxOptions = {
   endpoint: 'http://127.0.0.1:3333',
@@ -42,7 +42,9 @@ client.event('checkout.completed', { amount: 3 });
 client.log.error('checkout_failed', { code: 'timeout' });
 const configured: number = client.config.get('timeoutMs', 1000, { subjectId: 'subject-2' });
 client.experiment.goal('checkout.completed', { subjectId: 'subject-2', value: 1 });
-const flushed: Promise<void> = client.flush();
+const flushed: Promise<FlushResult> = client.flush();
+client.retentionActivity('visitor', { channel: 'meta' });
+client.conversion('visitor', 'purchase');
 const stopped: Promise<void> = client.shutdown();
 
 const coreSettings: CoreSettings = {

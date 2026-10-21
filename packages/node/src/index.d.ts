@@ -72,6 +72,11 @@ export interface ExperimentApi {
   goal(name: string, context?: ExperimentGoalContext): void;
 }
 
+export interface FlushResult {
+  /** False when anything recorded since the previous flush() call may not have reached the server. */
+  ok: boolean;
+}
+
 export type DisabledWardxOptions = Partial<CreateWardxOptions> & { enabled: false };
 
 export class WardxNode {
@@ -90,7 +95,7 @@ export class WardxNode {
   distinct(name: string, dims?: Dimensions | null): DistinctHandle;
   timer(name: string, dims?: Dimensions | null): StopTimer;
   event(name: string, attrs?: Attrs | null): void;
-  flush(): Promise<void>;
+  flush(): Promise<FlushResult>;
   shutdown(): Promise<void>;
 }
 

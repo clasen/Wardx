@@ -54,6 +54,7 @@ export class WardxNode {
     this._queuedSync = null;
     this._snapshotChain = Promise.resolve();
     this._queuedSnapshot = null;
+    this._flushLosses = 0;
     this._instanceId = ulid();
     this._sessionId = ulid();
     this._aggregateTimer = setInterval(() => {
@@ -105,10 +106,16 @@ export class WardxNode {
     this._core.event(name, attrs);
   }
 
-  flush() {
-    if (this._disabled) return Promise.resolve();
-    if (this._shutdownPromise !== null) return this._shutdownPromise;
-    return this._enqueueSync({ flush: true });
+  // Resolves { ok: false } when anything recorded after the previous flush()
+  // call may not have reached the server, so a caller that records evidence
+  // right before flushing can retry; repeating a conversion is idempotent.
+  async flush() {
+    if (this._disabled) return { ok: true };
+    const losses = this._flushLosses;
+    this._flushLosses = this._core._deliveryLosses;
+    if (this._shutdownPromise !== null) await this._shutdownPromise;
+    else await this._enqueueSync({ flush: true });
+    return { ok: this._core._deliveryLosses === losses };
   }
 
   shutdown() {

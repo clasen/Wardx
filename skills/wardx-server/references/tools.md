@@ -50,6 +50,18 @@ move users into a channel. A new channel's cohorts are comparable to an old
 channel's at the same age; per-period sales are not, because a recent channel
 has had less time to convert.
 
+`channel: "(over_cap)"` rows are users whose first touch named a channel beyond
+the project cap; they are never merged into another channel. With `goal`,
+`duplicateConversions` per row counts repeat conversions (retries, second
+purchases) that rates ignore, and top-level `orphanConversions` counts users who
+converted inside the queried dates (conversion dates) with no cohort yet, such
+as a purchase from another browser. Report orphans next to the rates; a high
+share means attribution is breaking, not that conversion is low. `capacity`
+gives users/channels/goals against their caps and persisted per-project drops;
+warn before `capacity.users` reaches `maxUsers`, because rows do not expire and
+new users are dropped from then on. Horizons are fixed at D1/D7/D30; for a
+weekly view, add daily rows yourself and skip pending horizons.
+
 ## Mutate
 
 | Tool | Additional arguments |

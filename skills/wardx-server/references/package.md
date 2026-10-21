@@ -125,10 +125,13 @@ reenrolling existing ones, accepts the rest of the envelope, and counts drops in
 `/ready` `counters.retentionActivityDropped` and `retentionConversionsDropped`.
 A first touch naming a channel beyond the cap keeps the activity, ignores the
 channel and counts `retentionChannelsDropped`. Salt fingerprints are pinned per
-project and changes are rejected. SQLite uses schema v4. Startup migrates a v3
-database in place by adding the channel, goal and conversion tables, keeps all
-v3 rows, or initializes an empty database; it rejects v1/v2 because the XXHash64
-identity change requires fresh telemetry history.
+project and changes are rejected. A first touch beyond the channel cap is kept
+as `(over_cap)`. Activity and conversion drops also persist per project and
+appear in `get_retention.capacity`. SQLite uses schema v5. Startup migrates a v3
+or v4 database in place (v3 gains the channel, goal and conversion tables; both
+gain the drop and repeat-conversion columns) and keeps every row, or initializes
+an empty database; it rejects v1/v2 because the XXHash64 identity change
+requires fresh telemetry history.
 Conditional Remote Config rules are optional project-state JSON and do not
 require resetting an otherwise compatible database. Never erase a live database
 as part of a config update.

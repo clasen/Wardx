@@ -198,13 +198,18 @@ test('channel, goal and user caps drop labels or new subjects without evicting k
     assert.deepEqual(ledger.ingestBatch('demo', [
       touch('a', 0, 'tiktok'), touch('b', 0, 'google'), conversion('a', 1), conversion('a', 1, 'trial')
     ]), { activity: 0, conversions: 1, channels: 1 });
-    assert.deepEqual(ledger.query('demo', { ...RANGE, byChannel: true }).cohorts.map((row) => row.channel), [null, 'tiktok']);
+    assert.deepEqual(ledger.query('demo', { ...RANGE, byChannel: true }).cohorts.map((row) => row.channel), ['(over_cap)', 'tiktok']);
+    // The over-cap first touch stays fixed; a known channel at the same instant does not replace it.
     assert.deepEqual(ledger.ingestBatch('demo', [touch('b', 0, 'tiktok'), conversion('c', 1), activity('c', 1)]), {
       activity: 1, conversions: 1, channels: 0
     });
-    assert.deepEqual(ledger.query('demo', { ...RANGE, byChannel: true }).cohorts.map((row) => [row.channel, row.users]), [
-      ['tiktok', 2]
-    ]);
+    const capped = ledger.query('demo', { ...RANGE, byChannel: true });
+    assert.deepEqual(capped.cohorts.map((row) => [row.channel, row.users]), [['(over_cap)', 1], ['tiktok', 1]]);
+    assert.deepEqual(ledger.query('demo', { ...RANGE, channel: '(over_cap)' }).cohorts.map((row) => row.users), [1]);
+    assert.deepEqual(capped.capacity, {
+      users: 2, maxUsers: 2, channels: 1, maxChannels: 1, goals: 1, maxGoals: 1,
+      droppedActivity: 1, droppedConversions: 2
+    });
 
     const other = new RetentionLedger({ store, settings: {
       maxUsersPerProject: 1, maxChannelsPerProject: 1, maxGoalsPerProject: 1, maxQueryDays: 31
@@ -219,6 +224,39 @@ test('channel, goal and user caps drop labels or new subjects without evicting k
       assert.throws(() => ledger.query('demo', { ...RANGE, ...filter }), RetentionInputError);
     }
     assert.throws(() => ledger.ingestBatch('demo', [touch('a', 0, 'UPPER')]), RetentionInputError);
+  } finally {
+    store.close();
+  }
+});
+
+test('orphan conversions and repeated conversions are counted apart from cohort conversion', () => {
+  const store = openStore(testServerConfig().sqlite.path);
+  try {
+    const ledger = new RetentionLedger({ store, settings: { ...LIMITS, maxChannelsPerProject: 8, maxGoalsPerProject: 8 } });
+    ledger.ingestBatch('demo', [
+      touch('a', 0, 'meta'), conversion('a', 3), conversion('a', 3), conversion('a', 2),
+      touch('b', 0, 'google'), conversion('b', 5),
+      conversion('other-browser', 4), conversion('other-browser', 4), conversion('late-cohort', 6),
+      conversion('outside-range', 40)
+    ]);
+    const now = START + 40 * DAY;
+    const query = { ...RANGE, goal: 'purchase', byChannel: true };
+    let result = ledger.query('demo', query, now);
+    assert.equal(result.orphanConversions, 2, 'outside-range converted after the queried dates');
+    assert.deepEqual(result.cohorts.map(({ channel, conversions, duplicateConversions }) => [
+      channel, conversions[0].users, conversions[1].users, duplicateConversions
+    ]), [['google', 0, 1, 0], ['meta', 0, 1, 2]]);
+    ledger.ingestBatch('demo', [activity('late-cohort', 6)]);
+    result = ledger.query('demo', query, now);
+    assert.equal(result.orphanConversions, 1);
+    assert.deepEqual(result.cohorts.at(-1), {
+      cohort: '2026-01-07', channel: null, users: 1,
+      returns: horizons('mature', [0, 0, 0], 1),
+      conversions: horizons('mature', [1, 1, 1], 1),
+      duplicateConversions: 0
+    });
+    assert.equal(ledger.query('demo', { ...RANGE, goal: 'refund' }, now).orphanConversions, 0);
+    assert.equal(ledger.query('demo', RANGE, now).orphanConversions, undefined);
   } finally {
     store.close();
   }
@@ -273,7 +311,7 @@ test('Node public SDK, ingest validation and MCP retention query work across ser
     });
     assert.equal(response.status, 200);
     assert.equal(server.wardx.sink.envelopes.length, accepted + 1);
-    assert.deepEqual(executeTool(server.wardx.control, 'get_retention', args), result);
+    assert.deepEqual(executeTool(server.wardx.control, 'get_retention', args).cohorts, result.cohorts);
     const readiness = await (await fetch(`${endpoint}/ready`)).json();
     assert.equal(readiness.ok, true);
     assert.deepEqual(readiness.counters, {
@@ -281,7 +319,9 @@ test('Node public SDK, ingest validation and MCP retention query work across ser
     });
     await server.wardx.stop();
     server = createIngestServer(config);
-    assert.deepEqual(executeTool(server.wardx.control, 'get_retention', args), result);
+    const restarted = executeTool(server.wardx.control, 'get_retention', args);
+    assert.deepEqual(restarted.cohorts, result.cohorts);
+    assert.equal(restarted.capacity.droppedActivity, 1);
   } finally {
     await client.shutdown();
     await server.wardx.stop();
