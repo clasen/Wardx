@@ -91,6 +91,16 @@ namespace Wardx
 
         public MetricSnapshot SnapshotAndReset()
         {
+            return Snapshot(true);
+        }
+
+        public MetricSnapshot Snapshot()
+        {
+            return Snapshot(false);
+        }
+
+        MetricSnapshot Snapshot(bool reset)
+        {
             var counters = new List<CounterSample>();
             foreach (var byKey in _countersByName.Values)
             {
@@ -99,7 +109,7 @@ namespace Wardx
                     if (series.Value != 0)
                     {
                         counters.Add(new CounterSample(series.Name, series.Dims, series.Value));
-                        series.Value = 0;
+                        if (reset) series.Value = 0;
                     }
                 }
             }
@@ -111,7 +121,7 @@ namespace Wardx
                     if (series.Dirty)
                     {
                         gauges.Add(new GaugeSample(series.Name, series.Dims, series.Value, series.Timestamp));
-                        series.Dirty = false;
+                        if (reset) series.Dirty = false;
                     }
                 }
             }
@@ -123,7 +133,7 @@ namespace Wardx
                     if (series.Count > 0)
                     {
                         histograms.Add(new HistogramSample(series.Name, series.Dims, series.Snapshot()));
-                        series.Reset();
+                        if (reset) series.Reset();
                     }
                 }
             }
@@ -135,7 +145,7 @@ namespace Wardx
                     if (series.Dirty)
                     {
                         distincts.Add(new DistinctSample(series.Name, series.Dims, series.Snapshot()));
-                        series.Reset();
+                        if (reset) series.Reset();
                     }
                 }
             }

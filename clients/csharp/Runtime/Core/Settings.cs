@@ -31,6 +31,8 @@ namespace Wardx
         public int? ExperimentStateMaxSubjects;
         public int? HttpTimeoutMs;
         public double[] HistogramBuckets;
+        public string RetainedPath;
+        public int? MaxRetainedSeries;
     }
 
     public sealed class Settings
@@ -61,6 +63,8 @@ namespace Wardx
         public int ExperimentStateMaxSubjects;
         public int HttpTimeoutMs;
         public double[] HistogramBuckets;
+        public string RetainedPath;
+        public int MaxRetainedSeries;
 
         public static Settings Resolve(WardxOptions options)
         {
@@ -113,12 +117,18 @@ namespace Wardx
                 MaxDimensionValueLength = options.MaxDimensionValueLength ?? SdkDefaults.MaxDimensionValueLength,
                 ExperimentStateMaxSubjects = options.ExperimentStateMaxSubjects ?? SdkDefaults.ExperimentStateMaxSubjects,
                 HttpTimeoutMs = options.HttpTimeoutMs ?? SdkDefaults.HttpTimeoutMs,
-                HistogramBuckets = options.HistogramBuckets ?? SdkDefaults.HistogramBuckets
+                HistogramBuckets = options.HistogramBuckets ?? SdkDefaults.HistogramBuckets,
+                RetainedPath = options.RetainedPath,
+                MaxRetainedSeries = options.MaxRetainedSeries ?? SdkDefaults.MaxRetainedSeries
             };
 
             if (settings.PrivacySalt.Length == 0)
             {
                 throw new ArgumentException("privacySalt must be a non-empty string");
+            }
+            if (settings.RetainedPath != null && settings.RetainedPath.Length == 0)
+            {
+                throw new ArgumentException("retainedPath must be a non-empty string");
             }
 
             AssertPositive(settings.AggregateIntervalMs, "aggregateIntervalMs");
@@ -142,6 +152,7 @@ namespace Wardx
             AssertPositive(settings.MaxDimensionValueLength, "maxDimensionValueLength");
             AssertPositive(settings.ExperimentStateMaxSubjects, "experimentStateMaxSubjects");
             AssertPositive(settings.HttpTimeoutMs, "httpTimeoutMs");
+            AssertPositive(settings.MaxRetainedSeries, "maxRetainedSeries");
             AssertRange(settings.SyncJitterMin, 0, 1, "syncJitterMin");
             AssertRange(settings.SyncJitterMax, 1, 2, "syncJitterMax");
             if (settings.SyncJitterMin > settings.SyncJitterMax)

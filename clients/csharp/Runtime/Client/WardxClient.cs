@@ -172,6 +172,36 @@ namespace Wardx
             lock (_gate) return new LockedDistinct(_gate, _core.Distinct(name, dims));
         }
 
+        public ICounter RetainedCounter<TName>(TName name, IReadOnlyDictionary<string, object> dims = null) where TName : struct, Enum
+        {
+            if (!_enabled) return NoopCounter.Instance;
+            return RetainedCounter(EnumNames.Resolve(name), dims);
+        }
+
+        /// <summary>
+        /// A counter persisted to retainedPath until a sync delivers it, reported in that sync's window.
+        /// </summary>
+        public ICounter RetainedCounter(string name, IReadOnlyDictionary<string, object> dims = null)
+        {
+            if (!_enabled) return NoopCounter.Instance;
+            lock (_gate) return new LockedCounter(_gate, _core.RetainedCounter(name, dims));
+        }
+
+        public IDistinct RetainedDistinct<TName>(TName name, IReadOnlyDictionary<string, object> dims = null) where TName : struct, Enum
+        {
+            if (!_enabled) return NoopDistinct.Instance;
+            return RetainedDistinct(EnumNames.Resolve(name), dims);
+        }
+
+        /// <summary>
+        /// A distinct persisted to retainedPath until a sync delivers it, reported in that sync's window.
+        /// </summary>
+        public IDistinct RetainedDistinct(string name, IReadOnlyDictionary<string, object> dims = null)
+        {
+            if (!_enabled) return NoopDistinct.Instance;
+            lock (_gate) return new LockedDistinct(_gate, _core.RetainedDistinct(name, dims));
+        }
+
         public TimerToken Timer<TName>(TName name, IReadOnlyDictionary<string, object> dims = null) where TName : struct, Enum
         {
             if (!_enabled) return DisabledTimer;
@@ -250,6 +280,7 @@ namespace Wardx
                 }
                 finally
                 {
+                    lock (_gate) _core.SaveRetained();
                     _transport.Close();
                 }
             }
@@ -263,6 +294,7 @@ namespace Wardx
         public void Stop()
         {
             if (!_enabled) return;
+            lock (_gate) _core.SaveRetained();
             lock (_lifecycleGate)
             {
                 if (_stopped) return;
@@ -294,7 +326,11 @@ namespace Wardx
         internal void Suspend()
         {
             if (!_enabled) return;
-            lock (_gate) _core.Suspend();
+            lock (_gate)
+            {
+                _core.Suspend();
+                _core.SaveRetained();
+            }
             lock (_lifecycleGate)
             {
                 if (_stopped) return;
@@ -337,6 +373,7 @@ namespace Wardx
                     Frame frame;
                     lock (_gate)
                     {
+                        _core.SaveRetained();
                         _core.RecordProcessRss(rss);
                         frame = _core.CaptureFrameIfDirty();
                     }
@@ -353,7 +390,11 @@ namespace Wardx
             }
             catch
             {
-                lock (_gate) _core.RecordSyncError();
+                lock (_gate)
+                {
+                    _core.AbandonSnapshot();
+                    _core.RecordSyncError();
+                }
             }
             finally
             {
@@ -472,20 +513,61 @@ namespace Wardx
             }
             List<Frame> frames;
             lock (_gate) frames = _core.TakePendingFrames();
-            if (!sendEmpty && frames.Count == 0) return true;
-
             var phase = flags.Bootstrap ? "bootstrap" : flags.Flush ? "flush" : "tick";
+            if (sendEmpty || frames.Count > 0)
+            {
+                var sent = await PostFrames(phase, frames, transportToken).ConfigureAwait(false);
+                if (!sent.Ok) return false;
+            }
+            return await SendRetained(phase, transportToken).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Retained frames travel in their own envelopes after the regular ones, so they can never
+        /// take regular frames down with them. A permanent rejection drops the flight instead of
+        /// retrying it on every sync.
+        /// </summary>
+        async Task<bool> SendRetained(string phase, CancellationToken transportToken)
+        {
+            FrameBatch retained;
+            lock (_gate) retained = _core.CaptureRetainedFrames();
+            if (retained == null) return true;
+            _core.TraceSnapshot(retained);
+            var settled = false;
+            try
+            {
+                var sent = await PostFrames(phase, retained.Frames, transportToken).ConfigureAwait(false);
+                settled = sent.Ok || IsPermanentRejection(sent.Status);
+                return sent.Ok;
+            }
+            finally
+            {
+                lock (_gate)
+                {
+                    if (settled) _core.CommitRetained();
+                    else _core.AbortRetained();
+                }
+            }
+        }
+
+        static bool IsPermanentRejection(int? status)
+        {
+            return status == 400 || status == 413 || status == 415;
+        }
+
+        async Task<(bool Ok, int? Status)> PostFrames(string phase, List<Frame> frames, CancellationToken transportToken)
+        {
             var start = 0;
             do
             {
                 var sent = await PostEnvelope(phase, frames, start, transportToken).ConfigureAwait(false);
-                if (!sent.Ok) return false;
+                if (!sent.Ok) return (false, sent.Status);
                 start = sent.End;
             } while (start < frames.Count);
-            return true;
+            return (true, null);
         }
 
-        async Task<(bool Ok, int End)> PostEnvelope(string phase, List<Frame> frames, int start, CancellationToken transportToken)
+        async Task<(bool Ok, int End, int? Status)> PostEnvelope(string phase, List<Frame> frames, int start, CancellationToken transportToken)
         {
             var unsent = frames.Count - start;
             var count = unsent;
@@ -530,7 +612,7 @@ namespace Wardx
                 {
                     lock (_gate) _core.RecordSyncResult(false, unsent, ms);
                     TraceSync(phase, count, bytesUncompressed, bytesCompressed, ms, false, result.Status, false);
-                    return (false, start);
+                    return (false, start, result.Status);
                 }
                 lock (_gate)
                 {
@@ -545,21 +627,21 @@ namespace Wardx
                     applied = result.Text != null && result.Text.IndexOf("\"config\"", StringComparison.Ordinal) >= 0;
                 }
                 TraceSync(phase, count, bytesUncompressed, bytesCompressed, ms, true, result.Status, applied, version);
-                return (true, encoded.End);
+                return (true, encoded.End, result.Status);
             }
             catch (OperationCanceledException)
             {
                 var ms = (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
                 lock (_gate) _core.RecordSyncResult(false, unsent, ms);
                 TraceSync(phase, count, bytesUncompressed, bytesCompressed, ms, false, null, false);
-                return (false, start);
+                return (false, start, null);
             }
             catch
             {
                 var ms = (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
                 lock (_gate) _core.RecordSyncResult(false, unsent, ms);
                 TraceSync(phase, count, bytesUncompressed, bytesCompressed, ms, false, null, false);
-                return (false, start);
+                return (false, start, null);
             }
         }
 

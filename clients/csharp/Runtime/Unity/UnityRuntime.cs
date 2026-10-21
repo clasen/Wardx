@@ -208,6 +208,13 @@ namespace Wardx
 
         public static WardxClient Attach(MonoBehaviour hostBehaviour, Settings settings)
         {
+            if (settings.RetainedPath == null)
+            {
+                settings.RetainedPath = System.IO.Path.Combine(
+                    Application.persistentDataPath,
+                    "wardx-retained-" + settings.Project + "-" + settings.Role + ".json"
+                );
+            }
             var transport = new UnityWebRequestTransport(hostBehaviour, settings.Endpoint, settings.ProjectKey, settings.HttpTimeoutMs);
             var client = new WardxClient(
                 settings,

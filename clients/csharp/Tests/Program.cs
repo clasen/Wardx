@@ -19,6 +19,7 @@ namespace Wardx.Tests
             failed += Run("settings", SettingsTests.Run);
             failed += Run("json", JsonTests.Run);
             failed += Run("sync", SyncTests.Run);
+            failed += Run("retained", RetainedTests.Run);
             if (failed == 0) Console.WriteLine("all tests passed");
             else Console.WriteLine(failed + " group(s) failed");
             return failed == 0 ? 0 : 1;

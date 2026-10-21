@@ -23,6 +23,9 @@ namespace Wardx
 
         public static readonly double[] HistogramBuckets = { 10, 25, 50, 100, 250, 500, 1000 };
 
-        public const string Version = "0.10.0";
+        // C# only: retained metrics have no Node counterpart.
+        public const int MaxRetainedSeries = 64;
+
+        public const string Version = "0.11.0";
     }
 }

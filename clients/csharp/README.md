@@ -41,11 +41,11 @@ to both .NET and Unity.
 https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime
 ```
 
-Release `#v0.10.0` aligns timestamps to the server clock, cuts the Unity frame window at application pause, and adds `RetentionActivity(userId, channel)` and `Conversion(userId, goal)`; it needs server 0.13.0 or newer. `#v0.9.5` sends `client.os`, the detected operating system family, and needs server 0.11.0 or newer. `#v0.9.4` keeps each sync request within `MaxEnvelopeItems` rows and `MaxEnvelopeBytes`, sending pending frames across several requests when needed. `#v0.9.3` built snapshots and split frames on the thread pool on threaded runtimes, and moved sync accounting into `WardxCore` (`RecordSyncBytes`, `RecordSyncResult`, `RecordSyncError`, `RecordProcessRss`, `RecordConfigVersion`); wire format and metrics are unchanged. `#v0.9.2` added linear frame splitting, background envelope encoding on threaded runtimes, and coalesced pending flushes. In
+Release `#v0.11.0` adds `RetainedCounter` and `RetainedDistinct`, which persist values until a sync delivers them; it works with server 0.13.0 or newer. `#v0.10.0` aligns timestamps to the server clock, cuts the Unity frame window at application pause, and adds `RetentionActivity(userId, channel)` and `Conversion(userId, goal)`; it needs server 0.13.0 or newer. `#v0.9.5` sends `client.os`, the detected operating system family, and needs server 0.11.0 or newer. `#v0.9.4` keeps each sync request within `MaxEnvelopeItems` rows and `MaxEnvelopeBytes`, sending pending frames across several requests when needed. `#v0.9.3` built snapshots and split frames on the thread pool on threaded runtimes, and moved sync accounting into `WardxCore` (`RecordSyncBytes`, `RecordSyncResult`, `RecordSyncError`, `RecordProcessRss`, `RecordConfigVersion`); wire format and metrics are unchanged. `#v0.9.2` added linear frame splitting, background envelope encoding on threaded runtimes, and coalesced pending flushes. In
 `Packages/manifest.json`:
 
 ```json
-"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.10.0"
+"com.wardx.sdk": "https://github.com/clasen/Wardx.git?path=clients/csharp/Runtime#v0.11.0"
 ```
 
 **Unity (this checkout).** Package Manager → Add package from disk → `clients/csharp/Runtime/package.json`.
@@ -180,6 +180,7 @@ catalog, supplied through server configuration or MCP onboarding.
 | Last known size | `Gauge(name, dims).Set(value)` |
 | Distribution | `Histogram(name, dims, buckets).Observe(value)` |
 | Approximate unique count | `Distinct(name, dims).Add(identifier)` |
+| Count or unique count that must survive offline time and restarts | `RetainedCounter(name, dims)` or `RetainedDistinct(name, dims)` |
 | Elapsed time | `Timer(name, dims)` then `Stop()` |
 | Discrete product fact | `Event(name, attrs)` |
 | Volume funnel (drop-off between steps) | one `Event` + one `Counter` per step name |
@@ -194,6 +195,26 @@ A counter in a frame is a window delta. Do not put a user id on a metric dimensi
 HyperLogLog (`p=9`, 512 registers, about 4.6% standard error). Only the sketch
 is serialized. Keep the same stable salt on every worker and across the hour/day
 range being compared; Wardx never stores or returns the identifier.
+
+## Count while offline
+
+Regular metrics are dropped when a sync fails. `RetainedCounter` and
+`RetainedDistinct` keep their values in a file until a sync is acknowledged, so
+they survive offline time and process restarts:
+
+```csharp
+var offlineMatches = wardx.RetainedCounter("offline.matches", Dims.Of("mode", "solo"));
+offlineMatches.Inc();
+```
+
+Retained values are reported in the window of the sync that delivers them, not
+when they happened. Delivery is at-least-once: a lost acknowledgement re-sends
+the values. They travel in their own requests after the regular frames, and a
+permanent rejection (400, 413, 415) drops them instead of retrying forever.
+Writes to disk happen at most once per aggregate interval and on pause or stop.
+`MaxRetainedSeries` (default 64) caps the retained series across all names.
+Unity stores the file under `Application.persistentDataPath`; on .NET set
+`RetainedPath`.
 
 ## Count occurrences or quantities
 

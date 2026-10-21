@@ -61,6 +61,27 @@ namespace Wardx
             return new HllBody(Precision, Convert.ToBase64String(_registers));
         }
 
+        public void Merge(HllBody body)
+        {
+            if (body.Precision != Precision)
+            {
+                throw new ArgumentException("distinct merge requires precision " + Precision);
+            }
+            var registers = Convert.FromBase64String(body.Registers);
+            if (registers.Length != RegisterCount)
+            {
+                throw new ArgumentException("distinct merge requires " + RegisterCount + " registers");
+            }
+            for (var i = 0; i < RegisterCount; i++)
+            {
+                if (registers[i] > _registers[i])
+                {
+                    _registers[i] = registers[i];
+                    Dirty = true;
+                }
+            }
+        }
+
         public void Reset()
         {
             Array.Clear(_registers, 0, _registers.Length);

@@ -12,7 +12,9 @@ namespace Wardx
         readonly EventBuffer _events;
         readonly LogBuffer _logs;
         readonly ExperimentResolver _experiments;
+        readonly RetainedMetrics _retained;
         int _seq;
+        bool _snapshotOpen;
         List<Frame> _pendingFrames = new List<Frame>();
         long _windowStart;
         long? _suspendedAt;
@@ -46,6 +48,10 @@ namespace Wardx
             {
                 Event("experiment.exposure", payload);
             });
+            if (settings.RetainedPath != null)
+            {
+                _retained = new RetainedMetrics(settings, () => { Internal.CardinalityDropped += 1; });
+            }
             _windowStart = Clock.UnixMs();
             Log = new CoreLogApi(this);
         }
@@ -92,6 +98,31 @@ namespace Wardx
         {
             return Wrap(_metrics.Distinct(name, dims), NoopDistinct.Instance, name, dims,
                 (series, noop) => new TracedDistinct(series, _tracer, name, dims, noop));
+        }
+
+        public ICounter RetainedCounter<TName>(TName name, IReadOnlyDictionary<string, object> dims = null) where TName : struct, Enum
+        {
+            return RetainedCounter(EnumNames.Resolve(name), dims);
+        }
+
+        public ICounter RetainedCounter(string name, IReadOnlyDictionary<string, object> dims = null)
+        {
+            return Retained().Counter(name, dims);
+        }
+
+        public IDistinct RetainedDistinct<TName>(TName name, IReadOnlyDictionary<string, object> dims = null) where TName : struct, Enum
+        {
+            return RetainedDistinct(EnumNames.Resolve(name), dims);
+        }
+
+        public IDistinct RetainedDistinct(string name, IReadOnlyDictionary<string, object> dims = null)
+        {
+            return Retained().Distinct(name, dims);
+        }
+
+        RetainedMetrics Retained()
+        {
+            return _retained ?? throw new InvalidOperationException("retained metrics require retainedPath");
         }
 
         public TimerToken Timer<TName>(TName name, IReadOnlyDictionary<string, object> dims = null) where TName : struct, Enum
@@ -311,12 +342,19 @@ namespace Wardx
             var internalSnap = Internal.SnapshotAndReset();
             var frame = FrameBuilder.Build(_seq + 1, from, to, metrics, events, logs, internalSnap);
             FrameBuilder.ShiftTime(frame, _clockOffsetMs ?? 0);
+            _snapshotOpen = true;
             return frame;
+        }
+
+        internal void AbandonSnapshot()
+        {
+            _snapshotOpen = false;
         }
 
         internal void CommitSnapshot(FrameBatch batch)
         {
             if (batch.Frames[0].Seq != _seq + 1) throw new InvalidOperationException("snapshots must be completed in sequence");
+            _snapshotOpen = false;
             _seq = batch.Frames[batch.Frames.Count - 1].Seq;
             var capacity = _settings.MaxPendingFrames;
             var overflow = Math.Max(0, _pendingFrames.Count + batch.Frames.Count - capacity);
@@ -330,6 +368,36 @@ namespace Wardx
                 _pendingFrames.Add(batch.Frames[i]);
             }
         }
+
+        /// <summary>
+        /// Opens a retained flight stamped at the current aligned time. The caller must end it with
+        /// CommitRetained or AbortRetained once the frames are delivered or lost. A snapshot that is
+        /// still being split owns the next seq, so the flight waits for a later sync.
+        /// </summary>
+        internal FrameBatch CaptureRetainedFrames()
+        {
+            if (_retained == null || !ClockAligned || _snapshotOpen) return null;
+            var metrics = _retained.BeginFlight();
+            if (metrics == null) return null;
+            var now = Clock.UnixMs() + _clockOffsetMs.Value;
+            var frame = new Frame
+            {
+                Seq = _seq + 1,
+                From = now,
+                To = now,
+                Counters = metrics.Counters,
+                Distincts = metrics.Distincts
+            };
+            var batch = FrameBuilder.SplitToMaxBytes(frame, _settings.MaxFrameBytes, _settings.MaxEnvelopeItems);
+            _seq = batch.Frames[batch.Frames.Count - 1].Seq;
+            return batch;
+        }
+
+        internal void SaveRetained() => _retained?.SaveIfDirty();
+
+        internal void CommitRetained() => _retained.CommitFlight();
+
+        internal void AbortRetained() => _retained.AbortFlight();
 
         internal void TraceSnapshot(FrameBatch batch)
         {
