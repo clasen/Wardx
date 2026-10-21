@@ -49,6 +49,7 @@ namespace Wardx.Tests
             public string Json;
             public string SecondJson;
             public int PostCount;
+            public int HeldPost = 1;
             public int CloseCount;
             public readonly TaskCompletionSource<bool> Started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             public TaskCompletionSource<bool> Release;
@@ -59,10 +60,18 @@ namespace Wardx.Tests
                 using (var gzip = new GZipStream(input, CompressionMode.Decompress))
                 using (var reader = new StreamReader(gzip)) Json = reader.ReadToEnd();
                 PostCount++;
-                if (PostCount == 2) SecondJson = Json;
-                Started.TrySetResult(true);
-                if (PostCount == 1 && Release != null) await Release.Task.ConfigureAwait(false);
-                return new SyncResult(true, 200, "{}");
+                if (PostCount == HeldPost + 1) SecondJson = Json;
+                if (PostCount == HeldPost && Release != null)
+                {
+                    Started.TrySetResult(true);
+                    await Release.Task.ConfigureAwait(false);
+                }
+                return Stamped();
+            }
+
+            static SyncResult Stamped()
+            {
+                return new SyncResult(true, 200, "{\"ok\":true,\"serverTime\":" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + "}");
             }
 
             public void Close() { CloseCount++; }
@@ -156,14 +165,15 @@ namespace Wardx.Tests
 
         static async Task CheckCoalescing()
         {
-            var capture = new CaptureTransport
-            {
-                Release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)
-            };
+            var capture = new CaptureTransport();
             using (var client = WardxClient.Create(Options("http://127.0.0.1:9"), capture))
             {
                 try
                 {
+                    // Frames wait for the server clock, so learn it before stalling a send.
+                    await Within(client.FlushAsync());
+                    capture.HeldPost = capture.PostCount + 1;
+                    capture.Release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                     var first = client.FlushAsync();
                     await Within(capture.Started.Task);
                     var pending = client.FlushAsync();
@@ -174,16 +184,16 @@ namespace Wardx.Tests
                         Require(ReferenceEquals(pending, client.FlushAsync()), "one pending flush task");
                     }
                     await Task.Yield();
-                    Require(capture.PostCount == 1, "one active send while Unity continues updating");
+                    Require(capture.PostCount == capture.HeldPost, "one active send while Unity continues updating");
                     var shutdown = client.ShutdownAsync();
                     Require(ReferenceEquals(shutdown, client.ShutdownAsync()), "shutdown shares its final flush");
                     capture.Release.TrySetResult(true);
                     await Within(Task.WhenAll(first, pending, shutdown));
-                    Require(capture.PostCount == 3, "active, coalesced and final sync only");
+                    Require(capture.PostCount == capture.HeldPost + 2, "active, coalesced and final sync only");
                     Require(capture.SecondJson.Contains("[\"operations\",null,10000]"), "all observations preserved");
                     Require(capture.CloseCount == 1, "transport closed once after drain");
                 }
-                finally { capture.Release.TrySetResult(true); }
+                finally { capture.Release?.TrySetResult(true); }
             }
         }
 
