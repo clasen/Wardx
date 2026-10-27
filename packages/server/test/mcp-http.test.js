@@ -164,6 +164,34 @@ test('Streamable HTTP rejects work above its concurrent request bound', async ()
   }, { maxConcurrentRequests: 1 });
 });
 
+test('Streamable HTTP refuses standalone SSE streams so they cannot hold request slots', async () => {
+  const initialize = JSON.stringify({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'initialize',
+    params: {
+      protocolVersion: '2025-03-26',
+      capabilities: {},
+      clientInfo: { name: 'wardx-sse-test', version: '1.0.0' }
+    }
+  });
+  await withMcpHttp(async ({ mcp, url }) => {
+    const aborter = new AbortController();
+    try {
+      const stream = await fetch(url, {
+        headers: { accept: 'text/event-stream', authorization: `Bearer ${TOKEN}` },
+        signal: aborter.signal
+      });
+      assert.equal(stream.status, 405);
+      assert.equal(stream.headers.get('allow'), 'POST, DELETE');
+      assert.equal(mcp.requestGate.snapshot().active, 0);
+      assert.equal((await post(url, { body: initialize })).status, 200);
+    } finally {
+      aborter.abort();
+    }
+  }, { maxConcurrentRequests: 1 });
+});
+
 test('Streamable HTTP releases the slot held by a stalled request body', async () => {
   await withMcpHttp(async ({ mcp, url }) => {
     const stalled = request(url, {

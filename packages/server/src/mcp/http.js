@@ -50,6 +50,10 @@ export function createMcpHttpHandler(control, config, token) {
       jsonRpcError(res, 401, 'Unauthorized', { 'www-authenticate': 'Bearer' });
       return;
     }
+    if (req.method === 'GET') {
+      jsonRpcError(res, 405, 'Method not allowed', { allow: 'POST, DELETE' });
+      return;
+    }
     if (stopping) {
       jsonRpcError(res, 503, 'Server shutting down');
       return;
