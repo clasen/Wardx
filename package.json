@@ -12,6 +12,7 @@
     "test:js": "node --test packages/core/test/*.test.js packages/node/test/*.test.js packages/server/test/*.test.js",
     "test:black-box": "node --test packages/server/test/black-box.test.js",
     "test:csharp": "dotnet run --project clients/csharp/Tests/Wardx.Tests.csproj && node packages/server/test/csharp-interop.mjs",
+    "test:swift": "swift test && node packages/server/test/swift-interop.mjs",
     "check:csharp": "dotnet format clients/csharp/Runtime/Core/Wardx.Core.csproj --verify-no-changes --no-restore --verbosity minimal && dotnet format clients/csharp/Runtime/Wardx.csproj --verify-no-changes --no-restore --verbosity minimal && dotnet format clients/csharp/Tests/Wardx.Tests.csproj --verify-no-changes --no-restore --verbosity minimal",
     "server": "node packages/server/src/cli.js config/development.json",
     "server:production": "node packages/server/src/cli.js config/production.json",

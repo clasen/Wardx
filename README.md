@@ -62,6 +62,7 @@ and [C# / Unity pattern](clients/csharp/README.md#recommended-keep-handles-as-fi
 | [`@wardx/server`](packages/server/README.md) | That server. Ingest, Remote Config, experiments, MCP. |
 | [`wardx`](packages/node/README.md) | Node.js SDK. |
 | [C# / Unity](clients/csharp/README.md) | Implements Protocol v1; cross-runtime parity is claimed only for behavior covered by shared fixtures or real HTTP tests. |
+| [Swift (macOS / iOS)](clients/swift/README.md) | Implements Protocol v1 as a Swift package; the same parity rule applies. |
 | [`@wardx/core`](packages/core/README.md) | In-process engine. Use `wardx` unless you write a custom runtime. |
 
 Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Protocol: [docs/PROTOCOL.md](docs/PROTOCOL.md).
@@ -107,6 +108,7 @@ npx skills add https://github.com/clasen/Wardx --skill wardx-server
 npx skills add https://github.com/clasen/Wardx --skill wardx
 npx skills add https://github.com/clasen/Wardx --skill wardx-unity
 npx skills add https://github.com/clasen/Wardx --skill wardx-csharp
+npx skills add https://github.com/clasen/Wardx --skill wardx-swift
 ```
 
 ## User retention

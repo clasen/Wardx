@@ -1,6 +1,6 @@
 # Wardx Sync Protocol v1
 
-Wire contract for Wardx SDKs and the ingest server. Every SDK must emit and consume this envelope unchanged. `sdk.name` / `client.platform` identify the runtime: `wardx-node` / `node`, `wardx-csharp` / `csharp`, `wardx-unity` / `unity`.
+Wire contract for Wardx SDKs and the ingest server. Every SDK must emit and consume this envelope unchanged. `sdk.name` / `client.platform` identify the runtime: `wardx-node` / `node`, `wardx-csharp` / `csharp`, `wardx-unity` / `unity`, `wardx-swift` / `swift`.
 
 ## Transport
 

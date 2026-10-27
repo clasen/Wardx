@@ -8,3 +8,5 @@ coverage/
 .env
 bin/
 obj/
+.build/
+.swiftpm/

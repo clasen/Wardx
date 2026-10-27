@@ -36,6 +36,7 @@ pnpm run test:js
 pnpm run test:black-box
 pnpm run test:csharp
 pnpm run check:csharp
+pnpm run test:swift
 pnpm run stress:smoke
 pnpm run pack:check
 ```
@@ -50,6 +51,7 @@ stress run or authorizes `pnpm run verify:release`.
 - `packages/server`: ingest and MCP server published as `@wardx/server`.
 - `packages/stress`: smoke, release stress, and packaging checks.
 - `clients/csharp`: C# and Unity clients.
+- `clients/swift`: Swift client for macOS and iOS; `Package.swift` sits at the repository root.
 - `config`: development and production server configuration.
 - `skills`: agent integration skills shipped with the repository.
 
