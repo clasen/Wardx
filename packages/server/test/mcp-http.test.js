@@ -21,8 +21,17 @@ function mcpHttpConfig(overrides = {}) {
   };
 }
 
-async function withMcpHttp(fn, overrides = {}) {
-  const server = createIngestServer(testServerConfig({ mcpHttp: mcpHttpConfig(overrides) }));
+const SCOPED_TOKEN = 'wardx-scoped-test-token-with-at-least-32-bytes';
+const EMPTY_PROJECT = { version: 1, values: {}, keyRoles: {}, experiments: [] };
+
+function twoProjectConfig(mcpOverrides) {
+  const config = testServerConfig({ mcpHttp: mcpHttpConfig(mcpOverrides) });
+  config.projects.other = structuredClone(EMPTY_PROJECT);
+  return config;
+}
+
+async function withMcpHttp(fn, overrides = {}, configure = (mcpOverrides) => testServerConfig({ mcpHttp: mcpHttpConfig(mcpOverrides) })) {
+  const server = createIngestServer(configure(overrides));
   const address = await listen(server, 0, '127.0.0.1');
   const url = new URL(`http://127.0.0.1:${address.port}/mcp`);
   try {
@@ -139,6 +148,72 @@ test('configured Streamable HTTP requires its bearer secret before opening state
     })),
     /WARDX_TEST_MISSING_MCP_TOKEN must contain at least 32 bytes/
   );
+});
+
+async function connect(url, token) {
+  const client = new Client({ name: 'wardx-scope-test', version: '1.0.0' });
+  await client.connect(new StreamableHTTPClientTransport(url, {
+    requestInit: { headers: { authorization: `Bearer ${token}` } }
+  }));
+  return client;
+}
+
+test('a project-scoped token sees and reaches only its projects while the top-level token sees all', async () => {
+  const tokens = [{ name: 'demo-agent', projects: ['demo'], bearerToken: SCOPED_TOKEN }];
+  await withMcpHttp(async ({ url }) => {
+    const scoped = await connect(url, SCOPED_TOKEN);
+    const admin = await connect(url, TOKEN);
+    try {
+      const listed = await scoped.callTool({ name: 'list_projects', arguments: {} });
+      assert.deepEqual(JSON.parse(listed.content[0].text), { projects: ['demo'] });
+      const resources = await scoped.listResources();
+      assert.deepEqual(resources.resources.map((resource) => resource.name), ['demo']);
+      const own = await scoped.callTool({ name: 'get_config', arguments: { project: 'demo' } });
+      assert.equal(own.isError, undefined);
+
+      const hidden = await scoped.callTool({ name: 'get_config', arguments: { project: 'other' } });
+      const missing = await scoped.callTool({ name: 'get_config', arguments: { project: 'absent' } });
+      assert.equal(hidden.isError, true);
+      assert.match(hidden.content[0].text, /unknown project: other/);
+      assert.equal(missing.content[0].text.replace('absent', 'other'), hidden.content[0].text);
+      const mutation = await scoped.callTool({
+        name: 'set_project_description',
+        arguments: { project: 'other', description: 'x', expectedVersion: 1, reason: 'scope test' }
+      });
+      assert.equal(mutation.isError, true);
+      await assert.rejects(scoped.readResource({ uri: 'wardx://project/other' }), /unknown project: other/);
+
+      const all = await admin.callTool({ name: 'list_projects', arguments: {} });
+      assert.deepEqual(JSON.parse(all.content[0].text), { projects: ['demo', 'other'] });
+      const adminOther = await admin.callTool({ name: 'get_config', arguments: { project: 'other' } });
+      assert.equal(adminOther.isError, undefined);
+    } finally {
+      await scoped.close();
+      await admin.close();
+    }
+  }, { tokens }, twoProjectConfig);
+});
+
+test('project-scoped tokens read their environment variable and must be distinct', () => {
+  process.env.WARDX_TEST_SCOPED_MCP_TOKEN = SCOPED_TOKEN;
+  const fromEnvironment = twoProjectConfig({
+    tokens: [{ name: 'demo-agent', projects: ['demo'], bearerTokenEnvironmentVariable: 'WARDX_TEST_SCOPED_MCP_TOKEN' }]
+  });
+  const server = createIngestServer(fromEnvironment);
+  return server.wardx.stop().then(() => {
+    assert.throws(
+      () => createIngestServer(twoProjectConfig({
+        tokens: [{ name: 'demo-agent', projects: ['demo'], bearerTokenEnvironmentVariable: 'WARDX_TEST_MISSING_MCP_TOKEN' }]
+      })),
+      /WARDX_TEST_MISSING_MCP_TOKEN must contain at least 32 bytes/
+    );
+    assert.throws(
+      () => createIngestServer(twoProjectConfig({
+        tokens: [{ name: 'demo-agent', projects: ['demo'], bearerToken: TOKEN }]
+      })),
+      /MCP bearer tokens must be distinct/
+    );
+  });
 });
 
 test('Streamable HTTP rejects work above its concurrent request bound', async () => {

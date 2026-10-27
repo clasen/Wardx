@@ -19,16 +19,23 @@ function jsonRpcError(res, status, message, headers = {}) {
   res.end(payload);
 }
 
-function authorized(header, expectedToken) {
-  if (typeof header !== 'string' || !header.startsWith('Bearer ')) return false;
-  const actual = Buffer.from(header.slice('Bearer '.length), 'utf8');
+function matches(actual, expectedToken) {
   const expected = Buffer.from(expectedToken, 'utf8');
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
-export function readMcpBearerToken(config, environment = process.env) {
-  if (config.bearerToken !== undefined) return config.bearerToken;
-  const name = config.bearerTokenEnvironmentVariable;
+// Compares against every grant so the response time does not reveal which one matched.
+function authorize(header, grants) {
+  if (typeof header !== 'string' || !header.startsWith('Bearer ')) return null;
+  const actual = Buffer.from(header.slice('Bearer '.length), 'utf8');
+  let granted = null;
+  for (const grant of grants) {
+    if (matches(actual, grant.token)) granted = grant;
+  }
+  return granted;
+}
+
+function readEnvironmentToken(name, environment) {
   const token = environment[name];
   if (typeof token !== 'string' || Buffer.byteLength(token) < 32) {
     throw new Error(`MCP bearer token environment variable ${name} must contain at least 32 bytes`);
@@ -36,9 +43,34 @@ export function readMcpBearerToken(config, environment = process.env) {
   return token;
 }
 
-export function createMcpHttpHandler(control, config, token) {
-  if (typeof token !== 'string' || Buffer.byteLength(token) < 32) {
-    throw new Error('MCP bearer token must contain at least 32 bytes');
+// The top-level token sees every project; each entry in config.tokens sees only its projects.
+export function readMcpGrants(config, environment = process.env) {
+  const grants = [{
+    name: null,
+    projects: null,
+    token: config.bearerToken ?? readEnvironmentToken(config.bearerTokenEnvironmentVariable, environment)
+  }];
+  for (const scoped of config.tokens ?? []) {
+    grants.push({
+      name: scoped.name,
+      projects: scoped.projects,
+      token: scoped.bearerToken ?? readEnvironmentToken(scoped.bearerTokenEnvironmentVariable, environment)
+    });
+  }
+  if (new Set(grants.map((grant) => grant.token)).size !== grants.length) {
+    throw new Error('MCP bearer tokens must be distinct');
+  }
+  return grants;
+}
+
+export function createMcpHttpHandler(control, config, grants) {
+  if (!Array.isArray(grants) || grants.length === 0) {
+    throw new Error('MCP HTTP needs at least one bearer token');
+  }
+  for (const grant of grants) {
+    if (typeof grant.token !== 'string' || Buffer.byteLength(grant.token) < 32) {
+      throw new Error('MCP bearer token must contain at least 32 bytes');
+    }
   }
   const requestGate = new ConcurrencyGate(config.maxConcurrentRequests);
   const activeConnections = new Set();
@@ -46,7 +78,8 @@ export function createMcpHttpHandler(control, config, token) {
   let stopPromise = null;
 
   async function serve(req, res) {
-    if (!authorized(req.headers.authorization, token)) {
+    const grant = authorize(req.headers.authorization, grants);
+    if (!grant) {
       jsonRpcError(res, 401, 'Unauthorized', { 'www-authenticate': 'Bearer' });
       return;
     }
@@ -96,7 +129,7 @@ export function createMcpHttpHandler(control, config, token) {
         }
       }
 
-      const mcp = createMcpServer(control);
+      const mcp = createMcpServer(control, grant.projects);
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true

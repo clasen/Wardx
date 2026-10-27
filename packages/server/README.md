@@ -34,7 +34,7 @@ Each `--client role:trusted|public` becomes one credential for that role;
   `stop` with its `onClose` hook, and returns the request handler. A host such as
   roster-server provides HTTPS and routes the directory's domain to it.
 - `config.cjs`: the server configuration. Edit projects and settings here.
-- `secrets.json`: credentials and the MCP token, written with mode `0600` and
+- `secrets.json`: credentials and the MCP tokens, written with mode `0600` and
   listed in `.gitignore`.
 
 The command prints each client key and the ready-to-run agent commands for
@@ -49,6 +49,23 @@ npx -p @wardx/server wardx-server mcp-token wardx.example.com
 `credential add` creates a public credential unless `--trusted` is passed; its
 project must exist in `config.cjs`. `mcp-token` replaces the MCP token and prints
 the agent commands again.
+
+`mcp-token --name` manages project-scoped tokens in `secrets.json`:
+
+```bash
+npx -p @wardx/server wardx-server mcp-token wardx.example.com --name game-agent --project game
+npx -p @wardx/server wardx-server mcp-token wardx.example.com --name game-agent
+npx -p @wardx/server wardx-server mcp-token wardx.example.com --name game-agent --revoke
+```
+
+The first command creates the token; for an existing name it issues a new value
+with those projects. The second rotates it and keeps its projects. The third
+revokes it. Sites created before scoped tokens must also pass them in
+`config.cjs`; the command prints the line to add when it is missing:
+
+```js
+mcpHttp: { enabled: true, bearerToken: secrets.mcpToken, tokens: secrets.mcpTokens },
+```
 
 ### Start from code
 
@@ -388,6 +405,26 @@ Enabled MCP HTTP defaults to the values below; set any of them to override it:
 Serve MCP only over HTTPS: the bearer token travels with every request. The
 token grants full administrative control over Remote Config and experiments, so
 keep it secret. To rotate it, change `WARDX_MCP_TOKEN` and restart Wardx.
+
+To give an agent access to only some projects, add project-scoped tokens next
+to the top-level one. Each entry sets `name`, a non-empty `projects` list, and
+exactly one of `bearerToken` or `bearerTokenEnvironmentVariable`:
+
+```json
+{
+  "mcpHttp": {
+    "enabled": true,
+    "tokens": [
+      { "name": "game-agent", "projects": ["game"], "bearerTokenEnvironmentVariable": "WARDX_MCP_TOKEN_GAME" }
+    ]
+  }
+}
+```
+
+A scoped token lists and reaches only its projects; any other project answers
+as unknown. The top-level token keeps full access to every project. Startup fails
+if a scoped token names a project missing from `projects`, if two entries share a
+name, or if two tokens have the same value.
 
 ### Remote: 2. Connect the agent
 

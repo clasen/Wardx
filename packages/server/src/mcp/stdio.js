@@ -49,7 +49,9 @@ function projectFromUri(uri) {
   return name;
 }
 
-export function createMcpServer(control) {
+// projects is null for full access, or the only project names this server may expose.
+// A hidden project fails exactly like a missing one so its existence does not leak.
+export function createMcpServer(control, projects = null) {
   const readGate = new QueuedConcurrencyGate(
     control.config.control.maxConcurrentMcpReads,
     control.config.control.maxPendingMcpReads
@@ -71,6 +73,11 @@ export function createMcpServer(control) {
     'rollback_config_change',
     'ship_experiment'
   ]);
+  const visible = (project) => projects === null || projects.includes(project);
+  const listProjects = () => control.listProjects().filter(visible);
+  const requireVisible = (project) => {
+    if (!visible(project)) throw new Error(`unknown project: ${project}`);
+  };
   const withReadLease = async (work) => {
     const release = await readGate.acquire();
     try {
@@ -86,15 +93,19 @@ export function createMcpServer(control) {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
-      const execute = () => executeTool(control, request.params.name, request.params.arguments || {});
-      const result = mutationTools.has(request.params.name) ? await execute() : await withReadLease(execute);
+      const { name } = request.params;
+      const args = request.params.arguments || {};
+      if (name === 'list_projects') return toolResult(await withReadLease(() => ({ projects: listProjects() })));
+      requireVisible(args.project);
+      const execute = () => executeTool(control, name, args);
+      const result = mutationTools.has(name) ? await execute() : await withReadLease(execute);
       return toolResult(result);
     } catch (err) {
       return toolError(err);
     }
   });
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
-    resources: control.listProjects().map((name) => {
+    resources: listProjects().map((name) => {
       const description = control.getCatalog(name).description;
       return {
         uri: projectUri(name),
@@ -111,6 +122,7 @@ export function createMcpServer(control) {
     try {
       return await withReadLease(() => {
         const project = projectFromUri(request.params.uri);
+        requireVisible(project);
         const overview = control.getOverview(project);
         return {
           contents: [

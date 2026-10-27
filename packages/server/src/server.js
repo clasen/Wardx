@@ -15,7 +15,7 @@ import { SqliteStateStore } from './storage/SqliteStateStore.js';
 import { RetentionLedger } from './storage/RetentionLedger.js';
 import { ExperimentLedger } from './storage/ExperimentLedger.js';
 import { normalizeCatalog } from './control/catalog.js';
-import { createMcpHttpHandler, readMcpBearerToken } from './mcp/http.js';
+import { createMcpHttpHandler, readMcpGrants } from './mcp/http.js';
 import { OperationalHealth } from './OperationalHealth.js';
 
 function createSink(config) {
@@ -119,7 +119,7 @@ function hydrateHistoricalState(config, stateStore, registry) {
 
 function createIngestRuntime(configInput) {
   const config = validateServerConfig(configInput);
-  const mcpToken = config.mcpHttp.enabled ? readMcpBearerToken(config.mcpHttp) : null;
+  const mcpGrants = config.mcpHttp.enabled ? readMcpGrants(config.mcpHttp) : null;
   const stateStore = createStateStore(config);
   let registry;
   try {
@@ -139,7 +139,7 @@ function createIngestRuntime(configInput) {
   const retentionLedger = new RetentionLedger({ store: stateStore, settings: config.retention });
   const sink = createSink(config);
   const control = new ControlService({ config, registry, persistence, diagnostics, stateStore, experimentLedger, retentionLedger });
-  const mcpHttp = mcpToken ? createMcpHttpHandler(control, config.mcpHttp, mcpToken) : null;
+  const mcpHttp = mcpGrants ? createMcpHttpHandler(control, config.mcpHttp, mcpGrants) : null;
   const handleSync = createSyncHandler({
     config,
     registry,

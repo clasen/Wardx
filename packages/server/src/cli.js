@@ -7,9 +7,12 @@ import {
   formatCredential,
   formatMcpClients,
   initSite,
+  issueMcpToken,
   mcpUrl,
   parseClientSpec,
-  rotateMcpToken
+  revokeMcpToken,
+  rotateMcpToken,
+  siteLoadsScopedTokens
 } from './setup.js';
 
 const USAGE = `Usage:
@@ -17,6 +20,8 @@ const USAGE = `Usage:
   wardx-server init <site-dir> --project <name> --client <role:trusted|public> [--client ...]
   wardx-server credential add <site-dir> --project <name> --role <role> [--trusted] [--label <label>]
   wardx-server mcp-token <site-dir>
+  wardx-server mcp-token <site-dir> --name <name> [--project <name> ...]
+  wardx-server mcp-token <site-dir> --name <name> --revoke
 `;
 
 function parse(args, options) {
@@ -59,10 +64,32 @@ const commands = {
     process.stdout.write(`Project ${project} must exist in the site configuration. Restart the site to apply.\n`);
   },
   'mcp-token'(args) {
-    const { dir } = parse(args, {});
-    const token = rotateMcpToken({ dir });
-    process.stdout.write(`Rotated the MCP token. Restart the site to apply, then update each agent:\n\n`);
-    process.stdout.write(formatMcpClients(mcpUrl(dir), token));
+    const { dir, name, project = [], revoke = false } = parse(args, {
+      name: { type: 'string' },
+      project: { type: 'string', multiple: true },
+      revoke: { type: 'boolean' }
+    });
+    if (name === undefined) {
+      if (project.length > 0 || revoke) throw new Error(`--project and --revoke need --name\n\n${USAGE}`);
+      const token = rotateMcpToken({ dir });
+      process.stdout.write(`Rotated the MCP token. Restart the site to apply, then update each agent:\n\n`);
+      process.stdout.write(formatMcpClients(mcpUrl(dir), token));
+      return;
+    }
+    if (revoke) {
+      if (project.length > 0) throw new Error(`--revoke does not take --project\n\n${USAGE}`);
+      revokeMcpToken({ dir, name });
+      process.stdout.write(`Revoked MCP token ${name}. Restart the site to apply.\n`);
+      return;
+    }
+    const entry = issueMcpToken({ dir, name, projects: project });
+    process.stdout.write(`MCP token ${name} for projects ${entry.projects.join(', ')}. `);
+    process.stdout.write(`Each project must exist in the site configuration. Restart the site to apply, then update the agent:\n\n`);
+    process.stdout.write(formatMcpClients(mcpUrl(dir), entry.bearerToken));
+    if (!siteLoadsScopedTokens(dir)) {
+      process.stdout.write(`\nThis site's config.cjs does not load scoped tokens yet. Add tokens to mcpHttp:\n`);
+      process.stdout.write(`  mcpHttp: { enabled: true, bearerToken: secrets.mcpToken, tokens: secrets.mcpTokens },\n`);
+    }
   }
 };
 

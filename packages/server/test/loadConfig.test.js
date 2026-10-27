@@ -165,6 +165,45 @@ test('validateServerConfig defaults and bounds MCP HTTP configuration', () => {
   );
 });
 
+test('validateServerConfig accepts project-scoped MCP tokens only for configured projects', () => {
+  const bearerToken = 'wardx-scoped-config-token-at-least-32-bytes';
+  const withTokens = (tokens) => testServerConfig({ mcpHttp: { enabled: true, tokens } });
+  const valid = [
+    { name: 'demo-agent', projects: ['demo'], bearerToken },
+    { name: 'env-agent', projects: ['demo'], bearerTokenEnvironmentVariable: 'WARDX_MCP_TOKEN_DEMO' }
+  ];
+  assert.deepEqual(validateServerConfig(withTokens(valid)).mcpHttp.tokens, valid);
+  assert.equal(validateServerConfig(testServerConfig({ mcpHttp: { enabled: true } })).mcpHttp.tokens, undefined);
+
+  const invalid = [
+    [{}, /mcpHttp\.tokens must be an array/],
+    [['x'], /tokens\[0\] must be an object/],
+    [[{ name: 'a', projects: ['demo'], bearerToken, extra: true }], /tokens\[0\] unknown key: extra/],
+    [[{ name: '', projects: ['demo'], bearerToken }], /tokens\[0\]\.name must be a non-empty string/],
+    [[{ name: 'a', projects: ['demo'], bearerToken }, { name: 'a', projects: ['demo'], bearerToken }], /duplicate name: a/],
+    [[{ name: 'a', projects: [], bearerToken }], /tokens\[0\]\.projects must be a non-empty array/],
+    [[{ name: 'a', projects: ['demo', 'demo'], bearerToken }], /must not repeat a project/],
+    [[{ name: 'a', projects: ['absent'], bearerToken }], /references unknown project absent/],
+    [[{ name: 'a', projects: ['demo'] }], /exactly one of bearerToken or bearerTokenEnvironmentVariable/],
+    [
+      [{ name: 'a', projects: ['demo'], bearerToken, bearerTokenEnvironmentVariable: 'X' }],
+      /exactly one of bearerToken or bearerTokenEnvironmentVariable/
+    ],
+    [[{ name: 'a', projects: ['demo'], bearerToken: 'short' }], /tokens\[0\]\.bearerToken must contain at least 32 bytes/],
+    [
+      [{ name: 'a', projects: ['demo'], bearerTokenEnvironmentVariable: '1BAD' }],
+      /tokens\[0\]\.bearerTokenEnvironmentVariable must be an environment variable name/
+    ]
+  ];
+  for (const [tokens, error] of invalid) {
+    assert.throws(() => validateServerConfig(withTokens(tokens)), error);
+  }
+  assert.throws(
+    () => validateServerConfig(testServerConfig({ mcpHttp: { enabled: false, tokens: valid } })),
+    /mcpHttp unknown key: tokens/
+  );
+});
+
 test('validateServerConfig reserves fixed-horizon ledger capacity before enablement', () => {
   const config = testServerConfig();
   config.experiments.ledgerMaxRows = 1;

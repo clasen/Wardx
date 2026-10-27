@@ -4,6 +4,8 @@ import { basename, join, resolve } from 'node:path';
 import { CredentialRegistry } from './auth/CredentialRegistry.js';
 
 const SECRETS_FILE = 'secrets.json';
+const CONFIG_FILE = 'config.cjs';
+const SCOPED_TOKENS_REFERENCE = 'secrets.mcpTokens';
 const PACKAGE_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
 export function generateSecret(prefix) {
@@ -69,13 +71,13 @@ export default function siteApp(virtualServer) {
   return handler;
 }
 `,
-  'config.cjs': (domain, project) => `const path = require('node:path');
+  [CONFIG_FILE]: (domain, project) => `const path = require('node:path');
 const secrets = require('./${SECRETS_FILE}');
 
 module.exports = {
   credentials: secrets.credentials,
   sqlite: { path: path.join(__dirname, 'wardx.sqlite') },
-  mcpHttp: { enabled: true, bearerToken: secrets.mcpToken },
+  mcpHttp: { enabled: true, bearerToken: secrets.mcpToken, tokens: ${SCOPED_TOKENS_REFERENCE} },
   projects: {
     ${/^[A-Za-z_$][\w$]*$/.test(project) ? project : JSON.stringify(project)}: { version: 1, values: {}, keyRoles: {}, experiments: [] }
   }
@@ -91,7 +93,7 @@ export function initSite({ dir, project, clients }) {
   const domain = basename(resolve(dir));
   const credentials = {};
   for (const client of clients) credentials[credentialKey(client.trusted)] = credentialRecord({ project, ...client });
-  const secrets = { mcpToken: generateSecret('wdx_mcp'), credentials };
+  const secrets = { mcpToken: generateSecret('wdx_mcp'), mcpTokens: [], credentials };
   writeSecrets(dir, secrets);
   for (const [file, render] of Object.entries(templates)) {
     writeFileSync(join(dir, file), render(domain, project), { flag: 'wx' });
@@ -112,6 +114,31 @@ export function rotateMcpToken({ dir }) {
   const mcpToken = generateSecret('wdx_mcp');
   writeSecrets(dir, { ...secrets, mcpToken });
   return mcpToken;
+}
+
+export function issueMcpToken({ dir, name, projects }) {
+  if (!name) throw new Error('MCP token name must be non-empty');
+  const secrets = readSecrets(dir);
+  const scoped = secrets.mcpTokens ?? [];
+  const existing = scoped.find((entry) => entry.name === name);
+  const granted = projects.length > 0 ? projects : existing?.projects;
+  if (!granted) throw new Error(`MCP token ${name} does not exist; pass at least one --project`);
+  const entry = { name, projects: granted, bearerToken: generateSecret('wdx_mcp') };
+  const mcpTokens = existing ? scoped.map((other) => (other === existing ? entry : other)) : [...scoped, entry];
+  writeSecrets(dir, { ...secrets, mcpTokens });
+  return entry;
+}
+
+export function revokeMcpToken({ dir, name }) {
+  const secrets = readSecrets(dir);
+  const scoped = secrets.mcpTokens ?? [];
+  if (!scoped.some((entry) => entry.name === name)) throw new Error(`MCP token ${name} does not exist`);
+  writeSecrets(dir, { ...secrets, mcpTokens: scoped.filter((entry) => entry.name !== name) });
+}
+
+// Sites created before project-scoped tokens pass only the top-level token to mcpHttp.
+export function siteLoadsScopedTokens(dir) {
+  return readFileSync(join(dir, CONFIG_FILE), 'utf8').includes(SCOPED_TOKENS_REFERENCE);
 }
 
 export function formatCredential(key, record) {

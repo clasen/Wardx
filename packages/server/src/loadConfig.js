@@ -82,6 +82,9 @@ const ALLOWED = new Set([
 ]);
 const ALLOWED_PROJECT = new Set([...REQUIRED_PROJECT, 'catalog', 'keyRules']);
 
+const MCP_TOKEN_KEYS = new Set(['name', 'projects', 'bearerToken', 'bearerTokenEnvironmentVariable']);
+const ENVIRONMENT_VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 const SQLITE_KEYS = Object.keys(GROUP_DEFAULTS.sqlite);
 const HISTORY_KEYS = Object.keys(GROUP_DEFAULTS.history);
 const CONTROL_KEYS = Object.keys(GROUP_DEFAULTS.control);
@@ -153,7 +156,8 @@ function validateMcpHttp(config) {
     return;
   }
   // bearerToken is optional: when present it replaces the environment variable.
-  const { bearerToken, ...settings } = config;
+  // tokens is optional: project-scoped tokens validated against projects later.
+  const { bearerToken, tokens: _tokens, ...settings } = config;
   validateClosedObject(settings, MCP_HTTP_KEYS, 'server config.mcpHttp');
   if (bearerToken !== undefined && (typeof bearerToken !== 'string' || Buffer.byteLength(bearerToken) < 32)) {
     throw new Error('server config.mcpHttp.bearerToken must contain at least 32 bytes');
@@ -171,7 +175,7 @@ function validateMcpHttp(config) {
   }
   if (
     typeof config.bearerTokenEnvironmentVariable !== 'string' ||
-    !/^[A-Za-z_][A-Za-z0-9_]*$/.test(config.bearerTokenEnvironmentVariable)
+    !ENVIRONMENT_VARIABLE_NAME.test(config.bearerTokenEnvironmentVariable)
   ) {
     throw new Error('server config.mcpHttp.bearerTokenEnvironmentVariable must be an environment variable name');
   }
@@ -180,6 +184,51 @@ function validateMcpHttp(config) {
     ['maxRequestBytes', 'maxConcurrentRequests', 'bodyTimeoutMs'],
     'server config.mcpHttp'
   );
+}
+
+function validateMcpTokens(tokens, projects) {
+  if (tokens === undefined) return;
+  if (!Array.isArray(tokens)) throw new Error('server config.mcpHttp.tokens must be an array');
+  const names = new Set();
+  for (const [index, token] of tokens.entries()) {
+    const label = `server config.mcpHttp.tokens[${index}]`;
+    if (!isObject(token)) throw new Error(`${label} must be an object`);
+    for (const key of Object.keys(token)) {
+      if (!MCP_TOKEN_KEYS.has(key)) throw new Error(`${label} unknown key: ${key}`);
+    }
+    if (typeof token.name !== 'string' || token.name.length === 0) {
+      throw new Error(`${label}.name must be a non-empty string`);
+    }
+    if (names.has(token.name)) throw new Error(`server config.mcpHttp.tokens duplicate name: ${token.name}`);
+    names.add(token.name);
+    if (!Array.isArray(token.projects) || token.projects.length === 0) {
+      throw new Error(`${label}.projects must be a non-empty array`);
+    }
+    if (new Set(token.projects).size !== token.projects.length) {
+      throw new Error(`${label}.projects must not repeat a project`);
+    }
+    for (const project of token.projects) {
+      if (typeof project !== 'string' || !Object.prototype.hasOwnProperty.call(projects, project)) {
+        throw new Error(`${label}.projects references unknown project ${project}`);
+      }
+    }
+    if ((token.bearerToken === undefined) === (token.bearerTokenEnvironmentVariable === undefined)) {
+      throw new Error(`${label} must set exactly one of bearerToken or bearerTokenEnvironmentVariable`);
+    }
+    if (
+      token.bearerToken !== undefined &&
+      (typeof token.bearerToken !== 'string' || Buffer.byteLength(token.bearerToken) < 32)
+    ) {
+      throw new Error(`${label}.bearerToken must contain at least 32 bytes`);
+    }
+    if (
+      token.bearerTokenEnvironmentVariable !== undefined &&
+      (typeof token.bearerTokenEnvironmentVariable !== 'string' ||
+        !ENVIRONMENT_VARIABLE_NAME.test(token.bearerTokenEnvironmentVariable))
+    ) {
+      throw new Error(`${label}.bearerTokenEnvironmentVariable must be an environment variable name`);
+    }
+  }
 }
 
 function validateProjectSnapshot(snapshot, label) {
@@ -360,5 +409,6 @@ export function validateServerConfig(input) {
     );
   }
   validateCredentials(parsed.credentials, parsed.projects);
+  if (parsed.mcpHttp.enabled) validateMcpTokens(parsed.mcpHttp.tokens, parsed.projects);
   return parsed;
 }

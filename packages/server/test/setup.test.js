@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -8,7 +8,16 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { listen } from '../src/server.js';
-import { addCredential, initSite, mcpUrl, parseClientSpec, rotateMcpToken } from '../src/setup.js';
+import {
+  addCredential,
+  initSite,
+  issueMcpToken,
+  mcpUrl,
+  parseClientSpec,
+  revokeMcpToken,
+  rotateMcpToken,
+  siteLoadsScopedTokens
+} from '../src/setup.js';
 import { sampleEnvelope } from './helpers.js';
 
 const PACKAGE_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -56,9 +65,44 @@ test('credential add and mcp-token rotation keep the other secrets', (t) => {
 
   const token = rotateMcpToken({ dir });
   assert.notEqual(token, initial.mcpToken);
-  assert.deepEqual(readSecrets(dir), { mcpToken: token, credentials: added.credentials });
+  assert.deepEqual(readSecrets(dir), { mcpToken: token, mcpTokens: [], credentials: added.credentials });
   assert.equal(statSync(join(dir, 'secrets.json')).mode & 0o777, 0o600);
   assert.throws(() => rotateMcpToken({ dir: join(dir, 'missing') }), /run wardx-server init first/);
+});
+
+test('mcp-token issues, rotates, and revokes project-scoped tokens without touching the top-level token', (t) => {
+  const dir = join(temporaryRoot(t), 'site');
+  const initial = initSite({ dir, project: 'truco', clients: [parseClientSpec('app:public')] });
+  assert.equal(siteLoadsScopedTokens(dir), true);
+
+  const issued = issueMcpToken({ dir, name: 'truco-agent', projects: ['truco'] });
+  assert.match(issued.bearerToken, /^wdx_mcp_[A-Za-z0-9_-]{43}$/);
+  assert.deepEqual(readSecrets(dir).mcpTokens, [issued]);
+  const rotated = issueMcpToken({ dir, name: 'truco-agent', projects: [] });
+  assert.notEqual(rotated.bearerToken, issued.bearerToken);
+  assert.deepEqual(rotated.projects, ['truco']);
+  assert.deepEqual(readSecrets(dir).mcpTokens, [rotated]);
+  assert.throws(() => issueMcpToken({ dir, name: 'new-agent', projects: [] }), /pass at least one --project/);
+  assert.throws(() => issueMcpToken({ dir, name: '', projects: ['truco'] }), /name must be non-empty/);
+
+  revokeMcpToken({ dir, name: 'truco-agent' });
+  assert.deepEqual(readSecrets(dir), { ...initial, mcpTokens: [] });
+  assert.throws(() => revokeMcpToken({ dir, name: 'truco-agent' }), /does not exist/);
+});
+
+test('mcp-token adds scoped tokens to a site created before them and reports its config needs them', (t) => {
+  const dir = join(temporaryRoot(t), 'legacy');
+  const { mcpTokens, ...legacy } = initSite({ dir, project: 'truco', clients: [parseClientSpec('app:public')] });
+  assert.deepEqual(mcpTokens, []);
+  writeFileSync(join(dir, 'secrets.json'), JSON.stringify(legacy), { mode: 0o600 });
+  const config = readFileSync(join(dir, 'config.cjs'), 'utf8');
+  writeFileSync(join(dir, 'config.cjs'), config.replace(', tokens: secrets.mcpTokens', ''));
+
+  assert.equal(siteLoadsScopedTokens(dir), false);
+  const token = rotateMcpToken({ dir });
+  assert.deepEqual(readSecrets(dir), { ...legacy, mcpToken: token });
+  const issued = issueMcpToken({ dir, name: 'truco-agent', projects: ['truco'] });
+  assert.deepEqual(readSecrets(dir), { ...legacy, mcpToken: token, mcpTokens: [issued] });
 });
 
 test('the generated site serves ingest and MCP through a virtual server close hook', async (t) => {
@@ -67,6 +111,7 @@ test('the generated site serves ingest and MCP through a virtual server close ho
   symlinkSync(PACKAGE_DIR, join(root, 'node_modules', '@wardx', 'server'), 'dir');
   const dir = join(root, 'wardx.example.com');
   const secrets = initSite({ dir, project: 'demo', clients: [parseClientSpec('client:public')] });
+  const agent = issueMcpToken({ dir, name: 'demo-agent', projects: ['demo'] });
   const [projectKey] = Object.keys(secrets.credentials);
 
   const site = await import(pathToFileURL(join(dir, 'index.js')).href);
@@ -92,6 +137,14 @@ test('the generated site serves ingest and MCP through a virtual server close ho
   const result = await client.callTool({ name: 'list_projects', arguments: {} });
   assert.deepEqual(JSON.parse(result.content[0].text), { projects: ['demo'] });
   await client.close();
+
+  const scoped = new Client({ name: 'setup-scoped-test', version: '1.0.0' });
+  await scoped.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), {
+    requestInit: { headers: { authorization: `Bearer ${agent.bearerToken}` } }
+  }));
+  const scopedResult = await scoped.callTool({ name: 'list_projects', arguments: {} });
+  assert.deepEqual(JSON.parse(scopedResult.content[0].text), { projects: ['demo'] });
+  await scoped.close();
 
   assert.equal(closeHooks.length, 1);
   await closeHooks[0]();
