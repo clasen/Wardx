@@ -424,7 +424,7 @@ export const TOOL_DEFS = [
     name: 'get_aggregates',
     annotations: { readOnlyHint: true },
     description:
-      'Read 1-minute telemetry windows for a project, with catalog descriptions and categories on names. Distinct rows expose mergeable HLL estimates without identifiers or registers. Windows include logNames for catalog persistLogs (count + last exemplar). Optional names and category filters intersect; from, to, and role also filter the payload.',
+      'Read 1-minute telemetry windows for a project, with catalog descriptions and categories on names. Distinct rows expose mergeable HLL estimates without identifiers or registers. Windows include logNames for catalog persistLogs (count + last exemplar). Optional names and category filters intersect; from, to, and role also filter the payload. Clients sync frames in delayed batches, so recent windows fill in over time. roles[role].complete false means that role is still delivering the window: its counts are partial and say nothing about an outage. A role missing from a window sent nothing there. Window complete is true when every listed role (or the filtered role) is complete; compare rates and spot gaps only across complete windows.',
     inputSchema: {
       type: 'object',
       properties: {

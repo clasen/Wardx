@@ -1,6 +1,6 @@
 {
   "name": "@wardx/server",
-  "version": "0.15.1",
+  "version": "0.16.0",
   "description": "Wardx ingest server for HTTP sync. Remote Config and experiments are controlled through MCP.",
   "keywords": [
     "wardx",

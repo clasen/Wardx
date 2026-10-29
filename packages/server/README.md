@@ -216,6 +216,7 @@ startup. Configuration snippets below show individual fields or groups.
   "persistenceFlushIntervalMs": 250,
   "aggregateRetentionMinutes": 60,
   "aggregateMaxSeriesPerMetric": 1000,
+  "aggregateInstanceTtlMs": 120000,
   "memorySinkMaxEnvelopes": 10000,
   "recentClientsMax": 100,
   "recentEventsMax": 1000,
@@ -527,6 +528,16 @@ deltas; gauges keep the latest timestamp; histograms merge compatible buckets
 and retain the current-window max exemplar; distincts merge HLL registers and
 return an approximate unique count; events count by name; logs count by
 level/name when selected by `catalog.persistLogs`.
+
+Clients deliver frames in delayed sync batches, so the newest windows fill in
+over time. Each window reports `complete`, and each entry in `roles` reports
+whether that role has finished delivering the window. A role is settled through
+the oldest frame end received from its live instances; an instance stops
+holding its role back once it has not synced for `aggregateInstanceTtlMs`
+(default 120000). A role still delivering a window appears with
+`complete: false`, even before any of its frames arrive; a role missing from a
+window sent nothing there. Instance tracking is in memory, so after a restart
+windows read as complete until the clients sync again.
 
 Aggregate rows include catalog `description` and optional `category` metadata.
 The same metadata is attached at read time to historical rows, so changing a

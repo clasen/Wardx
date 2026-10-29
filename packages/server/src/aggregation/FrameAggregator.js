@@ -337,15 +337,22 @@ export function rankOutcomes(rows, kind, limit) {
 }
 
 export class FrameAggregator {
-  constructor({ aggregateRetentionMinutes, aggregateMaxSeriesPerMetric }) {
+  constructor({ aggregateRetentionMinutes, aggregateMaxSeriesPerMetric, aggregateInstanceTtlMs }) {
     if (!Number.isInteger(aggregateRetentionMinutes) || aggregateRetentionMinutes < 1) {
       throw new Error('aggregateRetentionMinutes must be an integer >= 1');
     }
     if (!Number.isInteger(aggregateMaxSeriesPerMetric) || aggregateMaxSeriesPerMetric < 1) {
       throw new Error('aggregateMaxSeriesPerMetric must be an integer >= 1');
     }
+    if (!Number.isInteger(aggregateInstanceTtlMs) || aggregateInstanceTtlMs < 1) {
+      throw new Error('aggregateInstanceTtlMs must be an integer >= 1');
+    }
     this.retentionMs = aggregateRetentionMinutes * 60000;
     this.maxSeriesPerMetric = aggregateMaxSeriesPerMetric;
+    this.instanceTtlMs = aggregateInstanceTtlMs;
+    // Per sync instance: the newest frame end received and when it last synced.
+    // Live instances bound how far each role's minute windows are settled.
+    this.instances = new Map();
     this.windows = new Map();
     this.lifetime = new Map();
     this.persistLogLifetime = new Map();
@@ -440,7 +447,9 @@ export class FrameAggregator {
     const instanceId = envelope.client.instanceId;
     let lifetimeChanged = false;
     let persistLogsChanged = false;
+    let dataThrough = this.instances.get(instanceId)?.dataThrough ?? -Infinity;
     for (const frame of envelope.frames) {
+      if (frame.to > dataThrough) dataThrough = frame.to;
       const minute = minuteFloor(frame.from);
       let window = this.windows.get(minute);
       if (!window) {
@@ -519,6 +528,10 @@ export class FrameAggregator {
         });
       }
     }
+    if (envelope.frames.length > 0) {
+      this.instances.delete(instanceId);
+      this.instances.set(instanceId, { role, dataThrough, lastSyncAt: Date.now() });
+    }
     this._prune();
     return {
       experiments: lifetimeChanged,
@@ -528,10 +541,29 @@ export class FrameAggregator {
   }
 
   _prune() {
-    const cutoff = Date.now() - this.retentionMs;
+    const now = Date.now();
+    const cutoff = now - this.retentionMs;
     for (const [minute] of this.windows) {
       if (minute < cutoff) this.windows.delete(minute);
     }
+    const staleBefore = now - this.instanceTtlMs;
+    for (const [instanceId, instance] of this.instances) {
+      if (instance.lastSyncAt >= staleBefore) break;
+      this.instances.delete(instanceId);
+    }
+  }
+
+  // Frame time through which every live instance of each role has delivered.
+  // An instance that stops syncing holds its role back until its TTL expires.
+  _settledThrough() {
+    const staleBefore = Date.now() - this.instanceTtlMs;
+    const settled = new Map();
+    for (const instance of this.instances.values()) {
+      if (instance.lastSyncAt < staleBefore) continue;
+      const prev = settled.get(instance.role);
+      if (prev === undefined || instance.dataThrough < prev) settled.set(instance.role, instance.dataThrough);
+    }
+    return settled;
   }
 
   windowsSnapshot() {
@@ -692,6 +724,7 @@ export class FrameAggregator {
     const role = filter.role;
     const from = filter.from;
     const to = filter.to;
+    const settled = this._settledThrough();
     const out = [];
     for (const window of this.windows.values()) {
       if (typeof from === 'number' && window.to <= from) continue;
@@ -710,12 +743,27 @@ export class FrameAggregator {
       }
       const stats = {};
       for (const [name, row] of window.roleStats) {
-        stats[name] = { frames: row.frames, events: row.events, logs: row.logs };
+        const through = settled.get(name);
+        stats[name] = {
+          frames: row.frames,
+          events: row.events,
+          logs: row.logs,
+          complete: through === undefined || through >= window.to
+        };
+      }
+      for (const [name, through] of settled) {
+        if (!stats[name] && through < window.to) {
+          stats[name] = { frames: 0, events: 0, logs: 0, complete: false };
+        }
       }
       const roleRow = role ? window.roleStats.get(role) : null;
+      const complete = role
+        ? stats[role]?.complete ?? true
+        : Object.values(stats).every((row) => row.complete);
       out.push({
         from: window.from,
         to: window.to,
+        complete,
         frames: roleRow ? roleRow.frames : window.frames,
         events: roleRow ? roleRow.events : window.events,
         logs: roleRow ? roleRow.logs : window.logs,

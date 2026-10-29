@@ -53,6 +53,7 @@ export function testServerConfig(overrides = {}) {
     diagnostics: { sink: 'none' },
     aggregateRetentionMinutes: 60,
     aggregateMaxSeriesPerMetric: 1000,
+    aggregateInstanceTtlMs: 120000,
     memorySinkMaxEnvelopes: 1000,
     recentClientsMax: 50,
     recentEventsMax: 100,

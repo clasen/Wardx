@@ -7,7 +7,8 @@ import { sampleEnvelope } from './helpers.js';
 function aggregator(max = 2) {
   return new FrameAggregator({
     aggregateRetentionMinutes: 60,
-    aggregateMaxSeriesPerMetric: max
+    aggregateMaxSeriesPerMetric: max,
+    aggregateInstanceTtlMs: 120000
   });
 }
 
@@ -56,6 +57,78 @@ test('FrameAggregator merges overlapping HLL sketches across workers', () => {
   assert.doesNotMatch(JSON.stringify(agg.windowsSnapshot()), /hid-a|hid-b|hid-c/);
 });
 
+function syncSeconds(agg, role, instanceId, minute, fromSecond, toSecond) {
+  const frames = [];
+  for (let second = fromSecond; second < toSecond; second++) {
+    const from = minute + second * 1000;
+    frames.push({
+      seq: second + 1,
+      from,
+      to: from + 1000,
+      metrics: { counters: [], gauges: [], histograms: [] },
+      events: [],
+      logs: []
+    });
+  }
+  agg.ingest(sampleEnvelope({ client: { role, instanceId }, frames }));
+}
+
+test('a role still delivering a minute reads as incomplete, not as an outage', (t) => {
+  const minute = Date.UTC(2026, 9, 29, 11, 35);
+  let now = minute + 70_000;
+  t.mock.method(Date, 'now', () => now);
+  const agg = aggregator();
+  syncSeconds(agg, 'shot', 'shot-a', minute, 0, 70);
+  syncSeconds(agg, 'shot', 'shot-b', minute, 0, 30);
+  syncSeconds(agg, 'app', 'app-a', minute, 0, 70);
+
+  let [first, second] = agg.snapshot();
+  assert.equal(first.complete, false);
+  assert.deepEqual(first.roles.shot, { frames: 90, events: 0, logs: 0, complete: false });
+  assert.equal(first.roles.app.complete, true);
+  assert.equal(second.complete, false);
+  assert.deepEqual(second.roles.shot, { frames: 10, events: 0, logs: 0, complete: false });
+  assert.equal(second.roles.app.complete, false);
+
+  syncSeconds(agg, 'shot', 'shot-b', minute, 30, 70);
+  [first, second] = agg.snapshot();
+  assert.equal(first.complete, true);
+  assert.deepEqual(first.roles.shot, { frames: 120, events: 0, logs: 0, complete: true });
+  assert.equal(second.complete, false);
+});
+
+test('a live role without frames yet in a window is listed as pending', (t) => {
+  const minute = Date.UTC(2026, 9, 29, 11, 35);
+  let now = minute + 125_000;
+  t.mock.method(Date, 'now', () => now);
+  const agg = aggregator();
+  syncSeconds(agg, 'shot', 'shot-a', minute, 0, 50);
+  syncSeconds(agg, 'app', 'app-a', minute, 0, 125);
+
+  const windows = agg.snapshot();
+  assert.deepEqual(windows.map((window) => window.complete), [false, false, false]);
+  assert.deepEqual(windows[1].roles.shot, { frames: 0, events: 0, logs: 0, complete: false });
+  assert.equal(windows[1].roles.app.complete, true);
+  assert.deepEqual(agg.snapshot({ role: 'app' }).map((window) => window.complete), [true, true, false]);
+  assert.deepEqual(agg.snapshot({ role: 'shot' }).map((window) => window.complete), [false, false, false]);
+});
+
+test('an instance that stops syncing stops holding its role back after the TTL', (t) => {
+  const minute = Date.UTC(2026, 9, 29, 11, 35);
+  let now = minute + 60_000;
+  t.mock.method(Date, 'now', () => now);
+  const agg = aggregator();
+  syncSeconds(agg, 'shot', 'shot-a', minute, 0, 30);
+  syncSeconds(agg, 'app', 'app-a', minute, 0, 60);
+  now += 120_001;
+  syncSeconds(agg, 'app', 'app-a', minute, 60, 120);
+
+  const windows = agg.snapshot();
+  assert.deepEqual(windows.map((window) => window.complete), [true, true]);
+  assert.deepEqual(windows[0].roles.shot, { frames: 30, events: 0, logs: 0, complete: true });
+  assert.equal('shot' in windows[1].roles, false);
+});
+
 function envelopeWithCounters(rows, now = Date.now()) {
   return sampleEnvelope({
     frames: [
@@ -73,7 +146,7 @@ function envelopeWithCounters(rows, now = Date.now()) {
 
 test('FrameAggregator rejects a missing series cap', () => {
   assert.throws(
-    () => new FrameAggregator({ aggregateRetentionMinutes: 60 }),
+    () => new FrameAggregator({ aggregateRetentionMinutes: 60, aggregateInstanceTtlMs: 120000 }),
     /aggregateMaxSeriesPerMetric must be an integer >= 1/
   );
 });
@@ -396,7 +469,8 @@ test('experiment.goal ignores ambiguous assignment lists', () => {
 test('experiment lifetime stats survive window prune', () => {
   const agg = new FrameAggregator({
     aggregateRetentionMinutes: 1,
-    aggregateMaxSeriesPerMetric: 10
+    aggregateMaxSeriesPerMetric: 10,
+    aggregateInstanceTtlMs: 120000
   });
   const now = Date.now() - 120000;
   agg.ingest(
@@ -520,7 +594,11 @@ test('FrameAggregator window snapshot round-trips through replaceWindows', () =>
   const restored = aggregator();
   restored.replaceWindows(agg.windowsSnapshot());
   restored.replacePersistLogs(agg.persistLogSnapshot());
-  assert.deepEqual(restored.snapshot(), agg.snapshot());
+  const withoutCompleteness = (windows) => windows.map(({ complete: _, roles, ...window }) => ({
+    ...window,
+    roles: Object.fromEntries(Object.entries(roles).map(([name, { complete: __, ...row }]) => [name, row]))
+  }));
+  assert.deepEqual(withoutCompleteness(restored.snapshot()), withoutCompleteness(agg.snapshot()));
   assert.equal(restored.topHistograms()[0].max, 80);
   assert.equal(restored.topPersistLogs()[0].count, 1);
 });

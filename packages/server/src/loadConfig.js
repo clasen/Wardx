@@ -26,6 +26,7 @@ const DEFAULTS = {
   persistenceFlushIntervalMs: 250,
   aggregateRetentionMinutes: 60,
   aggregateMaxSeriesPerMetric: 1000,
+  aggregateInstanceTtlMs: 120000,
   memorySinkMaxEnvelopes: 10000,
   recentClientsMax: 100,
   recentEventsMax: 1000,
@@ -323,6 +324,9 @@ export function validateServerConfig(input) {
   }
   if (!Number.isInteger(parsed.aggregateMaxSeriesPerMetric) || parsed.aggregateMaxSeriesPerMetric < 1) {
     throw new Error('server config aggregateMaxSeriesPerMetric must be an integer >= 1');
+  }
+  if (!Number.isInteger(parsed.aggregateInstanceTtlMs) || parsed.aggregateInstanceTtlMs < 1) {
+    throw new Error('server config aggregateInstanceTtlMs must be an integer >= 1');
   }
   if (!Number.isInteger(parsed.memorySinkMaxEnvelopes) || parsed.memorySinkMaxEnvelopes < 1) {
     throw new Error('server config memorySinkMaxEnvelopes must be an integer >= 1');
