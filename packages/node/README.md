@@ -659,7 +659,7 @@ process.on('SIGINT', onStop);
 
 `flush` sends the current pending frames and does not stop the timers. Use `shutdown` when the process stops.
 
-`flush` resolves `{ ok }`. `ok` is `false` when anything recorded after the previous `flush()` call may not have reached the server: a full event buffer, dropped frame rows or pending frames, a failed snapshot, or a failed sync. A caller that records evidence and then flushes, such as a payment webhook after `conversion`, can answer with an error so its sender retries. Other losses inside the same window also make it `false`.
+`flush` resolves `{ ok }`. `ok` is `false` when anything recorded after the previous `flush()` call may not have reached the server: a full event buffer, dropped frame rows or pending frames, a failed snapshot, a sync that lost frames, or this flush's own sync failing. A failed sync that carried no frames, like the one that learns the server clock while the server is still starting, loses nothing and doesn't count. A caller that records evidence and then flushes, such as a payment webhook after `conversion`, can answer with an error so its sender retries. Other losses inside the same window also make it `false`.
 
 ## Use case 13: Trace measure calls while instrumenting
 

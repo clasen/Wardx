@@ -379,8 +379,10 @@ export class WardxCore {
       this.internal.framesSent += frames;
       return;
     }
+    // An envelope without frames, like the one that learns the server clock,
+    // still counts as a failed sync but lost no data.
     this.internal.framesFailed += Math.max(frames, 1);
-    this._deliveryLosses += Math.max(frames, 1);
+    this._deliveryLosses += frames;
   }
 
   recordSyncError() {

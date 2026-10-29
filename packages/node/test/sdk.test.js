@@ -750,6 +750,30 @@ test('a sync response without serverTime fails the sync', async () => {
   }
 });
 
+test('a failed sync that carried no frames does not fail the next flush', async () => {
+  let posts = 0;
+  const wardx = createWardx({
+    endpoint: 'http://127.0.0.1:1', projectKey: 'test-key', project: 'demo', role: 'client', appVersion: '1.0.0',
+    environment: 'test', privacySalt: 'test-salt', aggregateIntervalMs: 60_000, syncIntervalMs: 60_000
+  });
+  wardx._transport = {
+    post: async () => {
+      posts += 1;
+      if (posts === 1) return { ok: false, status: 503, json: null };
+      return { ok: true, status: 200, json: { ok: true, serverTime: Date.now(), configVersion: 0 } };
+    },
+    close() {}
+  };
+  try {
+    await wardx._syncChain;
+    assert.equal(posts, 1, 'the bootstrap sync, before the server answers, failed');
+    wardx.conversion('buyer', 'purchase');
+    assert.deepEqual(await wardx.flush(), { ok: true });
+  } finally {
+    await wardx.shutdown();
+  }
+});
+
 test('flush reports whether everything recorded since the previous flush reached the server', async () => {
   const settings = {
     projectKey: 'test-key', project: 'demo', role: 'client', appVersion: '1.0.0', environment: 'test',

@@ -8,8 +8,8 @@
     ".": "./src/index.js"
   },
   "dependencies": {
-    "@wardx/core": "0.11.0",
+    "@wardx/core": "0.11.1",
     "@wardx/server": "0.15.0",
-    "wardx": "0.11.0"
+    "wardx": "0.11.1"
   }
 }

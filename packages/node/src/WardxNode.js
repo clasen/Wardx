@@ -55,6 +55,7 @@ export class WardxNode {
     this._snapshotChain = Promise.resolve();
     this._queuedSnapshot = null;
     this._flushLosses = 0;
+    this._shutdownDelivered = false;
     this._instanceId = ulid();
     this._sessionId = ulid();
     this._aggregateTimer = setInterval(() => {
@@ -107,15 +108,21 @@ export class WardxNode {
   }
 
   // Resolves { ok: false } when anything recorded after the previous flush()
-  // call may not have reached the server, so a caller that records evidence
-  // right before flushing can retry; repeating a conversion is idempotent.
+  // call may not have reached the server: this flush's own sync failed, or
+  // data was dropped since then. A caller that records evidence right before
+  // flushing can retry; repeating a conversion is idempotent.
   async flush() {
     if (this._disabled) return { ok: true };
     const losses = this._flushLosses;
     this._flushLosses = this._core._deliveryLosses;
-    if (this._shutdownPromise !== null) await this._shutdownPromise;
-    else await this._enqueueSync({ flush: true });
-    return { ok: this._core._deliveryLosses === losses };
+    let delivered;
+    if (this._shutdownPromise !== null) {
+      await this._shutdownPromise;
+      delivered = this._shutdownDelivered;
+    } else {
+      delivered = await this._enqueueSync({ flush: true });
+    }
+    return { ok: delivered && this._core._deliveryLosses === losses };
   }
 
   shutdown() {
@@ -128,7 +135,7 @@ export class WardxNode {
     this._stopped = true;
     clearInterval(this._aggregateTimer);
     if (this._syncTimer) clearTimeout(this._syncTimer);
-    await this._enqueueSync({ flush: true });
+    this._shutdownDelivered = await this._enqueueSync({ flush: true });
     this._transport.close();
   }
 
@@ -172,21 +179,24 @@ export class WardxNode {
     return this._syncChain;
   }
 
+  // Resolves whether everything this sync took reached the server.
   async _syncOnce(flags) {
-    if (this._stopped && !flags.flush) return;
+    if (this._stopped && !flags.flush) return true;
     try {
-      await this._syncOnceInner(flags);
+      return await this._syncOnceInner(flags);
     } catch {
       this._core.recordSyncError();
+      return false;
     }
   }
 
   async _syncOnceInner(flags) {
     const aligned = this._core._clockAligned;
     const forced = Boolean(flags.flush || flags.bootstrap);
-    if (!(await this._sendPending(flags, !aligned || forced))) return;
-    if (aligned || !forced || !this._core._clockAligned) return;
-    await this._sendPending(flags, false);
+    if (!(await this._sendPending(flags, !aligned || forced))) return false;
+    if (aligned || !forced) return true;
+    if (!this._core._clockAligned) return false;
+    return this._sendPending(flags, false);
   }
 
   async _sendPending(flags, sendEmpty) {
