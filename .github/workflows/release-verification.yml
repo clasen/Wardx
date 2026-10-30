@@ -20,7 +20,7 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: current
+          node-version: 26
           cache: pnpm
       - uses: actions/setup-dotnet@v4
         with:
