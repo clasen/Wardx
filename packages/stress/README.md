@@ -118,8 +118,10 @@ node packages/stress/src/index.js D --full --profile persistence
 
 The `raw` profile is a current-window upper-bound view. The `persistence` profile writes a real operational config, opens local SQLite in WAL mode, retains and grows historical/current series, and flushes the coalesced persistence coordinator before evaluation.
 
-Both profiles use a dedicated load-generator worker so client HTTP work does not
-consume the server event loop being measured. They report syncs per second,
+Both profiles run the load generator in a separate process so client HTTP work
+does not consume the server process being measured. It paces requests over a
+fixed pool of 64 keep-alive connections, so a saturated server shows up as a
+lower achieved rate and higher latency instead of connection errors. They report syncs per second,
 HTTP/network errors, CPU, start/peak/growth RSS, event-loop p50/p99, and request
 p50/p95/p99. The persistence profile additionally reports SQLite/WAL size,
 coalesced writes and latency, pending batches/bytes, transaction/busy failures,
@@ -196,7 +198,7 @@ Server target for test D's CLI-equivalent persistence profile with `NullSink` an
 
 Test D's raw profile remains only a ceiling. Only the complete SQLite persistence profile can support a single-node product capacity claim, and only with the declared hardware and full output.
 
-Do not add a worker thread to the server, change the 15 s sync, or replace JSON and gzip until these numbers say so. The harness load-generator worker is measurement isolation, not server parallelism.
+Do not add a worker thread to the server, change the 15 s sync, or replace JSON and gzip until these numbers say so. The harness load-generator process is measurement isolation, not server parallelism.
 
 ## Related packages
 

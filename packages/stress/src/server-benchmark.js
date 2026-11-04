@@ -2,12 +2,14 @@ import http from 'node:http';
 import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Worker } from 'node:worker_threads';
+import { fork } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { gzipJson, sampleEnvelope, testServerConfig } from '../../server/test/helpers.js';
 import { createIngestServer, listen, loadServerConfig } from '@wardx/server';
 import { report, startEventLoopProbe } from './measure.js';
 
 const SLICE_MS = 50;
+const LOAD_CONNECTIONS = 64;
 const RETENTION_WINDOWS = 4;
 const MAX_GROWING_SERIES = 1000;
 const PERSISTENCE_KINDS = 3;
@@ -257,17 +259,21 @@ function evidenceBody(step) {
 
 function runLoadWorker({ port, rate, durationMs, bodies }) {
   return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL('./server-load-worker.js', import.meta.url), {
-      workerData: { port, rate, durationMs, bodies }
+    const child = fork(fileURLToPath(new URL('./server-load-worker.js', import.meta.url)), [], {
+      serialization: 'advanced'
     });
-    worker.once('message', (result) => {
-      if (result.ok) resolve(result);
+    let result = null;
+    child.once('message', (message) => {
+      result = message;
+    });
+    child.once('error', reject);
+    child.once('exit', (code) => {
+      if (code !== 0) reject(new Error(`server load process exited with code ${code}`));
+      else if (!result) reject(new Error('server load process exited without a result'));
+      else if (result.ok) resolve(result);
       else reject(new Error(result.error));
     });
-    worker.once('error', reject);
-    worker.once('exit', (code) => {
-      if (code !== 0) reject(new Error(`server load worker exited with code ${code}`));
-    });
+    child.send({ port, rate, durationMs, connections: LOAD_CONNECTIONS, bodies });
   });
 }
 
