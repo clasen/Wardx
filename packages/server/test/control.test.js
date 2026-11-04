@@ -92,6 +92,29 @@ test('overview limits rankings per role and kind after category filtering withou
   }
 });
 
+test('overview reports per-role delivery failures from SDK sync counters', async () => {
+  const server = createIngestServer(testServerConfig());
+  const store = server.wardx.registry.get('demo');
+  try {
+    const failing = sampleEnvelope({ client: { role: 'shot' } });
+    failing.frames[0].metrics.counters.push(
+      ['wardx.internal.frames_sent', null, 4],
+      ['wardx.internal.frames_failed', null, 1]
+    );
+    store.aggregator.ingest(failing);
+    const healthy = sampleEnvelope({ client: { role: 'unity', instanceId: '01TESTINSTANCE000000000001' } });
+    healthy.frames[0].metrics.counters.push(['wardx.internal.frames_sent', null, 5]);
+    store.aggregator.ingest(healthy);
+    store.aggregator.ingest(sampleEnvelope({ client: { role: 'web', instanceId: '01TESTINSTANCE000000000002' } }));
+    const { roles } = server.wardx.control.getOverview('demo');
+    assert.deepEqual(roles.shot.delivery, { framesSent: 4, framesFailed: 1, failureRatio: 0.2 });
+    assert.deepEqual(roles.unity.delivery, { framesSent: 5, framesFailed: 0, failureRatio: 0 });
+    assert.equal(roles.web.delivery, undefined);
+  } finally {
+    await server.wardx.stop();
+  }
+});
+
 test('ControlService upserts experiments and increments version', () => {
   const server = createIngestServer(testServerConfig());
   const control = server.wardx.control;

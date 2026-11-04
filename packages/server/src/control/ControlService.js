@@ -53,6 +53,26 @@ const HEALTH_FIELDS = [
   'implicitExposures'
 ];
 
+// SDK-reported sync outcomes; failures here never reach the server as requests.
+function deliveryByRole(counters) {
+  const byRole = new Map();
+  for (const row of counters) {
+    const field = row.name === 'wardx.internal.frames_sent' ? 'framesSent'
+      : row.name === 'wardx.internal.frames_failed' ? 'framesFailed' : null;
+    if (!field) continue;
+    let delivery = byRole.get(row.role);
+    if (!delivery) {
+      delivery = { framesSent: 0, framesFailed: 0 };
+      byRole.set(row.role, delivery);
+    }
+    delivery[field] += row.value;
+  }
+  for (const delivery of byRole.values()) {
+    delivery.failureRatio = delivery.framesFailed / (delivery.framesSent + delivery.framesFailed);
+  }
+  return byRole;
+}
+
 function aggregateEvidence(rows, trustedOnly) {
   const byVariant = new Map();
   for (const row of rows) {
@@ -584,6 +604,7 @@ export class ControlService {
       if (matchesCategory(row)) grouped.get(row.role)[row.kind].push(row);
     }
     for (const client of clients) grouped.get(client.role).clients.push(client);
+    const delivery = deliveryByRole(summary.counters);
     const roles = {};
     for (const name of names) {
       const group = grouped.get(name);
@@ -597,6 +618,7 @@ export class ControlService {
         ],
         clients: group.clients
       };
+      if (delivery.has(name)) roles[name].delivery = delivery.get(name);
     }
     return {
       project,

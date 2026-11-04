@@ -539,6 +539,14 @@ holding its role back once it has not synced for `aggregateInstanceTtlMs`
 window sent nothing there. Instance tracking is in memory, so after a restart
 windows read as complete until the clients sync again.
 
+A sync that never reaches the server (network, proxy, DNS) leaves no trace on
+it, but each SDK counts its own outcomes in `wardx.internal.frames_sent` and
+`wardx.internal.frames_failed` and reports them on the next successful sync.
+`get_project_overview` sums both over the retained windows into each role's
+`delivery: { framesSent, framesFailed, failureRatio }`; a role whose SDKs
+reported no syncs has no `delivery`. A `failureRatio` above zero means clients
+are failing to deliver even while the server itself is healthy.
+
 Aggregate rows include catalog `description` and optional `category` metadata.
 The same metadata is attached at read time to historical rows, so changing a
 category does not rewrite stored aggregate buckets.

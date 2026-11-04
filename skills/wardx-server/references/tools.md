@@ -8,7 +8,7 @@ mutation also takes integer `expectedVersion >= 0` and non-empty `reason`.
 | Tool | Main arguments |
 | --- | --- |
 | `list_projects` | none |
-| `get_project_overview` | `project`, optional `limit`, exact `category` |
+| `get_project_overview` | `project`, optional `limit`, exact `category`; each role may carry `delivery {framesSent, framesFailed, failureRatio}` from SDK sync counters (above zero = clients failing to reach the server) |
 | `get_config` | `project` |
 | `get_aggregates` | `project`; optional `names`, `from`, `to`, `role`, exact `category`; distinct rows return HLL estimate/precision; windows and `roles[role]` carry `complete` (false = still delivering, not an outage) |
 | `get_aggregate_history` | `project`, `tier: hour|day`, bounded `from`, `to`; optional `role`, `environment`, `appVersion`, `os`, `names`, exact `category` |
