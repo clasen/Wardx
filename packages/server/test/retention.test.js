@@ -315,7 +315,8 @@ test('Node public SDK, ingest validation and MCP retention query work across ser
     const readiness = await (await fetch(`${endpoint}/ready`)).json();
     assert.equal(readiness.ok, true);
     assert.deepEqual(readiness.counters, {
-      retentionActivityDropped: 1, retentionConversionsDropped: 0, retentionChannelsDropped: 0
+      retentionActivityDropped: 1, retentionConversionsDropped: 0, retentionChannelsDropped: 0,
+      framesTooNewDropped: 0, framesTooOldDropped: 0
     });
     await server.wardx.stop();
     server = createIngestServer(config);
@@ -375,7 +376,8 @@ test('Node SDK channels and conversions reach MCP get_retention; malformed label
     }
     const readiness = await (await fetch(`${endpoint}/ready`)).json();
     assert.deepEqual(readiness.counters, {
-      retentionActivityDropped: 0, retentionConversionsDropped: 0, retentionChannelsDropped: 0
+      retentionActivityDropped: 0, retentionConversionsDropped: 0, retentionChannelsDropped: 0,
+      framesTooNewDropped: 0, framesTooOldDropped: 0
     });
   } finally {
     await client.shutdown();

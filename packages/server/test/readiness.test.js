@@ -24,7 +24,7 @@ test('readiness probes SQLite write capability and recovers without changing app
   assert.deepEqual(await response.json(), {
     ok: true,
     checks: { running: true, sqlite: true, persistence: true, capacity: true, mcp: true },
-    counters: { retentionActivityDropped: 0, retentionConversionsDropped: 0, retentionChannelsDropped: 0 }
+    counters: { retentionActivityDropped: 0, retentionConversionsDropped: 0, retentionChannelsDropped: 0, framesTooNewDropped: 0, framesTooOldDropped: 0 }
   });
 
   stateStore.database.pragma('query_only = ON');

@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@wardx/core": "0.11.1",
-    "@wardx/server": "0.17.0",
+    "@wardx/server": "0.18.0",
     "wardx": "0.11.1"
   }
 }

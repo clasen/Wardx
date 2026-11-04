@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { validateEnvelope, validateExperimentEvents } from '../src/ingest/validate.js';
+import { partitionFramesByWindow, validateEnvelope, validateExperimentEvents } from '../src/ingest/validate.js';
 import { sampleEnvelope, testServerConfig } from './helpers.js';
 import { HyperLogLog } from '@wardx/core';
 
@@ -198,27 +198,13 @@ test('validateEnvelope rejects malformed scalar and tuple fields', () => {
   }
 });
 
-test('validateEnvelope enforces strict keys, clock skew, names, dimensions, attrs, and collection limits', () => {
-  const now = Date.now();
+test('validateEnvelope enforces strict keys, names, dimensions, attrs, and collection limits', () => {
   const cases = [
     ['unknown envelope key', (body) => (body.extra = true), /body unknown key: extra/],
     ['unknown sdk key', (body) => (body.sdk.extra = true), /sdk unknown key: extra/],
     ['unknown client key', (body) => (body.client.extra = true), /client unknown key: extra/],
     ['unknown frame key', (body) => (body.frames[0].extra = true), /frames\[0\] unknown key: extra/],
     ['unknown metrics key', (body) => (body.frames[0].metrics.extra = []), /metrics unknown key: extra/],
-    [
-      'future frame',
-      (body) => {
-        body.frames[0].from = now + LIMITS.maxClockSkewMs + 60_000;
-        body.frames[0].to = body.frames[0].from;
-      },
-      /maxClockSkewMs/
-    ],
-    [
-      'future event',
-      (body) => (body.frames[0].events[0][0] = now + LIMITS.maxClockSkewMs + 60_000),
-      /maxClockSkewMs/
-    ],
     [
       'oversized name',
       (body) => (body.frames[0].metrics.counters[0][0] = 'n'.repeat(LIMITS.maxNameBytes + 1)),
@@ -395,4 +381,26 @@ test('validateExperimentEvents accepts one matching assignment and rejects ambig
     [withEvents([goal], { role: 'backend' }), /not visible to client\.role/]
   ];
   for (const [body, expected] of cases) assert.match(validateExperimentEvents(body, [definition]), expected);
+});
+
+test('partitionFramesByWindow drops only frames with a timestamp outside the accepted window', () => {
+  const now = Date.now();
+  const tooNew = now + LIMITS.maxClockSkewMs + 1;
+  const tooOld = now - LIMITS.history.maxAcceptedPastAgeMs - 1;
+  const frames = [
+    sampleEnvelope().frames[0],
+    mutateEnvelope((body) => (body.frames[0].events[0][0] = tooNew)).frames[0],
+    mutateEnvelope((body) => (body.frames[0].metrics.gauges[0][3] = tooNew)).frames[0],
+    mutateEnvelope((body) => (body.frames[0].from = tooOld)).frames[0],
+    mutateEnvelope((body) => (body.frames[0].logs[0][0] = tooOld)).frames[0],
+    mutateEnvelope((body) => {
+      body.frames[0].from = tooOld;
+      body.frames[0].to = tooNew;
+    }).frames[0]
+  ];
+  const window = partitionFramesByWindow(frames, LIMITS, now);
+  assert.deepEqual(window.accepted, [frames[0]]);
+  assert.equal(window.tooNew, 3);
+  assert.equal(window.tooOld, 2);
+  assert.equal(validateEnvelope({ ...sampleEnvelope(), frames }, LIMITS), null);
 });

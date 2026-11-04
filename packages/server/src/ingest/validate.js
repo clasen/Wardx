@@ -94,21 +94,19 @@ function validateCounter(row, label, limits) {
   return null;
 }
 
-function validateTimestamp(value, label, earliestTimestamp, latestTimestamp) {
+function validateTimestamp(value, label) {
   if (!isFiniteNumber(value)) return `${label} must be a finite timestamp`;
-  if (value < earliestTimestamp) return `${label} exceeds history.maxAcceptedPastAgeMs`;
-  if (value > latestTimestamp) return `${label} exceeds maxClockSkewMs`;
   return null;
 }
 
-function validateGauge(row, label, limits, earliestTimestamp, latestTimestamp) {
+function validateGauge(row, label, limits) {
   if (!Array.isArray(row) || row.length !== 4) return `${label} must be a 4-item tuple`;
   const invalidName = validateNonEmptyString(row[0], `${label}[0]`, limits.maxNameBytes);
   if (invalidName) return invalidName;
   const invalidDims = validateDimensions(row[1], `${label}[1]`, limits);
   if (invalidDims) return invalidDims;
   if (!isFiniteNumber(row[2])) return `${label}[2] must be a finite number`;
-  return validateTimestamp(row[3], `${label}[3]`, earliestTimestamp, latestTimestamp);
+  return validateTimestamp(row[3], `${label}[3]`);
 }
 
 function validateHistogramBody(body, label, limits) {
@@ -191,9 +189,9 @@ function validateRetention(attrs, label, requiredLabels, optionalLabels) {
   return null;
 }
 
-function validateEvent(row, label, limits, earliestTimestamp, latestTimestamp) {
+function validateEvent(row, label, limits) {
   if (!Array.isArray(row) || row.length !== 3) return `${label} must be a 3-item tuple`;
-  const invalidTimestamp = validateTimestamp(row[0], `${label}[0]`, earliestTimestamp, latestTimestamp);
+  const invalidTimestamp = validateTimestamp(row[0], `${label}[0]`);
   if (invalidTimestamp) return invalidTimestamp;
   const invalidName = validateNonEmptyString(row[1], `${label}[1]`, limits.maxNameBytes);
   if (invalidName) return invalidName;
@@ -204,9 +202,9 @@ function validateEvent(row, label, limits, earliestTimestamp, latestTimestamp) {
   return null;
 }
 
-function validateLog(row, label, limits, earliestTimestamp, latestTimestamp) {
+function validateLog(row, label, limits) {
   if (!Array.isArray(row) || row.length !== 4) return `${label} must be a 4-item tuple`;
-  const invalidTimestamp = validateTimestamp(row[0], `${label}[0]`, earliestTimestamp, latestTimestamp);
+  const invalidTimestamp = validateTimestamp(row[0], `${label}[0]`);
   if (invalidTimestamp) return invalidTimestamp;
   if (!LOG_LEVELS.has(row[1])) return `${label}[1] must be a supported log level`;
   const invalidMessage = validateNonEmptyString(row[2], `${label}[2]`, limits.maxNameBytes);
@@ -285,8 +283,6 @@ export function validateEnvelope(body, limits) {
   if (body.frames.length > limits.maxFramesPerEnvelope) {
     return `frames must contain at most ${limits.maxFramesPerEnvelope} items`;
   }
-  const latestTimestamp = Date.now() + limits.maxClockSkewMs;
-  const earliestTimestamp = Date.now() - limits.history.maxAcceptedPastAgeMs;
   let itemCount = 0;
   for (let i = 0; i < body.frames.length; i++) {
     const frame = body.frames[i];
@@ -295,9 +291,9 @@ export function validateEnvelope(body, limits) {
     const invalidFrameKey = unknownKey(frame, new Set(['seq', 'from', 'to', 'metrics', 'events', 'logs']), label);
     if (invalidFrameKey) return invalidFrameKey;
     if (!Number.isInteger(frame.seq) || frame.seq < 1) return `${label}.seq must be an integer >= 1`;
-    const invalidFrom = validateTimestamp(frame.from, `${label}.from`, earliestTimestamp, latestTimestamp);
+    const invalidFrom = validateTimestamp(frame.from, `${label}.from`);
     if (invalidFrom) return invalidFrom;
-    const invalidTo = validateTimestamp(frame.to, `${label}.to`, earliestTimestamp, latestTimestamp);
+    const invalidTo = validateTimestamp(frame.to, `${label}.to`);
     if (invalidTo) return invalidTo;
     if (frame.from > frame.to) return `${label}.from must be <= to`;
     if (!isObject(frame.metrics)) return `${label}.metrics is required`;
@@ -325,7 +321,7 @@ export function validateEnvelope(body, limits) {
     );
     if (invalidCounters) return invalidCounters;
     const invalidGauges = validateRows(frame.metrics.gauges, `${label}.metrics.gauges`, (row, rowLabel) =>
-      validateGauge(row, rowLabel, limits, earliestTimestamp, latestTimestamp)
+      validateGauge(row, rowLabel, limits)
     );
     if (invalidGauges) return invalidGauges;
     const invalidHistograms = validateRows(
@@ -343,15 +339,44 @@ export function validateEnvelope(body, limits) {
       if (invalidDistincts) return invalidDistincts;
     }
     const invalidEvents = validateRows(frame.events, `${label}.events`, (row, rowLabel) =>
-      validateEvent(row, rowLabel, limits, earliestTimestamp, latestTimestamp)
+      validateEvent(row, rowLabel, limits)
     );
     if (invalidEvents) return invalidEvents;
     const invalidLogs = validateRows(frame.logs, `${label}.logs`, (row, rowLabel) =>
-      validateLog(row, rowLabel, limits, earliestTimestamp, latestTimestamp)
+      validateLog(row, rowLabel, limits)
     );
     if (invalidLogs) return invalidLogs;
   }
   return null;
+}
+
+function frameTimestamps(frame) {
+  return [
+    frame.from,
+    frame.to,
+    ...frame.metrics.gauges.map((row) => row[3]),
+    ...frame.events.map((row) => row[0]),
+    ...frame.logs.map((row) => row[0])
+  ];
+}
+
+// Splits the frames of a valid envelope by the accepted time window. A frame
+// with any timestamp beyond maxClockSkewMs is too new; otherwise one older than
+// history.maxAcceptedPastAgeMs is too old. Frames are independent, so the rest
+// of the envelope is still accepted and its response realigns the SDK clock.
+export function partitionFramesByWindow(frames, limits, now) {
+  const latestTimestamp = now + limits.maxClockSkewMs;
+  const earliestTimestamp = now - limits.history.maxAcceptedPastAgeMs;
+  const accepted = [];
+  let tooNew = 0;
+  let tooOld = 0;
+  for (const frame of frames) {
+    const timestamps = frameTimestamps(frame);
+    if (timestamps.some((timestamp) => timestamp > latestTimestamp)) tooNew++;
+    else if (timestamps.some((timestamp) => timestamp < earliestTimestamp)) tooOld++;
+    else accepted.push(frame);
+  }
+  return { accepted, tooNew, tooOld };
 }
 
 export function validateExperimentEvents(body, experiments) {

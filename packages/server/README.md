@@ -187,7 +187,8 @@ or MCP readiness.
 degraded or draining. Its body is `{ "ok": true, "checks": { "running": true,
 "sqlite": true, "persistence": true, "capacity": true, "mcp": true },
 "counters": { "retentionActivityDropped": 0, "retentionConversionsDropped": 0,
-"retentionChannelsDropped": 0 } }`, with failed checks set to
+"retentionChannelsDropped": 0, "framesTooNewDropped": 0, "framesTooOldDropped": 0 } }`,
+with failed checks set to
 false. Counters are process-wide since startup and do not affect `ok`. It
 exposes no project names, values, paths, or errors.
 
@@ -508,7 +509,7 @@ version changed.
 
 | Status | Meaning |
 | --- | --- |
-| `200` | Accepted. |
+| `200` | Accepted. Frames outside `maxClockSkewMs` or `history.maxAcceptedPastAgeMs` are dropped and counted in `/ready`; the rest of the envelope is kept. |
 | `400` | Invalid encoding body, envelope, experiment evidence, or project. |
 | `401` | Missing, unknown, or disabled credential. |
 | `403` | Credential cannot claim the requested role. |

@@ -55,7 +55,9 @@ Optional `client.attributes` is a flat object with application-defined non-empty
 
 Optional request `configContext` is the 16-character lowercase XXHash64 token returned with the last applied snapshot. Omit it until one has been applied. Every successful sync response includes this token, whether or not the project has conditional rules.
 
-The envelope is closed-schema: unknown top-level, `sdk`, `client`, frame, metric, histogram, exemplar, event, and log fields are rejected. The server also enforces `maxFramesPerEnvelope`, the combined `maxItemsPerEnvelope`, `maxNameBytes`, `maxDimensionKeys`, `maxDimensionValueLength`, `maxAttributeKeys`, `maxAttributeValueLength`, and `maxClockSkewMs` from its configuration. Values and timestamps must be finite; tuples, dimensions, attributes, histogram bounds/counts/totals, and log levels must have the shapes below. Validation completes before the sink, aggregate state, rings, or persistence are mutated.
+The envelope is closed-schema: unknown top-level, `sdk`, `client`, frame, metric, histogram, exemplar, event, and log fields are rejected. The server also enforces `maxFramesPerEnvelope`, the combined `maxItemsPerEnvelope`, `maxNameBytes`, `maxDimensionKeys`, `maxDimensionValueLength`, `maxAttributeKeys`, and `maxAttributeValueLength` from its configuration. Values and timestamps must be finite; tuples, dimensions, attributes, histogram bounds/counts/totals, and log levels must have the shapes below. Validation completes before the sink, aggregate state, rings, or persistence are mutated.
+
+A valid frame with any timestamp later than `maxClockSkewMs` from the server's clock, or earlier than `history.maxAcceptedPastAgeMs`, is dropped instead of rejecting the envelope: the other frames are accepted and the response still carries `serverTime`, so an SDK whose clock moved after its last sync realigns on that response. Dropped frames increment `framesTooNewDropped` or `framesTooOldDropped` in `/ready` and emit an `ingest.frames_out_of_window` diagnostic.
 
 ## Frame
 

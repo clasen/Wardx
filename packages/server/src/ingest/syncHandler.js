@@ -1,6 +1,6 @@
 import { gunzipSync } from 'node:zlib';
 import { BodyTimeoutError, PayloadTooLargeError, readBody } from './readBody.js';
-import { validateEnvelope } from './validate.js';
+import { partitionFramesByWindow, validateEnvelope } from './validate.js';
 import { CredentialAuthorizationError } from '../auth/CredentialRegistry.js';
 import { createIngestPipeline } from './IngestPipeline.js';
 
@@ -104,6 +104,21 @@ export function createSyncHandler({
     if (body.project !== project) {
       json(res, 400, { ok: false, error: 'project does not match key' });
       return;
+    }
+    const window = partitionFramesByWindow(body.frames, config, Date.now());
+    if (window.tooNew > 0 || window.tooOld > 0) {
+      body.frames = window.accepted;
+      ingestMetrics.framesTooNewDropped += window.tooNew;
+      ingestMetrics.framesTooOldDropped += window.tooOld;
+      diagnostics.report('ingest.frames_out_of_window', new Error('frames outside the accepted time window'), {
+        project,
+        framesTooNew: window.tooNew,
+        framesTooOld: window.tooOld,
+        sdkVersion: body.sdk.version,
+        appVersion: body.client.appVersion,
+        platform: body.client.platform,
+        os: body.client.os
+      });
     }
     const result = ingest(store, body, source);
     json(res, result.status, result.body);

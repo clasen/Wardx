@@ -143,6 +143,53 @@ test('POST /v1/sync rejects unsupported content encoding', async () => {
   });
 });
 
+test('POST /v1/sync accepts in-window frames, drops the rest, and still returns serverTime', async () => {
+  const config = testServerConfig();
+  await withServer(config, async (server, base) => {
+    const now = Date.now();
+    const envelope = sampleEnvelope();
+    const valid = envelope.frames[0];
+    const future = structuredClone(valid);
+    future.seq = 2;
+    future.to = now + config.maxClockSkewMs + 60_000;
+    const old = structuredClone(valid);
+    old.seq = 3;
+    old.from = now - config.history.maxAcceptedPastAgeMs - 60_000;
+    envelope.frames = [future, valid, old];
+    const res = await fetch(`${base}/v1/sync`, {
+      method: 'POST',
+      headers: syncHeaders(),
+      body: gzipJson(envelope)
+    });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.ok, true);
+    assert.equal(typeof json.serverTime, 'number');
+    assert.equal(server.wardx.sink.frameCount, 1);
+    const ready = await (await fetch(`${base}/ready`)).json();
+    assert.equal(ready.counters.framesTooNewDropped, 1);
+    assert.equal(ready.counters.framesTooOldDropped, 1);
+  });
+});
+
+test('POST /v1/sync answers an envelope whose frames are all out of window so the SDK can realign', async () => {
+  const config = testServerConfig();
+  await withServer(config, async (server, base) => {
+    const envelope = sampleEnvelope();
+    envelope.frames[0].from = Date.now() + config.maxClockSkewMs + 60_000;
+    envelope.frames[0].to = envelope.frames[0].from;
+    const res = await fetch(`${base}/v1/sync`, {
+      method: 'POST',
+      headers: syncHeaders(),
+      body: gzipJson(envelope)
+    });
+    assert.equal(res.status, 200);
+    assert.equal(typeof (await res.json()).serverTime, 'number');
+    assert.equal(server.wardx.sink.frameCount, 0);
+    assert.deepEqual(server.wardx.control.aggregates('demo'), []);
+  });
+});
+
 test('POST /v1/sync rejects a malformed tuple before mutating state', async () => {
   await withServer(testServerConfig(), async (server, base) => {
     const envelope = sampleEnvelope();

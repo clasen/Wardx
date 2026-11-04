@@ -269,7 +269,7 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
       ['reserved role', wireEnvelope({ client: { role: '*' } }), {}, 400],
       ['non-finite number', nonFiniteTimestamp, {}, 400],
       [
-        'future timestamp',
+        'future timestamp drops the frame',
         wireEnvelope({
           frames: [
             {
@@ -283,7 +283,7 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
           ]
         }),
         {},
-        400
+        200
       ],
       ['string counter', stringCounter, {}, 400],
       [
@@ -341,6 +341,7 @@ test('documented SDK, HTTP, role config, experiments, persistence, and MCP flow 
     }
     await new Promise((resolve) => setImmediate(resolve));
     assert.match(serverStderr, /"type":"ingest\.validation_rejected"/);
+    assert.match(serverStderr, /"type":"ingest\.frames_out_of_window"/);
     const removedAdmin = await fetch(`${endpoint}/v1/admin/aggregates`);
     assert.equal(removedAdmin.status, 404);
 
