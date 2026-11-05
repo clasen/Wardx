@@ -57,6 +57,8 @@ function baseRow(row, label) {
     dimensions: dimensions(row.dimensions ?? null, `${label}.dimensions`)
   };
   if (row.os !== undefined) out.os = nonEmptyString(row.os, `${label}.os`);
+  if (row.sdkName !== undefined) out.sdkName = nonEmptyString(row.sdkName, `${label}.sdkName`);
+  if (row.sdkVersion !== undefined) out.sdkVersion = nonEmptyString(row.sdkVersion, `${label}.sdkVersion`);
   return out;
 }
 
@@ -107,7 +109,7 @@ function stableDimensions(value) {
 }
 
 export function historicalSeriesKey(row) {
-  return `${row.kind}\0${row.role}\0${row.environment}\0${row.appVersion}\0${row.os ?? ''}\0${row.name}\0${row.level ?? ''}\0${stableDimensions(row.dimensions)}`;
+  return `${row.kind}\0${row.role}\0${row.environment}\0${row.appVersion}\0${row.os ?? ''}\0${row.sdkName ?? ''}\0${row.sdkVersion ?? ''}\0${row.name}\0${row.level ?? ''}\0${stableDimensions(row.dimensions)}`;
 }
 
 function compatibleBounds(left, right) {

@@ -476,6 +476,8 @@ export const TOOL_DEFS = [
         environment: { type: 'string', minLength: 1 },
         appVersion: { type: 'string', minLength: 1 },
         os: { type: 'string', minLength: 1, description: 'Operating system family reported by the SDK, for example android or ios. Rows from SDKs that do not report os never match.' },
+        sdkName: { type: 'string', minLength: 1, description: 'SDK that sent the rows, for example wardx-unity, wardx-csharp, wardx-node, or wardx-swift. Rows stored before the server kept it never match.' },
+        sdkVersion: { type: 'string', minLength: 1, description: 'SDK version that sent the rows, for example 0.11.0. Rows stored before the server kept it never match.' },
         names: { type: 'array', items: { type: 'string', minLength: 1 } },
         category: CATEGORY
       },
@@ -665,6 +667,8 @@ export function executeTool(control, name, args = {}) {
         environment: args.environment,
         appVersion: args.appVersion,
         os: args.os,
+        sdkName: args.sdkName,
+        sdkVersion: args.sdkVersion,
         names: args.names,
         category: args.category
       });

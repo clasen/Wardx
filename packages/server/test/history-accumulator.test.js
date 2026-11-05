@@ -45,6 +45,22 @@ test('HistoryAccumulator keeps operating systems as separate series and accepts 
   assert.ok(byOs(undefined).every((row) => !Object.hasOwn(row, 'os')));
 });
 
+test('HistoryAccumulator keeps the reporting SDK name and version as separate series', () => {
+  const accumulator = new HistoryAccumulator({
+    project: 'demo',
+    clockSkewAllowanceMs: 1000,
+    maxAppVersionsPerProjectRoleTier: 2
+  });
+  accumulator.ingest(sampleEnvelope({ sdk: { name: 'wardx-unity', version: '0.9.5' } }), []);
+  accumulator.ingest(sampleEnvelope({ sdk: { name: 'wardx-unity', version: '0.11.0' } }), []);
+  accumulator.ingest(sampleEnvelope({ sdk: { name: 'wardx-unity', version: '0.11.0' } }), []);
+  const counters = accumulator.pending(Date.now() + 120_000)[0].rows.filter((row) => row.kind === 'counter');
+  const bySdk = (version) => counters.filter((row) => row.sdkName === 'wardx-unity' && row.sdkVersion === version);
+  assert.equal(bySdk('0.9.5').length, 1);
+  assert.equal(bySdk('0.11.0').length, 1);
+  assert.equal(bySdk('0.11.0')[0].value, 2 * bySdk('0.9.5')[0].value);
+});
+
 test('HistoryAccumulator merges repeated minute data and rejects a new over-cap app version atomically', () => {
   const accumulator = new HistoryAccumulator({
     project: 'demo',

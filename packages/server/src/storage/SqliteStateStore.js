@@ -641,7 +641,7 @@ export class SqliteStateStore {
     });
   }
 
-  queryHistory({ project, tier, from, to, role, environment, appVersion, os, names, limit }) {
+  queryHistory({ project, tier, from, to, role, environment, appVersion, os, sdkName, sdkVersion, names, limit }) {
     requireNonEmptyString(project, 'project');
     const table = tableForTier(tier);
     if (tier === 'minute') throw new Error('history tier must be hour or day');
@@ -652,7 +652,7 @@ export class SqliteStateStore {
     if (requestedBuckets > this.settings.maxHistoryBuckets) {
       throw new Error('history range exceeds configured bucket maximum');
     }
-    for (const [name, value] of Object.entries({ role, environment, appVersion, os })) {
+    for (const [name, value] of Object.entries({ role, environment, appVersion, os, sdkName, sdkVersion })) {
       if (value !== undefined) requireNonEmptyString(value, `history ${name}`);
     }
     if (names !== undefined) {
@@ -663,7 +663,7 @@ export class SqliteStateStore {
     if (limit > this.settings.maxHistoryRows) throw new Error('history limit exceeds configured maximum');
     const predicates = [];
     const parameters = [];
-    for (const [field, value] of Object.entries({ role, environment, appVersion, os })) {
+    for (const [field, value] of Object.entries({ role, environment, appVersion, os, sdkName, sdkVersion })) {
       if (value !== undefined) {
         predicates.push(`json_extract(value, '$.${field}') = ?`);
         parameters.push(value);

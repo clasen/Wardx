@@ -250,7 +250,8 @@ test('filtered history preserves row order, empty buckets, JSON values and match
     };
     const source = [
       row, { ...row, role: 'worker' }, { ...row, name: 'other' }, { ...row, appVersion: '2' },
-      { ...row, os: 'android' }, { ...row, os: 'ios' }
+      { ...row, os: 'android' }, { ...row, os: 'ios' },
+      { ...row, sdkName: 'wardx-unity', sdkVersion: '0.9.5' }, { ...row, sdkName: 'wardx-unity', sdkVersion: '0.11.0' }
     ];
     store.saveBuckets('hour', [
       { project: 'demo', tier: 'hour', from: 0, to: 3_600_000, finalized: true, dropCount: 0, rows: source },
@@ -261,11 +262,12 @@ test('filtered history preserves row order, empty buckets, JSON values and match
     for (const filter of [
       { names: [row.name] }, { role: 'api' }, { environment: 'missing' }, { appVersion: '2' },
       { names: [] }, { names: [row.name], role: 'api', environment: 'prod', appVersion: '1' },
-      { os: 'ios' }, { os: 'missing' }, { role: 'api', os: 'android' }
+      { os: 'ios' }, { os: 'missing' }, { role: 'api', os: 'android' },
+      { sdkName: 'wardx-unity' }, { sdkVersion: '0.11.0' }, { sdkName: 'wardx-node', sdkVersion: '0.11.0' }
     ]) {
       const expected = all.map((bucket) => ({ ...bucket, rows: bucket.rows.filter((value) =>
         (filter.names === undefined || filter.names.includes(value.name)) &&
-        ['role', 'environment', 'appVersion', 'os'].every((field) => filter[field] === undefined || filter[field] === value[field])
+        ['role', 'environment', 'appVersion', 'os', 'sdkName', 'sdkVersion'].every((field) => filter[field] === undefined || filter[field] === value[field])
       ) }));
       assert.deepEqual(store.queryHistory({ ...args, ...filter }), expected);
     }

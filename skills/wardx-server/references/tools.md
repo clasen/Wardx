@@ -11,7 +11,7 @@ mutation also takes integer `expectedVersion >= 0` and non-empty `reason`.
 | `get_project_overview` | `project`, optional `limit`, exact `category`; each role may carry `delivery {framesSent, framesFailed, failureRatio}` from SDK sync counters (above zero = clients failing to reach the server) |
 | `get_config` | `project` |
 | `get_aggregates` | `project`; optional `names`, `from`, `to`, `role`, exact `category`; distinct rows return HLL estimate/precision; windows and `roles[role]` carry `complete` (false = still delivering, not an outage) |
-| `get_aggregate_history` | `project`, `tier: hour|day`, bounded `from`, `to`; optional `role`, `environment`, `appVersion`, `os`, `names`, exact `category` |
+| `get_aggregate_history` | `project`, `tier: hour|day`, bounded `from`, `to`; optional `role`, `environment`, `appVersion`, `os`, `sdkName`, `sdkVersion`, `names`, exact `category` |
 | `get_retention` | `project`, inclusive `from` and exclusive `to` as UTC `YYYY-MM-DD` cohort dates; optional `goal`, `byChannel`, `channel` |
 | `get_recent_events` | `project`; optional exact `name`, `role`, listed scalar `attrs`, `limit`; newest timestamp first |
 | `get_recent_logs` | `project`; optional `level`, exact `message`, exact `attrs`, `role`, `limit` |

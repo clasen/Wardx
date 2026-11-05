@@ -73,7 +73,7 @@ test('restart hydrates only mutable minute state and preserves accepted late tot
   let server = createIngestServer(config);
   const row = {
     kind: 'counter', name: 'requests', role: 'client', environment: 'test', appVersion: '0.0.0',
-    dimensions: null, value: 4
+    sdkName: 'wardx-node', sdkVersion: '0.1.0', dimensions: null, value: 4
   };
   try {
     server.wardx.stateStore.saveBuckets('minute', [old, recent].map((from) => ({

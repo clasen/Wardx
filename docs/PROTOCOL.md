@@ -53,6 +53,8 @@ Optional `client.attributes` is a flat object with application-defined non-empty
 
 `client.os` is the operating system family the SDK runs on, detected by the SDK itself: `android`, `ios`, `windows`, `macos`, `linux`, `webgl`, or another lowercase family name the runtime reports. It is optional so older SDKs keep syncing, and when present it is a non-empty string bounded by `maxNameBytes`. Servers before 0.11.0 reject it as an unknown key, so upgrade the server before shipping SDKs that send it.
 
+Required `sdk.name` and `sdk.version` identify the SDK build that sent the envelope. The server shows them on recent clients as `sdkName` and `sdkVersion` and keeps them in each historical series key, so history can be filtered by SDK. Every SDK version already sends them; servers before this change accepted and discarded them.
+
 Optional request `configContext` is the 16-character lowercase XXHash64 token returned with the last applied snapshot. Omit it until one has been applied. Every successful sync response includes this token, whether or not the project has conditional rules.
 
 The envelope is closed-schema: unknown top-level, `sdk`, `client`, frame, metric, histogram, exemplar, event, and log fields are rejected. The server also enforces `maxFramesPerEnvelope`, the combined `maxItemsPerEnvelope`, `maxNameBytes`, `maxDimensionKeys`, `maxDimensionValueLength`, `maxAttributeKeys`, and `maxAttributeValueLength` from its configuration. Values and timestamps must be finite; tuples, dimensions, attributes, histogram bounds/counts/totals, and log levels must have the shapes below. Validation completes before the sink, aggregate state, rings, or persistence are mutated.

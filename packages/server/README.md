@@ -276,7 +276,7 @@ Important groups:
 | `readiness` | SQLite probe interval/timeout and maximum persistence lag. |
 | `experiments` | Maximum active assignment-ledger rows. |
 | `projects` | Initial Remote Config, role routing, experiments, and optional MCP catalog with categorized signals and `inspectEvents`. |
-| `recentClientsMax`, `recentEventsMax`, `recentLogsMax` | Per-project caps for volatile in-memory rings. |
+| `recentClientsMax`, `recentEventsMax`, `recentLogsMax` | Per-project caps for volatile in-memory rings; `recentClientsMax` applies to each role separately. |
 
 SQLite runs `PRAGMA optimize=0x10002` after opening and `PRAGMA optimize` during
 the maintenance cycle controlled by `history.compactionIntervalMs`. This does
@@ -589,12 +589,17 @@ Use MCP `get_aggregate_history` with:
   "environment": "production",
   "appVersion": "2.4.1",
   "os": "android",
+  "sdkName": "wardx-unity",
+  "sdkVersion": "0.11.0",
   "names": ["level.complete", "session.duration", "shot.traffic.hids"]
 }
 ```
 
 `os` keeps each operating system family as its own historical series; rows from
-SDKs that do not report `os` never match an `os` filter. The range and returned
+SDKs that do not report `os` never match an `os` filter. `sdkName` and
+`sdkVersion` come from the envelope `sdk` identity and also split series, so a
+build fleet can be broken down by the SDK that sent it; rows stored before the
+server kept them never match those filters. The range and returned
 rows are bounded by config. Results include bucket
 finalization, drop counts, and the newest compacted source watermark. Source
 retention never runs ahead of a durable downstream bucket and watermark.

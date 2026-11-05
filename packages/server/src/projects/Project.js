@@ -45,7 +45,7 @@ export class Project {
   commitIngest(envelope, preparedHistory, source) {
     this.history.commit(preparedHistory);
     this.aggregator.ingest(envelope, this.catalog.persistLogs, source);
-    this.clients.touch(envelope.client);
+    this.clients.touch(envelope.client, envelope.sdk);
     this.events.ingest(envelope, this.catalog.inspectEvents);
     this.logs.ingest(envelope);
   }
