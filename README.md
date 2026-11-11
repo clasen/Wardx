@@ -67,6 +67,10 @@ and [C# / Unity pattern](clients/csharp/README.md#recommended-keep-handles-as-fi
 
 Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Protocol: [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
+## Node.js and Bun
+
+The SDK and the server run on Node.js 22.13+ and Bun 1.4+ with the same code and tests. On one machine, Bun ran the server at 30,000 syncs/s with half the p99 latency (1.5 ms vs 3.0 ms), 10% less CPU, and about 40% less memory, and started twice as fast. The SDK starts four times faster under Bun and is 1.5–3× faster wherever it serializes JSON or hashes. Details: [server](packages/server/README.md#nodejs-and-bun), [SDK](packages/node/README.md#bun-performance).
+
 ## Connect an agent
 
 With `mcpHttp.enabled`, the server answers MCP at `/mcp` on the same HTTPS

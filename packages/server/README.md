@@ -192,6 +192,24 @@ with failed checks set to
 false. Counters are process-wide since startup and do not affect `ok`. It
 exposes no project names, values, paths, or errors.
 
+## Node.js and Bun
+
+The same server code, measured with stress test D's `persistence` profile on Node.js 22.23.2 and Bun 1.4.4 (Apple M4 Max, 20 s per rate, two rounds, load generator in the same runtime as the server):
+
+| Rate | Metric | Node.js | Bun |
+| --- | --- | ---: | ---: |
+| 5,250 syncs/s | p50 / p99 | 0.30 / 1.9 ms | 0.15 / 0.95 ms |
+| | CPU / peak RSS | 35% / 141 MB | 32% / 82 MB |
+| 15,000 syncs/s | p50 / p99 | 0.49 / 1.9 ms | 0.13 / 0.90 ms |
+| | CPU / peak RSS | 59% / 149 MB | 56% / 93 MB |
+| 30,000 syncs/s | p50 / p99 | 1.2 / 3.0 ms | 0.13 / 1.5 ms |
+| | CPU / peak RSS | 94% / 160 MB | 84% / 104 MB |
+| CLI startup | to `listening` | 125 ms | 65 ms |
+
+Both runtimes sustained every rate with no HTTP errors and no gate violations. Bun keeps median latency flat as load grows, halves p99, uses about 40% less memory, and starts twice as fast. This compares runtimes on one machine; it is not a capacity claim (see [Operations](#operations)).
+
+Under Bun, WAL metrics report `wal: null` when the bundled SQLite lacks the `NOOP` checkpoint mode, so sampling never forces a checkpoint.
+
 ## Configuration
 
 Only `credentials` and `projects` are required. Every other setting has the
