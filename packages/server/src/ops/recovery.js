@@ -3,9 +3,10 @@ import { createReadStream } from 'node:fs';
 import { chmod, copyFile, lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import Database from 'better-sqlite3';
+import { backup as backupDatabase } from 'node:sqlite';
 import { loadServerConfig, validateServerConfig } from '../loadConfig.js';
 import { SqliteStateStore, validateSqliteSchema } from '../storage/SqliteStateStore.js';
+import { immediateTransaction, openDatabase, pragmaRows, pragmaValue } from '../storage/sqlite.js';
 import { normalizeHistoryBucket } from '../aggregation/history/HistoryBucket.js';
 
 const FILES = ['config.json', 'state.sqlite'];
@@ -26,9 +27,9 @@ async function createDestination(path) {
 
 function validateDatabase(database, config) {
   // A backup from a migratable older schema stays restorable; the server migrates it on open.
-  const version = database.pragma('user_version', { simple: true });
+  const version = pragmaValue(database, 'user_version');
   validateSqliteSchema(database, SqliteStateStore.MIGRATABLE_VERSIONS.includes(version) ? version : SqliteStateStore.SCHEMA_VERSION);
-  const integrity = database.pragma('integrity_check');
+  const integrity = pragmaRows(database, 'integrity_check');
   if (integrity.length !== 1 || integrity[0].integrity_check !== 'ok') {
     throw new Error('SQLite integrity check failed');
   }
@@ -97,7 +98,7 @@ async function inspectBackup(directory) {
   if (config.sqlite.path !== './state.sqlite' || (config.sink === 'ndjson' && !['./events.ndjson', resolve(directory, 'events.ndjson')].includes(config.ndjsonPath))) {
     throw new Error('backup configuration contains external storage paths');
   }
-  const database = new Database(join(directory, 'state.sqlite'), { readonly: true, fileMustExist: true, timeout: config.sqlite.busyTimeoutMs });
+  const database = openDatabase(join(directory, 'state.sqlite'), { readOnly: true, timeoutMs: config.sqlite.busyTimeoutMs });
   try {
     return { ...validateDatabase(database, config), config, files: manifest.files };
   } finally {
@@ -112,17 +113,20 @@ export async function backup(configPath, destination) {
     const config = loadServerConfig(absoluteConfig);
     const source = resolve(dirname(absoluteConfig), config.sqlite.path);
     await requireFile(source);
-    const database = new Database(source, { readonly: true, fileMustExist: true, timeout: config.sqlite.busyTimeoutMs });
+    // Some SQLite builds (Bun on macOS) cannot open a WAL database read-only
+    // once its -shm file is gone, so the source opens writable with writes refused.
+    const database = openDatabase(source, { timeoutMs: config.sqlite.busyTimeoutMs });
     try {
+      database.exec('PRAGMA query_only = ON');
       await createDestination(destination);
-      await database.backup(join(destination, 'state.sqlite'));
+      await backupDatabase(database, join(destination, 'state.sqlite'));
     } finally {
       database.close();
     }
     await chmod(join(destination, 'state.sqlite'), 0o600);
-    const snapshot = new Database(join(destination, 'state.sqlite'), { fileMustExist: true, timeout: config.sqlite.busyTimeoutMs });
+    const snapshot = openDatabase(join(destination, 'state.sqlite'), { timeoutMs: config.sqlite.busyTimeoutMs });
     try {
-      snapshot.pragma('journal_mode = DELETE');
+      snapshot.exec('PRAGMA journal_mode = DELETE');
       validateDatabase(snapshot, config);
     } finally {
       snapshot.close();
@@ -182,7 +186,7 @@ export async function resetData(sqlitePath, { hashDataOnly = false } = {}) {
   if (typeof hashDataOnly !== 'boolean') throw new Error('hashDataOnly must be a boolean');
   const source = resolve(sqlitePath);
   await requireFile(source);
-  const template = new Database(':memory:');
+  const template = openDatabase(':memory:');
   let database;
   try {
     SqliteStateStore.initializeSchema(template);
@@ -194,14 +198,14 @@ export async function resetData(sqlitePath, { hashDataOnly = false } = {}) {
     const schema = template.prepare(
       "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END"
     ).all().filter((row) => !preserved.has(row.tbl_name));
-    database = new Database(source, { fileMustExist: true, timeout: 0 });
-    return database.transaction(() => {
-      const version = database.pragma('user_version', { simple: true });
+    database = openDatabase(source, { timeoutMs: 0 });
+    return immediateTransaction(database, () => {
+      const version = pragmaValue(database, 'user_version');
       if (![1, 2, 3, 4, SqliteStateStore.SCHEMA_VERSION].includes(version)) {
         throw new Error(`unsupported SQLite schema version ${version}`);
       }
       validateSqliteSchema(database, version);
-      const integrity = database.pragma('integrity_check');
+      const integrity = pragmaRows(database, 'integrity_check');
       if (integrity.length !== 1 || integrity[0].integrity_check !== 'ok') {
         throw new Error('SQLite integrity check failed');
       }
@@ -210,8 +214,10 @@ export async function resetData(sqlitePath, { hashDataOnly = false } = {}) {
         for (const table of historyTables) {
           const update = database.prepare(`UPDATE ${table} SET rows_json = ? WHERE project = ? AND bucket_from = ?`);
           const select = `SELECT rowid AS id, project, bucket_from, rows_json FROM ${table}`;
-          const first = database.prepare(`${select} ORDER BY rowid LIMIT 1`).safeIntegers();
-          const next = database.prepare(`${select} WHERE rowid > ? ORDER BY rowid LIMIT 1`).safeIntegers();
+          const first = database.prepare(`${select} ORDER BY rowid LIMIT 1`);
+          const next = database.prepare(`${select} WHERE rowid > ? ORDER BY rowid LIMIT 1`);
+          first.setReadBigInts(true);
+          next.setReadBigInts(true);
           for (let bucket = first.get(); bucket; bucket = next.get(bucket.id)) {
             const rows = JSON.parse(bucket.rows_json);
             if (!Array.isArray(rows) || rows.some((row) => !row || typeof row.kind !== 'string')) {
@@ -235,10 +241,10 @@ export async function resetData(sqlitePath, { hashDataOnly = false } = {}) {
       }
       for (const { sql } of schema) database.exec(sql);
       database.prepare('UPDATE schema_metadata SET version = ? WHERE singleton = 1').run(SqliteStateStore.SCHEMA_VERSION);
-      database.pragma(`user_version = ${SqliteStateStore.SCHEMA_VERSION}`);
+      database.exec(`PRAGMA user_version = ${SqliteStateStore.SCHEMA_VERSION}`);
       validateSqliteSchema(database);
       return { ok: true, removedRows, ...(hashDataOnly ? { removedDistincts } : {}), schemaVersion: SqliteStateStore.SCHEMA_VERSION };
-    }).immediate();
+    });
   } finally {
     if (database) database.close();
     template.close();

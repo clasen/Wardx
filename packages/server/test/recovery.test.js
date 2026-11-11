@@ -5,7 +5,8 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, 
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
-import Database from 'better-sqlite3';
+import { DatabaseSync as Database } from 'node:sqlite';
+import { pragmaValue } from '../src/storage/sqlite.js';
 import { backup, resetData, restore, verify } from '../src/ops/recovery.js';
 import { loadServerConfig } from '../src/loadConfig.js';
 import { createIngestServer, listen } from '../src/server.js';
@@ -28,13 +29,15 @@ function downgradeSchema(database, version) {
 
 async function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'wardx-recovery-'));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
   const config = testServerConfig();
   config.sqlite.path = './live.sqlite';
   const configPath = join(directory, 'live.json');
   writeFileSync(configPath, JSON.stringify(config));
   const server = createIngestServer(loadServerConfig(configPath));
-  t.after(() => server.wardx.stop());
+  t.after(async () => {
+    await server.wardx.stop();
+    rmSync(directory, { recursive: true, force: true });
+  });
   return { directory, configPath, server, backupPath: join(directory, 'backup') };
 }
 
@@ -106,7 +109,7 @@ test('SQLite backup includes committed WAL data without mutating the source conf
   const { configPath, server, backupPath } = await fixture(t);
   server.wardx.control.setValue('demo', 'message.delayMs', 345, ['client'], { expectedVersion: 12, reason: 'WAL test' });
   await backup(configPath, backupPath);
-  const database = new Database(join(backupPath, 'state.sqlite'), { readonly: true });
+  const database = new Database(join(backupPath, 'state.sqlite'), { readOnly: true });
   try {
     assert.equal(JSON.parse(database.prepare('SELECT state_json FROM project_state').get().state_json).values['message.delayMs'], 345);
   } finally {
@@ -141,7 +144,7 @@ test('verify rejects tampering, incompatible schemas and invalid durable state e
   writeFileSync(configFile, originalConfig);
   const originalDb = readFileSync(join(backupPath, 'state.sqlite'));
   let database = new Database(join(backupPath, 'state.sqlite'));
-  database.pragma('user_version = 99');
+  database.exec('PRAGMA user_version = 99');
   database.close();
   rehash(backupPath, 'state.sqlite');
   await assert.rejects(verify(backupPath), /verification failed/);
@@ -281,13 +284,13 @@ test('reset-data rejects unknown schemas without clearing data', async (t) => {
   const { directory, server } = await fixture(t);
   await server.wardx.stop();
   const source = new Database(join(directory, 'live.sqlite'));
-  source.pragma('user_version = 99');
+  source.exec('PRAGMA user_version = 99');
   const before = source.prepare('SELECT * FROM project_state').all();
   source.close();
   await assert.rejects(resetData(join(directory, 'live.sqlite')), /unsupported SQLite schema/);
   const after = new Database(join(directory, 'live.sqlite'));
   try {
-    assert.equal(after.pragma('user_version', { simple: true }), 99);
+    assert.equal(pragmaValue(after, 'user_version'), 99);
     assert.deepEqual(after.prepare('SELECT * FROM project_state').all(), before);
   } finally {
     after.close();
@@ -306,7 +309,7 @@ test('reset-data rolls back all deletions when schema recreation fails', async (
   const after = new Database(join(directory, 'live.sqlite'));
   try {
     assert.deepEqual(after.prepare('SELECT * FROM minute_aggregates').all(), before);
-    assert.equal(after.pragma('user_version', { simple: true }), 5);
+    assert.equal(pragmaValue(after, 'user_version'), 5);
     assert.equal(after.prepare("SELECT tbl_name FROM sqlite_master WHERE name = 'retention_cohorts'").get().tbl_name, 'project_state');
   } finally {
     after.close();
@@ -384,7 +387,7 @@ for (const version of [1, 2, 3, 4, 5]) {
       for (const table of ['retention_users', 'retention_projects', 'experiment_assignment_ledger', 'experiment_totals', 'experiment_terminal_decisions']) {
         assert.equal(fresh.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0);
       }
-      assert.equal(fresh.pragma('user_version', { simple: true }), 5);
+      assert.equal(pragmaValue(fresh, 'user_version'), 5);
     } finally { fresh.close(); }
     assert.deepEqual(await resetData(path, { hashDataOnly: true }), { ok: true, removedRows: 0, removedDistincts: 0, schemaVersion: 5 });
   });

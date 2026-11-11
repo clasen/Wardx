@@ -1,7 +1,7 @@
 # @wardx/server
 
 Single-process Wardx ingest, historical aggregates, Remote Config, experiments,
-and MCP control. Node.js 20 or later is required.
+and MCP control. Runs on Node.js 22.13+ or Bun 1.4+.
 
 Wardx has two application surfaces:
 

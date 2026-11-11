@@ -37,7 +37,7 @@ Full thresholds:
 | Pending batches/bytes after flush | 0 / 0 |
 
 The comparable reference environment is one Wardx process, at least four
-logical CPU cores and 8 GiB RAM, local SSD, loopback HTTP, Node 20 or the current
+logical CPU cores and 8 GiB RAM, local SSD, loopback HTTP, Node 22.13 or the current
 maintained Node release, and no competing workload. NFS, shared burstable CI,
 containers below those limits, proxy/network traffic, and an active developer
 machine are different proof boundaries.

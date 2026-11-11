@@ -1,5 +1,5 @@
 import { gunzipSync } from 'node:zlib';
-import { BodyTimeoutError, PayloadTooLargeError, readBody } from './readBody.js';
+import { BodyTimeoutError, PayloadTooLargeError, abortStalledBody, readBody } from './readBody.js';
 import { partitionFramesByWindow, validateEnvelope } from './validate.js';
 import { CredentialAuthorizationError } from '../auth/CredentialRegistry.js';
 import { createIngestPipeline } from './IngestPipeline.js';
@@ -50,7 +50,7 @@ export function createSyncHandler({
       return;
     }
     let raw;
-    const bodyTimer = setTimeout(() => req.destroy(new BodyTimeoutError()), config.capacity.syncBodyTimeoutMs);
+    const bodyTimer = setTimeout(() => abortStalledBody(req), config.capacity.syncBodyTimeoutMs);
     try {
       raw = await readBody(req, config.maxRequestBytes);
     } catch (err) {

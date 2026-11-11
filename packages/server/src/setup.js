@@ -57,7 +57,7 @@ const templates = {
     name: domain,
     private: true,
     type: 'module',
-    engines: { node: '>=20' },
+    engines: { node: '>=22.13' },
     dependencies: { '@wardx/server': `^${PACKAGE_VERSION}` }
   }, null, 2)}\n`,
   'index.js': () => `import { createWardxHandler } from '@wardx/server';

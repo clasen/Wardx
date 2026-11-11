@@ -23,7 +23,8 @@
   },
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13",
+    "bun": ">=1.4"
   },
   "exports": {
     ".": "./src/index.js"
@@ -41,7 +42,6 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
-    "better-sqlite3": "12.11.1",
     "xxhash-wasm": "1.1.0"
   }
 }

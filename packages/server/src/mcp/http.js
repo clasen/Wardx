@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ConcurrencyGate } from '../capacity/ConcurrencyGate.js';
-import { BodyTimeoutError, PayloadTooLargeError, readBody } from '../ingest/readBody.js';
+import { BodyTimeoutError, PayloadTooLargeError, abortStalledBody, readBody } from '../ingest/readBody.js';
 import { createMcpServer } from './stdio.js';
 
 function jsonRpcError(res, status, message, headers = {}) {
@@ -105,7 +105,7 @@ export function createMcpHttpHandler(control, config, grants) {
           return;
         }
         let raw;
-        const bodyTimer = setTimeout(() => req.destroy(new BodyTimeoutError()), config.bodyTimeoutMs);
+        const bodyTimer = setTimeout(() => abortStalledBody(req), config.bodyTimeoutMs);
         try {
           raw = await readBody(req, config.maxRequestBytes);
         } catch (error) {

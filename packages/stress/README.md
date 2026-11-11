@@ -6,7 +6,7 @@ The harness measures the client hot path, mixed instrumentation, flush cost, ing
 
 This package is not published to npm. Run the harness from the source repository.
 
-Node.js 20 or later is required.
+Node.js 22.13 or later is required.
 
 ## Install
 
@@ -127,7 +127,7 @@ p50/p95/p99. The persistence profile additionally reports SQLite/WAL size,
 coalesced writes and latency, pending batches/bytes, transaction/busy failures,
 checkpoints, feature exercises, and overload recovery.
 
-The published 5,000 sync/s target belongs to the `persistence` profile, not the raw upper bound. Its reference environment is one Wardx process on a dedicated machine or CI runner with at least 4 logical CPU cores, 8 GiB RAM, local SSD storage, local loopback HTTP, Node.js 20 or the current maintained Node release, and no competing workload. Results from network filesystems, shared burstable runners, containers with lower CPU/memory limits, or active developer machines are not comparable performance evidence.
+The published 5,000 sync/s target belongs to the `persistence` profile, not the raw upper bound. Its reference environment is one Wardx process on a dedicated machine or CI runner with at least 4 logical CPU cores, 8 GiB RAM, local SSD storage, local loopback HTTP, Node.js 22.13 or the current maintained Node release, and no competing workload. Results from network filesystems, shared burstable runners, containers with lower CPU/memory limits, or active developer machines are not comparable performance evidence.
 
 Gate thresholds are explicit:
 
@@ -173,6 +173,18 @@ node packages/stress/src/index.js G --subjects 1000000
 ```
 
 The harness compares `assignVariant` with an independent FNV-1a implementation.
+
+## Use case 8: Compare the SDK on Node.js and Bun
+
+**When:** You change SDK or engine code and want to know how it runs under Bun.
+
+**Objective:** Measure the same SDK paths on both runtimes against one ingest server on Node.js.
+
+```bash
+pnpm run bench:runtimes
+```
+
+Requires `bun` on `PATH`. The harness runs the client in each runtime for three alternating rounds, then times 25 cold starts of each. It prints a Markdown table with the median per path and the Bun to Node.js ratio. The ingest server runs on Node.js so both clients sync against the same server.
 
 ## Engineering targets (not benchmark results)
 

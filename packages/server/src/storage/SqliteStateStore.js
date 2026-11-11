@@ -1,4 +1,6 @@
-import Database from 'better-sqlite3';
+import {
+  immediateTransaction, isBusyError, jsonEachFunction, openDatabase, pragmaRows, pragmaValue, supportsNoopCheckpoint
+} from './sqlite.js';
 import { assertHistoryBoundary } from '../aggregation/history/HistoryBucket.js';
 
 const SCHEMA_VERSION = 5;
@@ -178,7 +180,7 @@ function tableNames(database) {
 }
 
 export function validateSqliteSchema(database, expectedVersion = SCHEMA_VERSION) {
-  const version = database.pragma('user_version', { simple: true });
+  const version = pragmaValue(database, 'user_version');
   if (version !== expectedVersion) {
     throw new Error(`incompatible SQLite schema version ${version}; expected ${expectedVersion}`);
   }
@@ -216,13 +218,14 @@ export class SqliteStateStore {
       optimizationLatencyTotalMs: 0,
       optimizationLatencyMaxMs: 0
     };
-    this.database = new Database(path, { timeout: this.settings.busyTimeoutMs });
+    this.database = openDatabase(path, { timeoutMs: this.settings.busyTimeoutMs });
     try {
-      this.database.pragma(`busy_timeout = ${this.settings.busyTimeoutMs}`);
-      const journalMode = String(this.database.pragma('journal_mode = WAL', { simple: true })).toLowerCase();
+      this.database.exec(`PRAGMA busy_timeout = ${this.settings.busyTimeoutMs}`);
+      const journalMode = String(pragmaValue(this.database, 'journal_mode = WAL')).toLowerCase();
       if (journalMode !== 'wal') throw new Error(`SQLite WAL mode unavailable: ${journalMode}`);
-      this.database.pragma(`synchronous = ${this.settings.synchronous}`);
-      this.database.pragma(`wal_autocheckpoint = ${this.settings.walAutoCheckpointPages}`);
+      this.database.exec(`PRAGMA synchronous = ${this.settings.synchronous}`);
+      this.database.exec(`PRAGMA wal_autocheckpoint = ${this.settings.walAutoCheckpointPages}`);
+      this.jsonEach = jsonEachFunction(this.database);
       SqliteStateStore.initializeSchema(this.database);
       this._validateSchema();
       this._prepareStatements();
@@ -234,7 +237,7 @@ export class SqliteStateStore {
   }
 
   static initializeSchema(database) {
-    const version = database.pragma('user_version', { simple: true });
+    const version = pragmaValue(database, 'user_version');
     if (MIGRATABLE_VERSIONS.includes(version)) {
       SqliteStateStore.migrateSchema(database, version);
       return;
@@ -394,14 +397,14 @@ export class SqliteStateStore {
   _transaction(work) {
     const started = process.hrtime.bigint();
     try {
-      const result = this.database.transaction(() => {
+      const result = immediateTransaction(this.database, () => {
         const value = work();
         const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
         if (elapsedMs > this.settings.transactionTimeoutMs) {
           throw new Error(`SQLite transaction exceeded ${this.settings.transactionTimeoutMs}ms`);
         }
         return value;
-      }).immediate();
+      });
       const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
       this.metrics.transactions += 1;
       this.metrics.transactionLatencyTotalMs += elapsedMs;
@@ -409,7 +412,7 @@ export class SqliteStateStore {
       return result;
     } catch (error) {
       this.metrics.transactionFailures += 1;
-      if (error?.code === 'SQLITE_BUSY') this.metrics.busyFailures += 1;
+      if (isBusyError(error)) this.metrics.busyFailures += 1;
       throw error;
     }
   }
@@ -420,7 +423,7 @@ export class SqliteStateStore {
   }
 
   schemaVersion() {
-    return this.database.pragma('user_version', { simple: true });
+    return pragmaValue(this.database, 'user_version');
   }
 
   saveProjectState({ project, version, state, catalog, updatedAt = Date.now() }) {
@@ -674,7 +677,7 @@ export class SqliteStateStore {
       parameters.push(JSON.stringify(names));
     }
     const projection = predicates.length === 0 ? 'rows_json' : `(
-      SELECT json_group_array(json(value)) FROM jsonb_each(aggregates.rows_json)
+      SELECT json_group_array(json(value)) FROM ${this.jsonEach}(aggregates.rows_json)
       WHERE ${predicates.join(' AND ')}
     ) AS rows_json`;
     const rows = this.database.prepare(`
@@ -733,7 +736,7 @@ export class SqliteStateStore {
   checkpoint() {
     const started = process.hrtime.bigint();
     try {
-      const rows = this.database.pragma(`wal_checkpoint(${this.settings.checkpointMode})`);
+      const rows = pragmaRows(this.database, `wal_checkpoint(${this.settings.checkpointMode})`);
       this.metrics.checkpoints += 1;
       for (const row of rows) {
         this.metrics.checkpointBusy += row.busy || 0;
@@ -754,7 +757,7 @@ export class SqliteStateStore {
   optimize(onOpen = false) {
     const started = process.hrtime.bigint();
     try {
-      this.database.pragma(onOpen ? 'optimize=0x10002' : 'optimize');
+      this.database.exec(onOpen ? 'PRAGMA optimize=0x10002' : 'PRAGMA optimize');
       this.metrics.optimizations += 1;
     } catch (error) {
       this.metrics.optimizationFailures += 1;
@@ -767,7 +770,7 @@ export class SqliteStateStore {
   }
 
   snapshotMetrics() {
-    const wal = this.database.open ? this.database.pragma('wal_checkpoint(NOOP)')[0] : null;
+    const wal = this.database.isOpen && supportsNoopCheckpoint() ? pragmaRows(this.database, 'wal_checkpoint(NOOP)')[0] : null;
     return {
       ...this.metrics,
       wal: wal === null ? null : {
@@ -797,10 +800,10 @@ export class SqliteStateStore {
 
   probeWritable(timeoutMs) {
     requirePositiveInteger(timeoutMs, 'SQLite probe timeout');
-    if (!this.database.open) throw new Error('SQLite is closed');
-    this.database.pragma(`busy_timeout = ${timeoutMs}`);
+    if (!this.database.isOpen) throw new Error('SQLite is closed');
+    this.database.exec(`PRAGMA busy_timeout = ${timeoutMs}`);
     try {
-      this.database.transaction(() => {
+      immediateTransaction(this.database, () => {
         const update = this.database.prepare(
           'UPDATE schema_metadata SET version = ? WHERE singleton = 1 AND version = ?'
         );
@@ -808,14 +811,14 @@ export class SqliteStateStore {
         if (changed.changes !== 1) throw new Error('SQLite schema metadata is invalid');
         const restored = update.run(SCHEMA_VERSION, -SCHEMA_VERSION);
         if (restored.changes !== 1) throw new Error('SQLite probe failed to restore schema metadata');
-      }).immediate();
+      });
     } finally {
-      this.database.pragma(`busy_timeout = ${this.settings.busyTimeoutMs}`);
+      this.database.exec(`PRAGMA busy_timeout = ${this.settings.busyTimeoutMs}`);
     }
   }
 
   close({ checkpoint = true } = {}) {
-    if (!this.database.open) return;
+    if (!this.database.isOpen) return;
     if (checkpoint) this.checkpoint();
     this.database.close();
   }

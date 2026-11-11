@@ -13,6 +13,13 @@ export class BodyTimeoutError extends Error {
   }
 }
 
+// The socket closes before the request: Bun's node:http detaches it on
+// req.destroy() and would otherwise keep the stalled connection open.
+export function abortStalledBody(req) {
+  req.socket.destroy();
+  req.destroy(new BodyTimeoutError());
+}
+
 export async function readBody(req, maxRequestBytes) {
   const chunks = [];
   let size = 0;

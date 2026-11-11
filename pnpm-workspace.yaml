@@ -3,8 +3,6 @@ packages:
   - 'examples/*'
 linkWorkspacePackages: true
 nodeLinker: hoisted
-allowBuilds:
-  better-sqlite3: true
 overrides:
   hono@>=4.12.4 <4.13.11: 4.13.11
   proxy-addr@>=1.1.0 <2.0.8: 2.0.8

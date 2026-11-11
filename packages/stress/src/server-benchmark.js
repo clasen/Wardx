@@ -127,7 +127,7 @@ function persistenceDelta(before, after) {
     checkpointLatencyTotalMs: after.sqlite.checkpointLatencyMs.total - before.sqlite.checkpointLatencyMs.total,
     checkpointLatencyMaxMs: after.sqlite.checkpointLatencyMs.max,
     sqliteTransactionLatencyMaxMs: after.sqlite.transactionLatencyMs.max,
-    walPendingFrames: after.sqlite.wal.pendingFrames,
+    walPendingFrames: after.sqlite.wal === null ? null : after.sqlite.wal.pendingFrames,
     dirty: after.dirty,
     inFlight: after.inFlight
   };

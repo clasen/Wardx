@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import Database from 'better-sqlite3';
+import { DatabaseSync as Database } from 'node:sqlite';
+import { pragmaValue, supportsNoopCheckpoint } from '../src/storage/sqlite.js';
 import { SqliteStateStore } from '../src/storage/SqliteStateStore.js';
 
 function settings(overrides = {}) {
@@ -49,7 +50,7 @@ test('SqliteStateStore requires every operational setting', () => {
 test('SqliteStateStore initializes the versioned WAL schema and all authoritative tables', () => {
   withStore((store) => {
     assert.equal(store.schemaVersion(), 5);
-    assert.equal(store.database.pragma('journal_mode', { simple: true }), 'wal');
+    assert.equal(pragmaValue(store.database, 'journal_mode'), 'wal');
     assert.deepEqual(store.tableNames(), [
       'compaction_watermarks',
       'day_aggregates',
@@ -100,7 +101,7 @@ for (const version of [3, 4]) {
       assert.deepEqual({ ...store.database.prepare('SELECT * FROM retention_projects').get() }, {
         project: 'demo', salt_hash: 'salt', user_count: 1, dropped_activity: 0, dropped_conversions: 0
       });
-      assert.deepEqual(store.database.prepare('SELECT goal, conversion_day, duplicates FROM retention_conversions').all(),
+      assert.deepEqual(store.database.prepare('SELECT goal, conversion_day, duplicates FROM retention_conversions').all().map((row) => ({ ...row })),
         version === 4 ? [{ goal: 'purchase', conversion_day: 20001, duplicates: 0 }] : []);
       store.close();
       store = new SqliteStateStore({ path, settings: settings() });
@@ -116,7 +117,7 @@ test('SqliteStateStore rejects an incompatible schema version', () => {
   const directory = mkdtempSync(join(tmpdir(), 'wardx-sqlite-'));
   const path = join(directory, 'state.sqlite');
   const database = new Database(path);
-  database.pragma('user_version = 99');
+  database.exec('PRAGMA user_version = 99');
   database.close();
   try {
     assert.throws(() => new SqliteStateStore({ path, settings: settings() }), /incompatible SQLite schema version 99/);
@@ -138,7 +139,7 @@ test('SHA-256 schema versions are rejected without modifying stored state', () =
       assert.throws(() => new SqliteStateStore({ path, settings: settings() }), /XXHash64 requires a fresh database/);
       const database = new Database(path);
       try {
-        assert.equal(database.pragma('user_version', { simple: true }), version);
+        assert.equal(pragmaValue(database, 'user_version'), version);
         assert.deepEqual(database.prepare('SELECT * FROM project_state').all(), before);
       } finally {
         database.close();
@@ -155,7 +156,7 @@ test('SqliteStateStore rejects an incomplete schema that claims the current vers
   const database = new Database(path);
   database.exec('CREATE TABLE schema_metadata(singleton INTEGER PRIMARY KEY, version INTEGER NOT NULL)');
   database.exec('INSERT INTO schema_metadata VALUES (1, 5)');
-  database.pragma('user_version = 5');
+  database.exec('PRAGMA user_version = 5');
   database.close();
   try {
     assert.throws(() => new SqliteStateStore({ path, settings: settings() }), /incompatible SQLite schema tables/);
@@ -323,9 +324,9 @@ test('opening an existing database updates planner statistics without changing d
       const statistics = reopened.database.prepare("SELECT stat FROM sqlite_stat1 WHERE tbl = 'hour_aggregates'").all();
       assert.ok(statistics.length > 0);
       assert.ok(statistics.every((row) => Number(row.stat.split(' ')[0]) === 100));
-      assert.equal(reopened.database.pragma('journal_mode', { simple: true }), 'wal');
-      assert.equal(reopened.database.pragma('synchronous', { simple: true }), 2);
-      assert.equal(reopened.database.pragma('wal_autocheckpoint', { simple: true }), 100);
+      assert.equal(pragmaValue(reopened.database, 'journal_mode'), 'wal');
+      assert.equal(pragmaValue(reopened.database, 'synchronous'), 2);
+      assert.equal(pragmaValue(reopened.database, 'wal_autocheckpoint'), 100);
       assert.equal(reopened.snapshotMetrics().optimizations, 1);
     } finally {
       reopened.close();
@@ -335,19 +336,24 @@ test('opening an existing database updates planner statistics without changing d
 
 test('WAL samples do not checkpoint and explicit checkpoint timings account for failures', (t) => {
   withStore((store) => {
-    store.database.pragma('wal_autocheckpoint = 0');
+    store.database.exec('PRAGMA wal_autocheckpoint = 0');
     store.checkpoint();
     store.saveProjectState({ project: 'demo', version: 1, state: { values: {} }, catalog: {} });
     const before = store.snapshotMetrics();
-    assert.ok(before.wal.pendingFrames > 0);
-    assert.deepEqual(store.snapshotMetrics().wal, before.wal);
+    const sampled = supportsNoopCheckpoint();
+    if (sampled) {
+      assert.ok(before.wal.pendingFrames > 0);
+      assert.deepEqual(store.snapshotMetrics().wal, before.wal);
+    } else {
+      assert.equal(before.wal, null);
+    }
     assert.equal(store.snapshotMetrics().checkpoints, before.checkpoints);
     store.checkpoint();
     const after = store.snapshotMetrics();
-    assert.equal(after.wal.pendingFrames, 0);
+    if (sampled) assert.equal(after.wal.pendingFrames, 0);
     assert.equal(after.checkpoints, before.checkpoints + 1);
     assert.ok(after.checkpointLatencyMs.total > before.checkpointLatencyMs.total);
-    t.mock.method(store.database, 'pragma', () => { throw new Error('checkpoint failed'); }, { times: 1 });
+    t.mock.method(store.database, 'prepare', () => { throw new Error('checkpoint failed'); }, { times: 1 });
     assert.throws(() => store.checkpoint(), /checkpoint failed/);
     assert.equal(store.snapshotMetrics().checkpointFailures, 1);
     store.close();
@@ -357,13 +363,15 @@ test('WAL samples do not checkpoint and explicit checkpoint timings account for 
 
 test('automatic checkpoints remain enabled and are not counted as explicit checkpoints', () => {
   withStore((store) => {
-    store.database.pragma('wal_autocheckpoint = 1');
+    store.database.exec('PRAGMA wal_autocheckpoint = 1');
     store.transaction(() => store.saveProjectState({
       project: 'demo', version: 1, state: { values: { payload: 'x'.repeat(16384) } }, catalog: {}
     }));
     const metrics = store.snapshotMetrics();
-    assert.ok(metrics.wal.logFrames > 0);
-    assert.equal(metrics.wal.pendingFrames, 0);
+    if (supportsNoopCheckpoint()) {
+      assert.ok(metrics.wal.logFrames > 0);
+      assert.equal(metrics.wal.pendingFrames, 0);
+    }
     assert.equal(metrics.checkpoints, 0);
     assert.equal(metrics.checkpointLatencyMs.total, 0);
     assert.ok(metrics.transactionLatencyMs.total > 0);

@@ -1,6 +1,6 @@
 # wardx
 
-`wardx` is the Node.js SDK for Wardx.
+`wardx` is the Wardx SDK for Node.js and Bun.
 
 This SDK talks to that server. See [Wardx](https://github.com/clasen/Wardx). Architecture: [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md).
 
@@ -38,6 +38,8 @@ npm install wardx
 import { createWardx } from 'wardx';
 ```
 
+The SDK runs on Node.js 20+ and Bun 1.4+. Under Bun it reports `platform: 'node'`.
+
 To receive frames, run an ingest server. Install `@wardx/server` and start it with a config file.
 
 > [!NOTE]
@@ -46,6 +48,25 @@ To receive frames, run an ingest server. Install `@wardx/server` and start it wi
 > ```bash
 > npx skills add https://github.com/clasen/Wardx --skill wardx
 > ```
+
+## Bun performance
+
+The same SDK code, measured with `pnpm run bench:runtimes` on Node.js 22.23.2 and Bun 1.4.4 (Apple M4 Max, median of 3 rounds × 7 runs, ingest server on Node.js):
+
+| Path | Node.js | Bun | Bun vs Node.js |
+| --- | ---: | ---: | ---: |
+| `counter.inc()` on a bound handle | 0.76 ns | 1.48 ns | 2.0× slower |
+| `counter(name, dims).inc()` | 117 ns | 66 ns | 1.8× faster |
+| `histogram.observe()` | 4.3 ns | 3.8 ns | 1.1× faster |
+| `distinct.add()` | 118 ns | 90 ns | 1.3× faster |
+| `event()` + `log.info()`, including snapshot | 521 ns | 174 ns | 3.0× faster |
+| Experiment variant assignment | 231 ns | 113 ns | 2.0× faster |
+| Flush of 5,000 series: snapshot + gzip | 13.2 ms | 8.7 ms | 1.5× faster |
+| `flush()` to a local server, p50 | 0.40 ms | 0.27 ms | 1.5× faster |
+| `flush()` to a local server, p99 | 0.87 ms | 1.00 ms | 1.1× slower |
+| Import, create, and shut down | 73 ms | 17 ms | 4.2× faster |
+
+Bun is faster wherever the SDK serializes JSON, builds strings, or hashes, and it starts about four times faster, which matters for CLIs and short-lived processes. Both runtimes keep the bound-handle hot path near 1 ns, so the difference there is not observable. Flush tail latency is dominated by the network and the server.
 
 ## Design rules
 

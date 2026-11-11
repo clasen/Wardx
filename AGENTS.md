@@ -8,7 +8,7 @@ C# / Unity clients.
 
 ## Runtime and package manager
 
-- Use Node.js 20 or newer.
+- Use Node.js 22.13 or newer.
 - Use pnpm workspaces from `pnpm-workspace.yaml` and the committed `pnpm-lock.yaml`.
 - The JavaScript packages use native ESM.
 - Do not add, remove, or upgrade dependencies without asking first.
@@ -37,6 +37,7 @@ pnpm run test:black-box
 pnpm run test:csharp
 pnpm run check:csharp
 pnpm run test:swift
+pnpm run test:bun
 pnpm run stress:smoke
 pnpm run pack:check
 ```

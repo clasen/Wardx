@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   },
   "scripts": {
     "test": "pnpm run test:js",
@@ -13,12 +13,14 @@
     "test:black-box": "node --test packages/server/test/black-box.test.js",
     "test:csharp": "dotnet run --project clients/csharp/Tests/Wardx.Tests.csproj && node packages/server/test/csharp-interop.mjs",
     "test:swift": "swift test && node packages/server/test/swift-interop.mjs",
+    "test:bun": "bun test packages/core/test packages/node/test packages/server/test && node packages/server/test/bun-interop.mjs node && node packages/server/test/bun-interop.mjs bun",
     "check:csharp": "dotnet format clients/csharp/Runtime/Core/Wardx.Core.csproj --verify-no-changes --no-restore --verbosity minimal && dotnet format clients/csharp/Runtime/Wardx.csproj --verify-no-changes --no-restore --verbosity minimal && dotnet format clients/csharp/Tests/Wardx.Tests.csproj --verify-no-changes --no-restore --verbosity minimal",
     "server": "node packages/server/src/cli.js config/development.json",
     "server:production": "node packages/server/src/cli.js config/production.json",
     "stress": "node packages/stress/src/index.js",
     "stress:smoke": "node packages/stress/src/index.js D --smoke",
     "stress:full": "node packages/stress/src/index.js D --full && node packages/stress/src/index.js G --full",
+    "bench:runtimes": "node packages/stress/src/runtime-benchmark.js",
     "pack:check": "node packages/stress/src/pack-check.js",
     "verify": "pnpm run lint && pnpm run typecheck && pnpm run test:js && pnpm run test:csharp && pnpm run check:csharp && pnpm run stress:smoke && pnpm run pack:check",
     "verify:release": "pnpm run verify && pnpm run stress:full",

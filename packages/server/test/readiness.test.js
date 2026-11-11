@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { statSync } from 'node:fs';
-import Database from 'better-sqlite3';
+import { DatabaseSync as Database } from 'node:sqlite';
+import { pragmaValue } from '../src/storage/sqlite.js';
 import { test } from 'node:test';
 import { createIngestServer, listen } from '../src/server.js';
 import { validateServerConfig } from '../src/loadConfig.js';
@@ -27,14 +28,14 @@ test('readiness probes SQLite write capability and recovers without changing app
     counters: { retentionActivityDropped: 0, retentionConversionsDropped: 0, retentionChannelsDropped: 0, framesTooNewDropped: 0, framesTooOldDropped: 0 }
   });
 
-  stateStore.database.pragma('query_only = ON');
+  stateStore.database.exec('PRAGMA query_only = ON');
   health.probe();
   response = await fetch(`${endpoint}/ready`);
   assert.equal(response.status, 503);
   assert.equal((await response.json()).checks.sqlite, false);
   assert.equal((await fetch(`${endpoint}/health`)).status, 200);
 
-  stateStore.database.pragma('query_only = OFF');
+  stateStore.database.exec('PRAGMA query_only = OFF');
   health.probe();
   assert.equal((await fetch(`${endpoint}/ready`)).status, 200);
   assert.deepEqual(control.getConfig('demo'), before);
@@ -49,12 +50,12 @@ test('SQLite probe reports writer contention and restores the normal busy timeou
     writer.exec('BEGIN IMMEDIATE');
     health.probe();
     assert.equal(health.snapshot().checks.sqlite, false);
-    assert.equal(stateStore.database.pragma('busy_timeout', { simple: true }), config.sqlite.busyTimeoutMs);
+    assert.equal(pragmaValue(stateStore.database, 'busy_timeout'), config.sqlite.busyTimeoutMs);
     writer.exec('ROLLBACK');
     health.probe();
     assert.equal(health.snapshot().checks.sqlite, true);
   } finally {
-    if (writer.inTransaction) writer.exec('ROLLBACK');
+    if (writer.isTransaction) writer.exec('ROLLBACK');
     writer.close();
   }
 });
@@ -62,14 +63,14 @@ test('SQLite probe reports writer contention and restores the normal busy timeou
 test('SQLite probe commits a WAL write while preserving the schema metadata', async (t) => {
   const { config, stateStore } = await start(t);
   const database = stateStore.database;
-  database.pragma('wal_autocheckpoint = 0');
-  database.pragma('wal_checkpoint(TRUNCATE)');
+  database.exec('PRAGMA wal_autocheckpoint = 0');
+  database.exec('PRAGMA wal_checkpoint(TRUNCATE)');
   const walPath = `${config.sqlite.path}-wal`;
   const before = statSync(walPath).size;
   stateStore.probeWritable(config.readiness.probeTimeoutMs);
   assert.ok(statSync(walPath).size > before);
   assert.equal(database.prepare('SELECT version FROM schema_metadata WHERE singleton = 1').get().version, stateStore.schemaVersion());
-  assert.equal(database.inTransaction, false);
+  assert.equal(database.isTransaction, false);
 });
 
 test('SQLite probe rolls back when restoring metadata fails or updates no row', async (t) => {
@@ -84,8 +85,8 @@ test('SQLite probe rolls back when restoring metadata fails or updates no row', 
     try {
       assert.throws(() => stateStore.probeWritable(config.readiness.probeTimeoutMs), /restore/);
       assert.equal(database.prepare('SELECT version FROM schema_metadata WHERE singleton = 1').get().version, version);
-      assert.equal(database.inTransaction, false);
-      assert.equal(database.pragma('busy_timeout', { simple: true }), config.sqlite.busyTimeoutMs);
+      assert.equal(database.isTransaction, false);
+      assert.equal(pragmaValue(database, 'busy_timeout'), config.sqlite.busyTimeoutMs);
     } finally {
       database.exec('DROP TRIGGER fail_probe_restore');
     }

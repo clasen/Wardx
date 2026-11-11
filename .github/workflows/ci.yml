@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [20, 26]
+        node: [22, 26]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -36,7 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [20, 26]
+        node: [22, 26]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -66,6 +66,20 @@ jobs:
       - run: pnpm run test:csharp
       - run: pnpm run check:csharp
 
+  bun:
+    name: JavaScript suite and interoperability / Bun
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: pnpm
+      - uses: oven-sh/setup-bun@v2
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run test:bun
+
   stress-smoke:
     name: Persistence stress smoke
     runs-on: ubuntu-latest
@@ -85,7 +99,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [20, 26]
+        node: [22, 26]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

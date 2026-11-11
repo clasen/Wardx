@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import Database from 'better-sqlite3';
+import { DatabaseSync as Database } from 'node:sqlite';
 import { validateConfigConstraint, validateConfigConstraints } from '../src/control/configConstraints.js';
 import { validateServerConfig } from '../src/loadConfig.js';
 import { executeTool } from '../src/mcp/tools.js';

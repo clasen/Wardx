@@ -33,7 +33,7 @@ test('streamed envelopes preserve cached JSON, UTF-8 byte counts and empty batch
 test('metadata encoding errors do not poison later envelopes', async () => {
   const metadata = {};
   metadata.self = metadata;
-  await assert.rejects(gzipEnvelope(metadata, []), /circular/i);
+  await assert.rejects(gzipEnvelope(metadata, []), /circular|cyclic/i);
   const encoded = await gzipEnvelope({ protocol: 1 }, []);
   assert.deepEqual(JSON.parse(gunzipBuffer(encoded.compressed)), { protocol: 1, frames: [] });
 });
